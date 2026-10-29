@@ -6,8 +6,8 @@ import sys
 
 from helpers import boot, finish, typ
 
-from pc1251emu import romsyms
-from pc1251emu.machine import CLOCK
+from sc61box import romsyms
+from sc61box.machine import CLOCK
 
 ROOT = os.path.join(os.path.dirname(__file__), "..")
 ASM = os.path.join(ROOT, "tools", "asm61860.py")

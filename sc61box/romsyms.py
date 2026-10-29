@@ -115,13 +115,3 @@ def symbols(model: str = "1251") -> dict[str, int]:
     out = {name: a for name, (a, _) in ROUTINES_1251.items()}
     out.update({name: a for name, (a, _) in RAM_1251.items()})
     return out
-
-
-def name_of(addr: int, model: str = "1251") -> str | None:
-    """番地からルーチンの名前を引く(なければNone)"""
-    if model not in ("1245", "1250", "1251", "1255"):
-        return None
-    for name, (a, _) in ROUTINES_1251.items():
-        if a == addr:
-            return name
-    return None

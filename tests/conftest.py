@@ -8,9 +8,9 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 # 試験は日本語の画面で確かめる(動かすパソコンのロケールによらない)
-os.environ["PC1251_LANG"] = "ja"
+os.environ["SC61BOX_LANG"] = "ja"
 
-from pc1251emu.machine import RomNotFound, find_rom  # noqa: E402
+from sc61box.machine import RomNotFound, find_rom  # noqa: E402
 
 
 def _have(model: str) -> bool:
@@ -39,18 +39,24 @@ NO_ROM_NEEDED = {
 @pytest.fixture(autouse=True)
 def _own_state_dir(tmp_path_factory, monkeypatch):
     """RAM、どこでもセーブ、作業欄の見え方などの置き場所と、プログラムの置き場所を、試験ごとに
-    空のフォルダにする(使う人の~/.pc1251にあるものに試験の結果が左右されず、試験がそこへ
+    空のフォルダにする(使う人の~/.sc61boxにあるものに試験の結果が左右されず、試験がそこへ
     書くこともない)"""
-    from pc1251emu import app
+    from sc61box import app, paths
 
     monkeypatch.setattr(app, "STATE_DIR", str(tmp_path_factory.mktemp("pc1251")))
-    monkeypatch.setenv("PC1251_PROGRAMS", str(tmp_path_factory.mktemp("programs")))
+    # 起動のときのデータのフォルダの引っ越しも、使う人のホームには触れない
+    home = tmp_path_factory.mktemp("home")
+    monkeypatch.setattr(paths, "DATA_DIR", str(home / ".sc61box"))
+    monkeypatch.setattr(
+        paths, "OLD_DATA_DIRS", (str(home / ".sc61860player"), str(home / ".pc1251"))
+    )
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path_factory.mktemp("programs")))
 
 
 @pytest.fixture(autouse=True)
 def _japanese():
     """画面の言語を、試験ごとに日本語に戻す(英語に切り替える試験のあとに残さない)"""
-    from pc1251emu import i18n
+    from sc61box import i18n
 
     i18n.set_language("ja")
     yield
@@ -62,7 +68,7 @@ def pytest_collection_modifyitems(config, items):
 
     for item in items:
         if (
-            item.module.__name__ in ("test_cpu", "test_workbench", "test_i18n")
+            item.module.__name__ in ("test_cpu", "test_workbench", "test_i18n", "test_paths")
             or f"{item.module.__name__}::{item.name}" in NO_ROM_NEEDED
         ):
             continue

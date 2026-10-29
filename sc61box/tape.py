@@ -138,14 +138,19 @@ def _samples(raw: bytes, width: int) -> list[int]:
 
 
 # ---- エミュレータでCSAVEさせて録る ----
+def _finish(m, t: Typer) -> None:
+    """Typerが打ち終わるまで本体を動かす"""
+    while t.busy:
+        t.step()
+        m.run(CLOCK // 200)
+
+
 def _type(m, text: str, mode: str | None = None) -> None:
     t = Typer(m)
     if mode:
         t.add_mode(mode)
     t.add_text(text)
-    while t.busy:
-        t.step()
-        m.run(CLOCK // 200)
+    _finish(m, t)
 
 
 def record(m, command: str) -> array:
@@ -207,9 +212,7 @@ def program_wavs(prog, model: str, out_dir: str) -> list[tuple[str, str]]:
         t.add_text("NEW\n")
         t.add_program(prog.basic)
         t.add_mode("RUN")
-        while t.busy:
-            t.step()
-            m.run(CLOCK // 200)
+        _finish(m, t)
     for addr, data in prog.blocks + prog.after:  # 打ち込みで消えないよう、BASICのあとで書く
         for i, b in enumerate(data):
             m.write(addr + i, b)

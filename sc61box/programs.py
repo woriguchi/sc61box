@@ -41,22 +41,20 @@
                           (次の指定か、実行した命令の手前まで)
     # model: 1251,1245    動く機種(「,」で区切る)。書かなければ置いたフォルダで決まる。
                           ほかの機種では一覧に出ず、開いても読み込まない
+    # pad: dpup=8 a=SPC   ゲームパッドの割り当て(入力の名前=本体のキーの名前。gamepad.py)。
+                          読み込むと、この割り当てになる
 """
 
 import os
 import re
 from dataclasses import dataclass, field
 
+from . import paths
 from .i18n import tr
 from .keytype import stored_len
-from .machine import MODELS
+from .machine import BASE_MODEL, MODELS
 
 EXTS = (".bas", ".hex")
-
-
-# RAMの範囲だけが違う機種(PC-1250・1255、PC-1260・1262)は、元の機種(PC-1251、PC-1261)用の
-# ものも、書き込む番地がRAMに収まれば使える
-FAMILY = {name: m.base for name, m in MODELS.items() if m.base}
 
 # BASICのPOKEの番地(&のついた16進か、10進の数で書いたもの)
 POKE_RE = re.compile(r"POKE\s*(&[0-9A-F]{1,4}|[0-9]{1,5})\b")
@@ -84,10 +82,11 @@ def folder_model(path: str) -> str:
 
 
 def library_dirs() -> list[str]:
-    """一覧に使うディレクトリ。PC1251_PROGRAMS(:区切り)、~/.pc1251/programs、
+    """一覧に使うディレクトリ。SC61BOX_PROGRAMS(:区切り。前の名前のPC1251_PROGRAMSも)、
+    データのフォルダのprograms(~/.sc61box/programs)、
     このリポジトリのprograms/、programs/private/(配布物には含まれない自分用の置き場所。あれば)の順"""
-    dirs = [d for d in os.environ.get("PC1251_PROGRAMS", "").split(os.pathsep) if d]
-    dirs.append(os.path.expanduser("~/.pc1251/programs"))
+    dirs = [d for d in paths.env("PROGRAMS").split(os.pathsep) if d]
+    dirs.append(os.path.join(paths.data_dir(), "programs"))
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     dirs.append(os.path.join(here, "programs"))
     dirs.append(os.path.join(here, "programs", "private"))
@@ -102,8 +101,8 @@ def library_dirs() -> list[str]:
 def user_dir() -> str:
     """ユーザーがファイルを置くところ(なければ作る)。作れなくても(同じ名前のファイルがある
     など)ここでは止まらずに場所を返す。そこへ書くところで失敗し、それぞれが知らせる"""
-    env = [d for d in os.environ.get("PC1251_PROGRAMS", "").split(os.pathsep) if d]
-    d = os.path.abspath(env[0]) if env else os.path.expanduser("~/.pc1251/programs")
+    env = [d for d in paths.env("PROGRAMS").split(os.pathsep) if d]
+    d = os.path.abspath(env[0]) if env else os.path.join(paths.data_dir(), "programs")
     try:
         os.makedirs(d, exist_ok=True)
     except OSError:
@@ -125,6 +124,8 @@ class Program:
     blocks: list[tuple[int, bytes]] = field(default_factory=list)
     after: list[tuple[int, bytes]] = field(default_factory=list)  # # after: で、実行のあとに書く
     model: str = ""  # # model: の値。空ならどの機種でも
+    # # pad: の値(ゲームパッドの割り当て)。行がなければNone、値のない行は何も割り当てない
+    pad: str | None = None
     links: list[str] = field(
         default_factory=list
     )  # 「after: code.hex」など、ダンプの指示(書き出し用)
@@ -157,18 +158,18 @@ class Program:
     @property
     def inferred(self) -> list[str] | None:
         """番地がRAMか液晶に収まる機種。番地がなければNone(どの機種でも)、収まる機種が
-        なければ空。RAMの範囲だけが違う機種は元の機種に含める(runs_onがFAMILYで見る)"""
+        なければ空。RAMの範囲だけが違う機種は元の機種に含める(runs_onがBASE_MODELで見る)"""
         addrs = self.addresses
         if not addrs:
             return None
         ok = [name for name in MODELS if fits(name, addrs)]
-        return [name for name in ok if FAMILY.get(name) not in ok]
+        return [name for name in ok if BASE_MODEL.get(name) not in ok]
 
     def runs_on(self, model: str) -> bool:
         models = self.models
         if models is None or model in models:
             return True
-        return FAMILY.get(model) in models and self._fits_family(model)
+        return BASE_MODEL.get(model) in models and self._fits_family(model)
 
     def fits(self, writable) -> bool:
         """機種を書いていないものが、いまの本体に書けるか。writable(番地)はMachine.writable。
@@ -186,7 +187,7 @@ class Program:
         if not fits(model, addrs):
             return False
         start = MODELS[model].prog_start
-        if self.setup or start == MODELS[FAMILY[model]].prog_start:
+        if self.setup or start == MODELS[BASE_MODEL[model]].prog_start:
             return True
         end = start + 2 + sum(stored_len(ln) + 3 for ln in self.basic.splitlines() if ln.strip())
         return all(b <= start or a >= end for a, b in addrs)
@@ -224,6 +225,7 @@ def _directive(line: str) -> tuple[str, str] | None:
     key = key.strip().lower()
     if key in (
         "title", "run", "hex", "bin", "after", "model", "mode", "setup", "help", "norom", "data",
+        "pad",
     ):  # fmt: skip
         return key, val.strip()
     return None
@@ -344,33 +346,32 @@ def _add_hex(prog: Program, spec: str, near: str, key: str = "hex") -> None:
         return
     sub = model_dir(folder_model(os.path.join(near, name)) or "-")
     places = [near] + [os.path.join(d, sub) for d in library_dirs()] + library_dirs()
-    for d in places:
-        p = os.path.join(d, name)
-        if os.path.exists(p):
-            if p not in prog.paths:
-                prog.paths.append(p)
-                prog.links.append(f"{key}: {name}" + ("" if addr is None else f" &{addr:04X}"))
-                if is_bin:
-                    assert addr is not None
-                    blocks, errors = read_bin(p, addr, name + " ")
-                else:
-                    try:
-                        text = open(p, encoding="utf-8").read()
-                    except (OSError, UnicodeDecodeError) as e:
-                        prog.errors.append(
-                            tr("# {key}: {name}を読めない({error})", key=key, name=name, error=e)
-                        )
-                        return
-                    blocks, errors = parse_hex(text, name + " ")
-                    # 使うダンプに書いた# data: の範囲も取り込む(ほかの指示は使う側で書く)
-                    for line in text.splitlines():
-                        d = _directive(line.strip()) if line.strip().startswith("#") else None
-                        if d and d[0] == "data":
-                            _add_data(prog, d[1], name)
-                (prog.after if key == "after" else prog.blocks).extend(blocks)
-                prog.errors.extend(errors)
+    p = next((os.path.join(d, name) for d in places if os.path.exists(os.path.join(d, name))), None)
+    if p is None:
+        prog.errors.append(tr("# {key}: {name}が見つからない", key=key, name=name))
+        return
+    if p in prog.paths:
+        return
+    prog.paths.append(p)
+    prog.links.append(f"{key}: {name}" + ("" if addr is None else f" &{addr:04X}"))
+    if addr is not None and is_bin:
+        blocks, errors = read_bin(p, addr, name + " ")
+    else:
+        try:
+            text = open(p, encoding="utf-8").read()
+        except (OSError, UnicodeDecodeError) as e:
+            prog.errors.append(
+                tr("# {key}: {name}を読めない({error})", key=key, name=name, error=e)
+            )
             return
-    prog.errors.append(tr("# {key}: {name}が見つからない", key=key, name=name))
+        blocks, errors = parse_hex(text, name + " ")
+        # 使うダンプに書いた# data: の範囲も取り込む(ほかの指示は使う側で書く)
+        for line in text.splitlines():
+            d = _directive(line.strip()) if line.strip().startswith("#") else None
+            if d and d[0] == "data":
+                _add_data(prog, d[1], name)
+    (prog.after if key == "after" else prog.blocks).extend(blocks)
+    prog.errors.extend(errors)
 
 
 def _add_data(prog: Program, value: str, file: str) -> None:
@@ -395,6 +396,8 @@ def _read_into(prog: Program, path: str) -> None:
                 _add_hex(prog, d[1], os.path.dirname(path), d[0])
             elif d and d[0] == "data":
                 _add_data(prog, d[1], os.path.basename(path))
+            elif d and d[0] == "pad":  # いくつもの行に分けて書ける
+                prog.pad = d[1] if prog.pad is None else f"{prog.pad} {d[1]}".strip()
             elif d and d[0] in ("run", "setup", "help", "norom") and d[1]:
                 old = getattr(prog, d[0])
                 setattr(prog, d[0], old + "\n" + d[1] if old else d[1])
@@ -459,7 +462,7 @@ def find(name: str, model: str = "") -> Program | None:
     if os.path.exists(name):
         return load_program(name)
     stem = os.path.splitext(os.path.basename(name))[0]
-    own = [model_dir(m) for m in (model, FAMILY.get(model)) if m]
+    own = [model_dir(m) for m in (model, BASE_MODEL.get(model)) if m]
     subs = own + [""] + [model_dir(m) for m in MODELS if model_dir(m) not in own]
     for sub in subs:
         for d in library_dirs():
@@ -474,7 +477,7 @@ def for_model(items: list[Program], model: str, writable=None) -> list[Program]:
     """一覧に出すもの(この機種で動くもの)。同じ# title:のものがこの機種のフォルダにあれば、
     そちらだけを出す(機種ごとに作り分けたものを同じ名前で置ける)。writable(番地)があれば、
     いまの本体(RAMカードなど)に書けるものも出す(Program.fits)"""
-    own_dirs = (model, FAMILY.get(model))
+    own_dirs = (model, BASE_MODEL.get(model))
     ok = [p for p in items if p.runs_on(model) or (writable and p.fits(writable))]
     own = {p.title for p in ok if folder_model(p.paths[0]) in own_dirs}
     return [p for p in ok if folder_model(p.paths[0]) in own_dirs or p.title not in own]

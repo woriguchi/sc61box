@@ -1,11 +1,14 @@
 """プリンタをつなぐと、LPRINTとLLISTの印字が受け取れる"""
 
+import os
+
 import pygame
 import pytest
 from helpers import boot, finish, make_app, settle, typ
 
-from pc1251emu import programs
-from pc1251emu.machine import CLOCK
+from sc61box import programs
+from sc61box.app import BAR_H
+from sc61box.machine import CLOCK
 
 
 def _printed(model, src, command="RUN"):
@@ -49,7 +52,7 @@ def test_no_printer_skips_lprint():
 def test_paper_appears_when_printing(tmp_path, monkeypatch):
     """プリンタはいつもつながっていて、印字したときだけ窓の下に紙が出る。印字は紙の絵として
     保存でき、紙はしまえる"""
-    monkeypatch.setenv("PC1251_PROGRAMS", str(tmp_path))
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
     app = make_app()
     h = app.window.get_height()
     assert app.m.printer is not None and not app.paper_open
@@ -58,8 +61,10 @@ def test_paper_appears_when_printing(tmp_path, monkeypatch):
     settle(app)
     for _ in range(60):
         app.frame()
-    assert app.m.printer.lines == ["HELLO"]
-    assert app.paper_open and app.window.get_height() == h + app.paper.height
+    assert app.m.printer.lines == [b"HELLO"]
+    # 紙のぶん窓が高くなる(画面に入らなければ本体を縮めるので、本体の高さから数える)
+    assert app.paper_open
+    assert app.window.get_height() == app.body_size[1] + app.paper.height + BAR_H
     app.save_printout()
     saved = list(tmp_path.glob("print-*.png"))
     assert len(saved) == 1
@@ -80,15 +85,45 @@ def test_paper_appears_when_printing(tmp_path, monkeypatch):
     app.close()
 
 
-def test_glyphs_from_rom():
-    """紙に打つ字の形はROMの文字の表から取る"""
-    from pc1251emu.lcdtext import glyphs
+def test_printer_font():
+    """紙に打つ字の形はプリンタの字の表から取る。00〜FFのすべてに形があり、本体のROMに
+    よらない"""
+    from sc61box.printer import char, load_font
 
-    for model in ("1251", "1261", "1350"):
-        m, _ = boot(model)
-        g = glyphs(m.mem)
-        assert all(ch in g for ch in 'AZ09.:"π√¥'), model
-        assert g["A"] == bytes.fromhex("7c1211127c")
+    font = load_font()
+    assert sorted(font) == list(range(256)) and all(len(g) == 5 for g in font.values())
+    assert font[0x41] == bytes.fromhex("7c1211127c")  # A
+    assert font[0x20] == font[0x00] == bytes(5) and font[0xB1] != bytes(5)  # 空白とｱ
+    assert font[0x18] == font[0x5B] and font[0x19] == font[0x5D]  # √とπは2か所にある
+    assert "".join(char(c) for c in (0x01, 0x0E, 0x5C, 0x61, 0xB1, 0xF1)) == "≠θ¥aｱ年"
+
+
+def test_raw_codes_printed():
+    """マシン語で送ったコードは、BASICから出せない字(小文字やカナ、記号)もそのまま打つ"""
+    from sc61box.printer import Printer
+
+    p = Printer()
+    for code in b"\x0e\x1babc\xb1\xb2\r":
+        p.put(code)
+    assert p.lines == [b"\x0e\x1babc\xb1\xb2"] and p.text() == "θ→abcｱｲ\n"
+
+
+def test_pc1350_line_lead_and_letter_o():
+    """PC-1350は行の頭ごとに0Fか0Eを1つ送り、英字のOを30で送る。行の最初のバイトの0F・0Eは
+    打たず、2つ目からは字(θ、⇒)として打つ。30はOの形で打つ"""
+    m, _ = boot("1350")
+    m.connect_printer()
+    p = m.printer
+    assert p is not None
+    for code in b"\x0fO\x30\xf0\r\x0e\x0eA\x0f\r":
+        for i in range(8):  # 本体と同じく、1ビットずつ字として送る
+            p.bit(code >> i, command=False)
+    assert p.lines == [b"OO\xf0", b"\x0eA\x0f"] and p.text() == "OO0\nθA⇒\n"
+
+
+def test_exponent_mark_1251():
+    """PC-1251は指数のEを60で送る。プリンタはそこに指数のEの形を持っている"""
+    assert _printed("1251", "10 LPRINT 10^20\n").strip() == "1.E 20"
 
 
 def test_printout_saved_automatically(tmp_path, monkeypatch):
@@ -96,43 +131,104 @@ def test_printout_saved_automatically(tmp_path, monkeypatch):
     その紙は終わり、次の印字は新しいファイルになる"""
     import time
 
-    monkeypatch.setenv("PC1251_PROGRAMS", str(tmp_path))
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
     app = make_app()
     prog = programs.Program(name="p", title="p", basic='10 LPRINT "ONE"\n', run="RUN")
     app.open_program(prog, run=True)
     settle(app)
-    first = app.print_file
+    assert app.printout is not None
+    first = app.printout.file
     assert first and first.startswith(str(tmp_path)) and app.paper.where_rect.width > 0
     assert open(first, "rb").read(4) == b"\x89PNG"  # 新しい紙はすぐに保存する
     assert app.m.printer is not None
     app.m.printer.put(ord("X"))  # 印字を足し、1秒より前に印字したことにする
     app.m.printer.put(0x0D)
     app.frame()
-    app.print_time -= 2
+    app.printout.time -= 2
     app.frame()
-    assert app.print_saved == 2 and "保存しました" in app.status
-    app.show_paper(False)
-    assert app.print_file is None
+    assert app.printout.saved == [b"ONE", b"X"] and "保存しました" in app.status
+    app.close_paper()
+    assert app.printout is None
     time.sleep(1.1)  # ファイルの名前(秒まで)が変わるように
     app.open_program(prog, run=True)
     settle(app)
-    assert app.print_file != first and app.paper_rows() == ["ONE"]
+    assert app.printout is not None and app.printout.file != first
+    assert app.paper_rows() == [b"ONE"]
     app.close()  # 閉じるときも保存する
     assert len(list(tmp_path.glob("print-*.png"))) == 2
 
 
+def test_partial_line_growth_is_saved(tmp_path, monkeypatch):
+    """改行していない行に字を足しても、印字がとぎれたときに保存し直す(行の数は変わらない)"""
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
+    app = make_app()
+    assert app.m.printer is not None
+    for code in b"START\rA":
+        app.m.printer.put(code)
+    app.frame()
+    out = app.printout
+    assert out is not None
+    out.time -= 2
+    app.frame()
+    assert out.rows() == [b"START", b"A"] and out.saved == [b"START", b"A"]
+    app.m.printer.put(ord("B"))
+    app.frame()
+    assert out.saved == [b"START", b"A"]  # 1秒たつまでは保存しない
+    out.time -= 2
+    app.frame()
+    assert out.saved == [b"START", b"AB"]
+    app.close()
+
+
+def test_closing_paper_mid_line_starts_next_sheet_after_cut(tmp_path, monkeypatch):
+    """改行の前に紙をしまうと、次の紙はその行の続きの字から(前の紙の字は入れない)"""
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
+    app = make_app()
+    assert app.m.printer is not None
+    app.m.printer.put(ord("A"))
+    app.frame()
+    assert app.printout is not None and app.printout.rows() == [b"A"]
+    first = app.printout.file
+    app.close_paper()
+    for code in b"B\rC":
+        app.m.printer.put(code)
+    app.frame()
+    assert app.printout is not None and app.printout.file != first
+    assert app.printout.rows() == [b"B", b"C"]
+    app.close()
+    files = sorted(tmp_path.glob("print-*.png"))
+    assert len(files) == 2 and all(f.stat().st_size > 0 for f in files)
+
+
+def test_blank_sheet_leaves_no_empty_file(tmp_path, monkeypatch):
+    """空白だけの途中の行で紙を出してしまうと、名前を取るために作った空のファイルは残さない"""
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
+    app = make_app()
+    assert app.m.printer is not None
+    app.m.printer.put(0x20)
+    app.frame()
+    assert app.printout is not None and app.printout.file
+    assert os.path.getsize(app.printout.file) == 0
+    app.close_paper()
+    assert list(tmp_path.glob("print-*.png")) == []
+    app.m.printer.put(0x20)
+    app.frame()
+    app.close()  # 終了のときも同じ
+    assert list(tmp_path.glob("print-*.png")) == []
+
+
 def test_print_files_do_not_overwrite(tmp_path, monkeypatch):
     """同じ秒に新しい紙になっても、前の紙のファイルを上書きしない"""
-    from pc1251emu import app as app_module
+    from sc61box import printout
 
-    monkeypatch.setenv("PC1251_PROGRAMS", str(tmp_path))
-    monkeypatch.setattr(app_module.time, "strftime", lambda fmt, *a: "20261022-000000")
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
+    monkeypatch.setattr(printout.time, "strftime", lambda fmt, *a: "20261022-000000")
     app = make_app()
     for word in ("ONE", "TWO"):
         prog = programs.Program(name="p", title="p", basic=f'10 LPRINT "{word}"\n', run="RUN")
         app.open_program(prog, run=True)
         settle(app)
-        app.show_paper(False)
+        app.close_paper()
     names = sorted(p.name for p in tmp_path.glob("print-*.png"))
     assert names == ["print-20261022-000000-2.png", "print-20261022-000000.png"]
     app.close()
@@ -140,10 +236,10 @@ def test_print_files_do_not_overwrite(tmp_path, monkeypatch):
 
 def test_print_file_name_is_reserved(tmp_path):
     """印字の名前は、確かめると同時にファイルを作って取る(ほかのエミュレータと重ならない)"""
-    from pc1251emu.app import _unused
+    from sc61box.paths import unused_file
 
-    first = _unused(str(tmp_path), "print-x", ".png")
-    second = _unused(str(tmp_path), "print-x", ".png")
+    first = unused_file(str(tmp_path), "print-x", ".png")
+    second = unused_file(str(tmp_path), "print-x", ".png")
     assert first != second and (tmp_path / "print-x.png").exists()
 
 
@@ -151,7 +247,7 @@ def test_printout_picture_is_opaque():
     """印字の絵はアルファのない形式で作る。窓がアルファの成分のある形式でも、字のところが
     透けない"""
     app = make_app()
-    img = app.paper.picture(["AB"])
+    img = app.paper.picture([b"AB"])
     assert img.get_bitsize() == 24 and img.get_masks()[3] == 0
     assert any(sum(img.get_at((x, y))[:3]) < 400 for x in range(14, 40) for y in range(20, 40))
     app.close()
@@ -159,7 +255,7 @@ def test_printout_picture_is_opaque():
 
 def test_opaque_drops_meaningless_alpha():
     """アルファの成分があってSRCALPHAでない絵(macOSの窓の形式)は、写すと透けずに色が残る"""
-    from pc1251emu.app import opaque
+    from sc61box.app import opaque
 
     masks = (0xFF0000, 0xFF00, 0xFF, 0xFF000000)
     src = pygame.Surface((4, 4), pygame.SRCALPHA)

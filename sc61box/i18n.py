@@ -11,6 +11,7 @@ import subprocess
 import sys
 from collections.abc import Callable, Mapping
 
+from . import paths
 from .i18n_en import EN
 
 LANGUAGES = ("ja", "en")
@@ -92,12 +93,13 @@ def choose(
     win: Callable[[], str | None] | None = None,
 ) -> str:
     """画面の言語を決める。askedはコマンドの--lang、rememberedはメニューで前に選んだもの。
-    --lang、環境変数PC1251_LANG、前に選んだもの、ロケール(LC_ALL、LC_MESSAGES、LANGの順)、
+    --lang、環境変数SC61BOX_LANG(前の名前のSC61860PLAYER_LANG、PC1251_LANGも)、
+    前に選んだもの、ロケール(LC_ALL、LC_MESSAGES、LANGの順)、
     macOSかWindowsの言語の設定の順に見て、決まらなければja"""
     env = os.environ if environ is None else environ
     if asked in LANGUAGES:
         return asked
-    lang = from_locale(env.get("PC1251_LANG"))
+    lang = from_locale(paths.env("LANG", env))
     if lang:
         return lang
     if remembered in LANGUAGES:

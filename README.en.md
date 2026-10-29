@@ -1,8 +1,10 @@
 [日本語](README.md) | English
 
-# SHARP PC-1251/PC-1245/PC-1261/PC-1350 emulator
+<img src="images/sc61box-icon.png" width="96" alt="" align="right">
 
-An emulator for four Sharp pocket computers: the PC-1251 (1982), the PC-1245 (1983), the PC-1261 and the PC-1350. It executes the SC61860 CPU one instruction at a time and runs the machine's own internal ROM and BASIC ROM, so BASIC programs and machine code both work. You can press the keys and move the mode switch with the mouse. Even without a ROM you can type in and run machine code (see [Without a ROM](#without-a-rom)). You choose the model when starting; without an option it runs as the PC-1251 (for the PC-1250 and PC-1255, which share its ROM, see [Running as a PC-1250 or PC-1255](#running-as-a-pc-1250-or-pc-1255), for the PC-1245 see [Running as a PC-1245](#running-as-a-pc-1245), for the PC-1261 [Running as a PC-1261](#running-as-a-pc-1261), for the PC-1350 [Running as a PC-1350](#running-as-a-pc-1350)).
+# sc61box: SHARP PC-1251/PC-1245/PC-1261/PC-1350 emulator
+
+sc61box is an emulator of the SC61860, the CPU used in SHARP pocket computers. It runs the internal ROM and BASIC ROM of four models, the PC-1251, the PC-1245, the PC-1261 and the PC-1350, one instruction at a time, so BASIC programs and machine code both work. Even without a ROM you can type in and run machine code (see [Without a ROM](#without-a-rom)). Choose the model with `--model`; the default is the PC-1251.
 
 ![Switching on a PC-1251 and starting the machine-code bouncing ball with CALL &C000](images/demo-1251.gif)
 
@@ -14,15 +16,19 @@ An emulator for four Sharp pocket computers: the PC-1251 (1982), the PC-1245 (19
 
 The user guide, starting from installation on macOS and Windows, is [`doc/manual.pdf`](doc/manual.pdf) (in Japanese).
 
+### If you used it under the old name (pc1251-emulator)
+
+A folder cloned under the old name updates with `git pull`, and the command is now `uv run sc61box`. The data folder `~/.pc1251` is moved to `~/.sc61box` on the first start. Environment variables are now named `SC61BOX_ROM` and so on; the old `PC1251_ROM` and the like are still read.
+
 ## Installing
 
 You need [uv](https://docs.astral.sh/uv/). uv fetches a suitable Python by itself.
 
 ```sh
-git clone <URL of this repository>
-cd pc1251-emulator
+git clone https://github.com/woriguchi/sc61box.git
+cd sc61box
 mkdir rom                            # put the ROM read from a real machine here (see below)
-uv run pc1251                        # start
+uv run sc61box                 # start
 ```
 
 ### Preparing the ROM
@@ -40,46 +46,45 @@ The ROM is Sharp's copyrighted work, so it is not in this repository. Read it ou
 | `cpu-1350.rom` | PC-1350: the CPU's internal ROM | 8192 bytes |
 | `bas-1350.rom` | PC-1350: the BASIC ROM | 32768 bytes |
 
-For example, if you cloned into `~/src`, the files are `~/src/pc1251-emulator/rom/cpu-1251.rom` and `~/src/pc1251-emulator/rom/bas-1251.rom`.
+For example, if you cloned into `~/src`, the files are `~/src/sc61box/rom/cpu-1251.rom` and `~/src/sc61box/rom/bas-1251.rom`.
 
-yagshi's page "[Extracting ROM Data](https://www.oit.ac.jp/rd/labs/kobayashi-lab/~yagshi/old_web/misc/pocketcom/extrom.html)" (in Japanese) describes how to do it on a PC-1251. For the PC-1245, "[SHARP PC-1245/50/51/55 の使い方](https://ht-deko.com/pc1245/)" (ht-deko.com, in Japanese) gives a procedure with BASIC listings that saves the internal ROM 1 KB at a time and the BASIC ROM 4 KB at a time with `CSAVE M`. ROMs come in different versions, so only the file sizes are checked. To keep the ROM elsewhere, set the environment variable `PC1251_ROM` to that folder.
+yagshi's page "[Extracting ROM Data](https://www.oit.ac.jp/rd/labs/kobayashi-lab/~yagshi/old_web/misc/pocketcom/extrom.html)" (in Japanese) describes how to do it on a PC-1251, and "[SHARP PC-1245/50/51/55 の使い方](https://ht-deko.com/pc1245/)" (ht-deko.com, in Japanese) on a PC-1245. To keep the ROM elsewhere, set the environment variable `SC61BOX_ROM` to that folder.
 
 ### Without a ROM
 
-The emulator also starts without a ROM (except as a PC-1350). It then runs the CPU, LCD, keys and sound without BASIC or the ROM routines and shows a machine-code workbench to the right of the machine. In the workbench you type in or paste a hex dump listing from a book or magazine, run it, set breakpoints or step one instruction at a time, and watch the registers and memory change. Typed-in code, or a `.hex` file you loaded and edited, can be exported to a `.hex` file. The bundled bouncing ball and Breakout also run without a ROM.
+The emulator also starts without a ROM (except as a PC-1350) and shows a machine-code workbench to the right of the machine. In the workbench you type in or paste a hex dump, run it, set breakpoints or step one instruction at a time, and watch the registers and memory change. The bundled bouncing ball and Breakout also run without a ROM. `--norom` starts without the ROM even if you have it.
 
-If you have the ROM, `--norom` still starts without it. You can also keep running the ROM, open the workbench with Cmd+D (Ctrl+D) and step through machine code called from BASIC with `CALL`. The workbench is described in the user guide (the section 「マシン語の作業欄」).
+With the ROM, Cmd+D (Ctrl+D) opens the workbench to step through machine code called from BASIC with `CALL`. The workbench is described in the user guide (the section 「マシン語の作業欄」).
 
 ## Running
 
 ```sh
-uv run pc1251 --scale 0.8            # smaller window
-uv run pc1251 primes --run           # load the bundled primes.bas and run it
-uv run pc1251 ~/prog/game.bas        # load a file by path
-uv run pc1251 --fresh                # start without the saved RAM
-uv run pc1251 --norom                # run without the ROM, in the machine-code workbench
-uv run pc1251 --state ~/.pc1251/state-1251.json  # start from a state saved with Shift+Cmd+S
-uv run pc1251 --model 1255           # start as a PC-1255 (1250 also works)
-uv run pc1251 --model 1245           # start as a PC-1245
-uv run pc1251 --model 1261           # start as a PC-1261 (1260 and 1262 also work)
-uv run pc1251 --model 1350           # start as a PC-1350 (--card 16 inserts a 16 KB RAM card)
-uv run pc1251 --model 1350 --overseas  # PC-1350 wired as the export model (lowercase letters instead of kana)
-uv run pc1251 --lang en              # English screen (--lang ja for Japanese)
-uv run pc1251 --help                 # list the options
-uv run pc1251 --version              # print the version (please include it in bug reports)
+uv run sc61box --scale 0.8     # smaller window
+uv run sc61box primes --run    # load the bundled primes.bas and run it
+uv run sc61box ~/prog/game.bas  # load a file by path
+uv run sc61box --fresh         # start without the saved RAM
+uv run sc61box --norom         # run without the ROM, in the machine-code workbench
+uv run sc61box --state ~/.sc61box/state-1251.json  # start from a state saved with Shift+Cmd+S
+uv run sc61box --lcd           # show only the LCD, without the calculator picture
+uv run sc61box --model 1255    # start as a PC-1255 (1250 also works)
+uv run sc61box --model 1245    # start as a PC-1245
+uv run sc61box --model 1261    # start as a PC-1261 (1260 and 1262 also work)
+uv run sc61box --model 1350    # start as a PC-1350 (--card 16 inserts a 16 KB RAM card)
+uv run sc61box --model 1350 --overseas  # PC-1350 wired as the export model (lowercase letters instead of kana)
+uv run sc61box --lang en       # English screen (--lang ja for Japanese)
+uv run sc61box --help          # list the options
+uv run sc61box --version       # print the version (please include it in bug reports)
 ```
 
-On exit the RAM is saved to `~/.pc1251/ram.bin` (`ram-1245.bin` for the PC-1245, `ram-1261.bin` for the PC-1261, `ram-1350.bin` for the PC-1350) and restored at the next start. Without a ROM it goes to a separate file such as `ram-1251-norom.bin`.
+On exit the RAM is saved to `~/.sc61box/ram.bin` (`ram-1245.bin` for the PC-1245, `ram-1261.bin` for the PC-1261, `ram-1350.bin` for the PC-1350) and restored at the next start. Without a ROM it goes to a separate file such as `ram-1251-norom.bin`.
 
 ### Display language
 
-The screen text can be English or Japanese. Start with `--lang en` (English) or `--lang ja` (Japanese), or set the environment variable `PC1251_LANG` to `en` or `ja`. Without either, the emulator uses the language last chosen with the "日本語" item in the "View & Input" menu ("English" on the Japanese screen); that item switches the language at once and is remembered for the next start.
-
-If no language was ever chosen from the menu, it is decided at start-up: a locale (the environment variables `LC_ALL`, `LC_MESSAGES` and `LANG`) starting with `ja` gives Japanese and any other locale English. Without a locale, the language set in System Settings is used on macOS, and the display language on Windows. If nothing is known, the screen is Japanese. This README quotes the labels of the English screen; things that belong to the machine (key tops, the LCD, BASIC keywords) and the titles of the bundled programs stay as they are.
+The screen text can be English or Japanese. Choose "English" or "日本語" in the "View & Input" menu (remembered for the next start), start with `--lang en` or `--lang ja`, or set the environment variable `SC61BOX_LANG`. Otherwise the system language decides. This README quotes the labels of the English screen.
 
 ### Program files
 
-Programs put in `~/.pc1251/programs/` appear in the program list (Cmd+O, or Ctrl+O on Windows). Clicking a row only selects it, even if it is already selected; the buttons at the bottom load it: "Load and run" loads and runs the program (also Enter) and "Load only" only loads it (also Shift+Enter). The file name, the models it runs on and the `# help:` text of the selected row appear below the list. You can also drop a file onto the window. If a file has unreadable lines, a missing or unreadable dump file, a dump that writes outside RAM, BASIC too large for RAM, or a line too long to be typed without losing part of it, nothing is written and a message appears at the bottom of the window. If BASIC that is typed in runs out of room part-way, or a line does not end up as expected, the run command and later dumps are skipped. The state just before loading is kept, and "Undo program load" in the "Machine" menu goes back to it, together with the program name and directives used for exporting. `programs/` has samples: primes, a text animation, a display-during-calculation demo, a machine-code dot-by-dot text scroller, a machine-code bouncing ball, breakout, the PC-Interpreter and a mole-bashing game.
+Programs put in `~/.sc61box/programs/` appear in the program list (Cmd+O, or Ctrl+O on Windows). Select a row and press "Load and run" (Enter) or "Load only" (Shift+Enter). You can also drop a file onto the window. If a file cannot be loaded, nothing is written and a message appears at the bottom of the window. "Undo program load" in the "Machine" menu goes back to the state just before loading. `programs/` has samples: primes, a text animation, a display-during-calculation demo, a machine-code dot-by-dot text scroller, a machine-code bouncing ball, breakout, the PC-Interpreter and a mole-bashing game.
 
 Three kinds of file can be loaded. A `.bas` and a `.hex` with the same name form one program: the dump is written first, then the BASIC goes in.
 
@@ -89,21 +94,21 @@ Three kinds of file can be loaded. A `.bas` and a `.hex` with the same name form
 | `.hex` | hex dump, one `address data` line after another | written straight into RAM |
 | `.bin` | machine-code bytes only | written at the address given by a `# bin:` line in the `.bas` |
 
-A BASIC program typed in the emulator can be exported with Cmd+E (Ctrl+E on Windows) to `~/.pc1251/programs/` as `name-date.bas`. Machine code is not part of the BASIC export; the machine-code workbench exports it to a `.hex` file with "Export .hex". `uv run pc1251 --export folder` exports from the saved RAM.
+A BASIC program typed in the emulator can be exported with Cmd+E (Ctrl+E on Windows) to `~/.sc61box/programs/` as `name-date.bas`. Machine code is not part of the BASIC export; the machine-code workbench exports it to a `.hex` file with "Export .hex". `uv run sc61box --export folder` exports from the saved RAM.
 
 #### BASIC files (.bas)
 
-A `.bas` file is not typed: the emulator writes into RAM the same tokenized lines the ROM would make from typing (spaces dropped, keywords as one-byte codes), byte for byte, so even long programs load at once.
+A `.bas` file is written into RAM directly, so even long programs load at once.
 
-- Write the exponent sign (typed with SHIFT+`+`, a different character from the letter E) as `[E]` or `€`, e.g. `1[E]-8`. The letter `E` or `e` is not an exponent (on the PC-1251, `2E-1` means 2×E−1).
+- On the PC-1251, PC-1250, PC-1255 and PC-1245, write the exponent sign (typed with SHIFT+`+`, a different character from the letter E) as `[E]` or `€`, e.g. `1[E]-8`. The letter `E` or `e` is not an exponent there: `2E-1` means 2×E−1. The PC-1261 (also the PC-1260 and PC-1262) and the PC-1350 have no Exp key, so write exponents with the letter E (`1E-8`); `[E]` and `€` are typed as the letter E too.
 - Write π (SHIFT+`0`) as `π`.
-- Only 79 characters fit on one input line, but on the real machine a longer line can still be entered by typing part of it, pressing `ENTER`, recalling the line and appending the rest (the edit field of a recalled line holds 79 characters including the line number, a stored keyword counting as one). A line longer than 79 characters is therefore stored as it is if it would go in this way without losing anything. If a line would lose part of it even this way, nothing is written and its line number is shown at the bottom of the window.
+- A line longer than 79 characters is loaded if it could be entered on the real machine by recalling the line and appending the rest.
 
 Pasted text (Cmd+V) and dropped text files other than `.bas` and `.hex` are not tokenized but typed key by key at eight times the normal speed. Long lines are not split, so anything past 79 characters is lost.
 
 #### Hex dumps (.hex)
 
-Anything after `;` on a line is a comment. Hex dumps written by the YASM61860 assembler (`c300 : 02 41 37 …`) can be used as they are. YASM61860's `-r` output starts at address 0 and is zero-filled up to the ORG, so loading it with `# bin:` would overwrite the BASIC program and variables with zeros; for YASM61860 output use the dump (`-d`) as a `.hex` file.
+Anything after `;` on a line is a comment. Hex dumps written by the YASM61860 assembler (`c300 : 02 41 37 …`, its `-d` output) can be used as they are.
 
 #### Setting lines
 
@@ -122,6 +127,7 @@ Lines starting with `#` are comments, and can carry these settings.
 | `# norom: note` | note shown when the program is loaded without a ROM. `# norom: off` keeps the program out of the list without a ROM |
 | `# data: ranges` | ranges that are data, not code, e.g. `# data: C100-C17F, C200-C20F` (end address included). The workbench disassembly shows them as `DB` rows; ranges you mark as data in the workbench are written here when you export a `.hex` |
 | `# model: models` | models it runs on (see [Where to put programs](#where-to-put-programs)) |
+| `# pad: mapping` | gamepad mapping (see [Gamepad](#gamepad)), as pairs of gamepad input and pocket computer key separated by spaces: `# pad: dpup=8 dpdown=2 dpleft=4 dpright=6 a=SPC` |
 
 - Addresses can be written as `&C300`, `0xC300` or `C300`.
 - `# setup:` is for programs that move the BASIC area with `EQU#` and put machine code in the space freed.
@@ -137,9 +143,8 @@ Lines starting with `#` are comments, and can carry these settings.
 | every model (BASIC) | directly in the program folder, without `# model:` |
 
 - Programs in `pc1251/` also appear on the PC-1250 and PC-1255, and those in `pc1261/` on the PC-1260 and PC-1262, if their machine code fits in RAM and does not overlap the BASIC area.
-- Files directly in the program folder without `# model:` are taken to work on the models whose RAM or LCD holds every address they load machine code to and every literal `POKE` address. Machine code at C100 means PC-1251 and PC-1245; with neither, every model.
-- A program for another model is not listed. Opening it by path reports "(for PC-1251)" and does not load it.
-- If a program with the same `# title:` is in the current model's folder, only that one is listed, so a program written separately for each model can sit under the same name in each folder.
+- A program for another model is not listed.
+- A program written separately for each model can sit under the same `# title:` in each model's folder.
 
 ### Assembler
 
@@ -151,11 +156,11 @@ uv run python tools/asm61860.py sprite.asm sprite.hex -D MASK=1   # give a value
 uv run python tools/asm61860.py add.asm add.hex --rom 1251        # use names of ROM routines (FADD, KEYSCAN, ...)
 ```
 
-One instruction per line; `label:`, `; comment`, `ORG`, `EQU`, `DB` and `IF`/`ELSE`/`ENDIF` are available. Numbers are decimal; write hexadecimal as `&C000` or `0xC000`. `JR`, `JRZ`, `JRNZ`, `JRC` and `JRNC` pick the forward or backward form (`JRP`, `JRM` and so on) from the target. `lo()` and `hi()` take the low and high byte of a 16-bit value. The full syntax is described at the top of the file. Put the `.hex` together with a `.bas` of the same name in `~/.pc1251/programs/` to run it from the program list.
+One instruction per line; `label:`, `; comment`, `ORG`, `EQU`, `DB` and `IF`/`ELSE`/`ENDIF` are available. Numbers are decimal; write hexadecimal as `&C000` or `0xC000`. `JR`, `JRZ`, `JRNZ`, `JRC` and `JRNC` pick the forward or backward form (`JRP`, `JRM` and so on) from the target. `lo()` and `hi()` take the low and high byte of a 16-bit value. The full syntax is described at the top of the file. Put the `.hex` together with a `.bas` of the same name in `~/.sc61box/programs/` to run it from the program list.
 
 ### Keys
 
-Click the keys on screen with the mouse. Letters, digits, symbols, Enter, Space and the arrow keys on your own keyboard work as well. While a key is being delivered to the ROM waiting for input, the calculator runs eight times faster, which reduces dropped keys and display lag when typing fast (auto-repeat of a held key and keys pressed while a program runs keep the real speed).
+Click the keys on screen with the mouse. Letters, digits, symbols, Enter, Space and the arrow keys on your own keyboard work as well.
 
 | macOS | Windows | Machine |
 | --- | --- | --- |
@@ -164,7 +169,7 @@ Click the keys on screen with the mouse. Letters, digits, symbols, Enter, Space 
 | delete | Backspace | delete one character |
 | fn+delete | Delete | CL |
 | Esc | Esc | BRK (ON while the power is off) |
-| `\` | `\` | ¥ (there is no backslash on the pocket computer, so `\` in files and pasted text is typed as ¥ too) |
+| `\` | `\` | ¥ |
 | Cmd+↑, Cmd+↓ | Ctrl+↑, Ctrl+↓ | move the mode switch up or down one step |
 | Cmd+O | Ctrl+O | program list |
 | Cmd+R | Ctrl+R | the RESET button on the back |
@@ -181,20 +186,61 @@ Click the keys on screen with the mouse. Letters, digits, symbols, Enter, Space 
 | Cmd+K | Ctrl+K | make the arrow keys press 8, 2, 4, 6 on the keypad, or back |
 | Cmd+D | Ctrl+D | show or hide the machine-code workbench (with a ROM) |
 | Cmd+Z | Ctrl+Z | undo a write in the workbench (Shift+Cmd+Z redoes it) |
+| Cmd+A | Ctrl+A | make the workbench cursor address the start address |
+
+The "● Record" button at the right end of the bar or Shift+Cmd+R (Shift+Ctrl+R on Windows) starts and stops recording; Shift+Cmd+P pauses it. Stopping saves a 1280×720 MP4 video with sound, showing an enlarged LCD above the whole calculator, as `rec-<date>-<time>.mp4` in the program folder. On platforms other than Windows, macOS and Linux (x86_64 and aarch64), recording needs an ffmpeg on the PATH.
+
+Shift+Cmd+S (Shift+Ctrl+S on Windows) saves the whole machine state to `~/.sc61box/state-<model>.json` (one per model), and Shift+Cmd+L goes back to it. Start with `--state file` to begin from a saved state. Saving again keeps the previous state with `.bak` added.
+
+Below the calculator is a bar. The buttons "Programs", "Machine" and "View & Input" open short menus with the actions in the table above and more; "Pause" pauses execution and "Speed" picks the speed. Hovering over a button shows what it does and its shortcut. Turn off Japanese input before typing.
+
+In the program list, type `/` and part of a name to show only the programs that match.
 
 On a PC without a numeric keypad, games that use 8, 2, 4 and 6 (up, down, left and right around 5) are easier with Cmd+K (Ctrl+K on Windows, or F7): the arrow keys then press those number keys. Press it again to switch back, or start with `--numpad`.
 
-The "● Record" button at the right end of the bar or Shift+Cmd+R (Shift+Ctrl+R on Windows) starts recording; while recording, the button shows "Recording" with the elapsed time, and pressing it shows "Stop and save recording" and "Pause recording" just above it. Nothing is recorded while paused (also Shift+Cmd+P), and "Resume recording" continues. Stopping saves a 1280×720 MP4 video with sound, showing an enlarged LCD above the whole calculator, as `rec-<date>-<time>.mp4` in the program folder. The ffmpeg used to make the video comes with the imageio-ffmpeg library, which bundles it only for Windows, macOS and Linux (x86_64 and aarch64). Elsewhere the emulator still installs and runs, but recording needs an ffmpeg on the PATH; without one, recording does not start and a warning that ffmpeg was not found appears at the bottom of the window.
+"LCD only" in the "View & Input" menu hides the calculator picture and shows just the LCD across the window. The window can then be resized, so maximizing it fills the screen with the LCD. Type on your keyboard or use a gamepad. To go back, press the "Calculator" button in the bar. Start with `--lcd` to begin in this mode.
 
-Shift+Cmd+S (Shift+Ctrl+S on Windows) saves the RAM, the CPU registers, ports, timers and switch to `~/.pc1251/state-<model>.json` (one per model), and Shift+Cmd+L goes back to it, for example in the middle of a game or to retake a recording. Start with `--state file` to begin from a saved state. Saving again keeps the previous state under the same name with `.bak` added. The export information of the last loaded program (title, `# run:`, `# help:`, dump directives and so on) is saved too and comes back with the state, even if the original file has been edited since. The item "Load state" in the "Machine" menu shows when the state was saved. The tape position and text still being typed from a file are not saved.
+### Gamepad
 
-Below the calculator is a bar. The buttons "Programs" (list, export, paste), "Machine" (save and load the state, undo loading, switch, RESET), and "View & Input" (key help, arrow keys, screenshot, printout, display language) each open a short menu just above the button. With a menu open, clicking another button of the bar does that button's action, and ← → move to the neighbouring menu. "Pause" pauses execution (it turns into "Resume"), and "Speed" shows the current speed and lets you pick one. The "● Record" button at the right end starts, pauses and stops recording. Hovering over a button shows what it does and its shortcut. Right-click opens a short menu with pausing execution, the program list, screenshot and key help (on the paper, the paper actions). The right end of the bar shows the model, the last loaded program and any setting that differs from the default (arrows as number keys, tape). Turn off Japanese input before typing.
+A gamepad connected to the OS (Bluetooth or USB) can press the pocket computer's keys. Any gamepad in SDL's GameController database works (8BitDo, Xbox, PlayStation and Nintendo Switch controllers and so on). Pair it in the OS settings first. The D-pad, A, B, X, Y, L, R, ZL, ZR, Select, Start, the stick buttons and Home each map to one pocket computer key. The left and right sticks act as the D-pad directions, and unmapped inputs do nothing. The initial mapping is D-pad to 8, 2, 4, 6, A to SPACE, B to 0, Start to ENTER and Select to BRK.
 
-In the program list, click the box at the top or type `/`, then type part of a name to show only the programs that match. The `# help:` text of the loaded program can be shown again with "Help for loaded program" in the "Programs" menu. Esc while a program is being loaded (typed in) stops loading.
+#### Changing the mapping
+
+"Gamepad mapping…" in the "View & Input" menu adds a mapping panel below the calculator picture, and the keys of the calculator picture carry tags with the inputs mapped to them (A, ←, …).
+
+1. Press a gamepad button or click a mapping in the panel to select an input.
+2. Click a key on the calculator picture to map it to the selected input. Keys typed without SHIFT can also be mapped by pressing them on your keyboard.
+
+- Delete or Backspace (fn+delete or delete on macOS) clears the mapping of the selected input.
+- Esc while an input is selected cancels the selection; Esc with no input selected closes the panel.
+- While the panel is open, gamepad input is not sent to the pocket computer.
+- Button names follow the SDL convention for the A/B/X/Y positions and may differ from the labels printed on your pad. If they differ, press the button you want to map.
+
+#### Saving the mapping
+
+Mappings can be kept per program. The buttons of the panel save and restore them.
+
+| Button | What it does |
+| --- | --- |
+| Save for this program | writes the current mapping to `pads/programs/<program>.json` in the program folder (`pads/programs/pc1350/<program>.json` for a program in a model folder); it takes precedence over the file's `# pad:` the next time that program is loaded |
+| Save as default | writes `pads/default.json`, used at startup and for programs without `# pad:` |
+| Reset to factory mapping | returns to the initial mapping above |
+| Back to # pad: | returns to the loaded program's `# pad:` |
+| Copy # pad: line | puts the current mapping on the clipboard as a `# pad:` line (see below) |
+
+Delete the file to drop a saved mapping.
+
+#### Writing the mapping in a program file
+
+A program file may contain a line such as `# pad: dpup=8 dpdown=2 dpleft=4 dpright=6 a=SPC`, and loading the program applies that mapping. Only the inputs written are mapped; the others do nothing.
+
+- Write `input=key` pairs separated by spaces. The mapping may be split over several `# pad:` lines.
+- The input names are `dpup`, `dpdown`, `dpleft`, `dpright`, `a`, `b`, `x`, `y`, `leftshoulder`, `rightshoulder`, `lefttrigger`, `righttrigger`, `back`, `start`, `leftstick`, `rightstick` and `guide`.
+- The key names are those of the current model's keys: `SPC`, `ENTER`, `UP`, `DOWN`, `LEFT`, `RIGHT`, `SHIFT`, `DEF`, `BRK`, letters, digits and symbols, plus `CL` on models other than the PC-1350 and `CLS`, `MODE`, `KANA`, `INS` and `DEL` on the PC-1350. A `,` is not a separator; it can be written as the name of the PC-1350's `,` key (`a=,`).
 
 ### Breakout
 
-`programs/pc1251/break.hex` and `break.bas` are a sideways breakout game written in machine code. Move the paddle with ↑ and ↓, serve with Space, and knock bricks out of the wall creeping in from the right. At the start choose 1 (EASY, three-dot paddle) or 2 (NORMAL, two-dot paddle). Each level has one blinking brick; breaking it releases a second ball, and losing one of the two does not cost a life.
+`programs/pc1251/break.hex` and `break.bas` are a sideways breakout game written in machine code. Move the paddle with ↑ and ↓, serve with Space, and knock bricks out of the wall creeping in from the right. At the start choose 1 (EASY, three-dot paddle) or 2 (NORMAL, two-dot paddle). Each level has one blinking brick; breaking it releases a second ball, and losing one of the two does not cost a life. With a gamepad, move the paddle with ↑ and ↓ on the D-pad and serve with A; at the start, choose 1 with X or 2 with Y and press ENTER with Start (the `# pad:` line in `break.bas`).
 
 The PC-1245 version is `break.hex` and `break.bas` in `programs/pc1245/`; the list shows one "breakout" entry for whichever model is running. On the PC-1245 the playing field is 75 columns, the score is shown only after the game, and there is no blinking brick (there is not enough memory for it).
 
@@ -211,14 +257,15 @@ Start the game from the program list, then hold down the number key (1–6) of t
 A printer (a thermal printer that prints 5×7 dot characters) is always connected. When a program prints with `LPRINT` or `LLIST`, a strip of paper comes out below the calculator and feeds a line at a time. On the PC-1251 and PC-1245, pressing SHIFT+ENTER (P↔NP) to show P on the LCD also prints calculations typed by hand.
 
 - Scroll with the mouse wheel over the paper to see earlier lines.
-- The printout is saved automatically as a picture of the paper in the program folder as `print-<date>-<time>.png`, rewritten whenever printing pauses for a second. The file location is shown to the left of the paper; click it, or choose "Open printout folder" in the menu, to open the folder.
+- The printout is saved automatically as a picture of the paper in the program folder as `print-<date>-<time>.png`. Click the location shown to the left of the paper to open the folder.
 - The × to the right of the paper, or "Put the paper away" in the "View & Input" menu, puts the paper away. That ends the sheet; the next printout starts a new sheet and a new file.
+- The printer has its own character set with a character for every code from 00 to FF. BASIC can print only some of them; the rest print when machine code sends the codes to the printer.
 
 ### Cassette audio (wav)
 
 Programs can be exchanged with a real machine as cassette audio (wav files).
 
-- **Emulator to real machine**: type `CSAVE` or `CSAVE M` in RUN mode. The sound the ROM sends to the cassette port is written to the program folder (`~/.pc1251/programs`) as `tape-<date>-<time>.wav`. Play the wav into the real machine's cassette interface and type `CLOAD`/`CLOAD M` on the real machine. `BEEP` sounds are not written.
+- **Emulator to real machine**: type `CSAVE` or `CSAVE M` in RUN mode. The sound the ROM sends to the cassette port is written to the program folder (`~/.sc61box/programs`) as `tape-<date>-<time>.wav`. Play the wav into the real machine's cassette interface and type `CLOAD`/`CLOAD M` on the real machine. `BEEP` sounds are not written.
 - **Real machine to emulator**: record the real machine's `CSAVE` as a wav, drop it onto the window (or start with `--tape file`) to insert it as a tape, then load it with `CLOAD`/`CLOAD M`.
 
 Machine-code wavs made with PocketTools' `bin2wav` or YASM61860's `-w` (with `-old`) load with `CLOAD M`.
@@ -233,17 +280,15 @@ Machine-code wavs made with PocketTools' `bin2wav` or YASM61860's `-w` (with `-o
 | PC-1251 | 4 KB | 3486 bytes |
 | PC-1255 | 10 KB | 9630 bytes |
 
-The program list shows the PC-1251 programs that fit in RAM. The PC-1250's RAM is small, so Breakout and some others are not listed. RAM is saved to `~/.pc1251/ram-1250.bin` and `ram-1255.bin`.
-
-The case is the PC-1251 picture with only the printed model name changed; differences in the real cases (colours, printing, details of the shape) are not reproduced.
+The program list shows the PC-1251 programs that fit in RAM. The PC-1250's RAM is small, so Breakout and some others are not listed. RAM is saved to `~/.sc61box/ram-1250.bin` and `ram-1255.bin`.
 
 ## Running as a PC-1245
 
-With `--model 1245` the emulator starts as a PC-1245. The PC-1245 has the same case size as the PC-1250/1251 and the same SC61860 CPU, but a different ROM. Put its ROM in `rom/` as `cpu-1245.rom` and `bas-1245.rom` (see [Preparing the ROM](#preparing-the-rom)).
+With `--model 1245` the emulator starts as a PC-1245, which uses a ROM different from the PC-1251's. Put its ROM in `rom/` as `cpu-1245.rom` and `bas-1245.rom` (see [Preparing the ROM](#preparing-the-rom)).
 
 ```sh
-uv run pc1251 --model 1245
-uv run pc1251 --model 1245 primes --run
+uv run sc61box --model 1245
+uv run sc61box --model 1245 primes --run
 ```
 
 The program list, exporting, shortcuts and running programs with DEF work as on the PC-1251. The differences are:
@@ -251,67 +296,63 @@ The program list, exporting, shortcuts and running programs with DEF work as on 
 - The LCD has 16 characters. Anything written to the right of the 16th is not visible, so some PC-1251 programs show only part of their display.
 - The breakout sample loads its PC-1245 version (`programs/pc1245/`): a 75-column playing field, the score shown only after the game, and no blinking brick.
 - RAM is 2 KB, and 1486 bytes are free for programs (the value of `MEM`).
-- The mode switch has three positions, PRO, RUN and OFF; there is no RSV. Cmd+↑↓ (Ctrl+↑↓) and the "Machine" menu move only between those three.
+- The mode switch has three positions, PRO, RUN and OFF; there is no RSV.
 - On the A–= and Z–SPC rows, SHIFT followed by a key enters the BASIC keyword printed above it (INPUT, IF, THEN, …, PRINT, USING, …, CLOAD).
-- Parentheses are SHIFT+1 and SHIFT+2 (↓ and ↑ on the PC-1251). Typing `(` or `)` on the PC keyboard is translated into these.
-- RAM is saved to `~/.pc1251/ram-1245.bin` on exit, separately from the PC-1251's `ram.bin`.
+- Parentheses are SHIFT+1 and SHIFT+2. Typing `(` or `)` on the PC keyboard is translated into these.
+- RAM is saved to `~/.sc61box/ram-1245.bin` on exit, separately from the PC-1251's `ram.bin`.
 
-Apart from DEG, which is visible in the photos, the positions of the LCD annunciators are estimates.
+Apart from DEG, the positions of the LCD annunciators are estimates.
 
 ## Running as a PC-1261
 
 With `--model 1261` the emulator starts as a PC-1261, a model with a two-line, 24-column LCD and a ROM different from the PC-1251's. Put its ROM in `rom/` as `cpu-1260.rom` and `bas-1260.rom` (see [Preparing the ROM](#preparing-the-rom)). The PC-1260 and PC-1262 use the same ROM and differ only in RAM size, so `--model 1260` and `--model 1262` use the same files.
 
 ```sh
-uv run pc1251 --model 1261
-uv run pc1251 --model 1261 ball --run     # the bouncing ball sample
-uv run pc1251 --model 1261 hello --run    # load and run the sample hello.bas
-uv run pc1251 --model 1261 lc3-block --run   # compile a breakout game with the LC-3 compiler and play
+uv run sc61box --model 1261
+uv run sc61box --model 1261 ball --run  # the bouncing ball sample
+uv run sc61box --model 1261 hello --run  # load and run the sample hello.bas
+uv run sc61box --model 1261 lc3-block --run  # compile a breakout game with the LC-3 compiler and play
 ```
 
 The program list, export, shortcuts, DEF-key execution and cassette audio work as on the PC-1251. The differences:
 
-- The LCD has two lines of 24 characters. Short LCD bars light above the printed labels BUSY, PRINT, DEG, RAD and ERROR below the display, and カナ (kana), SMALL, SHIFT and DEF sit at the left edge of the LCD from top to bottom. カナ lights in katakana input mode. SMALL marks lowercase input: after `POKE &203C,PEEK &203C AND &7F` in RUN mode, SHIFT+8 toggles lowercase instead of katakana and SMALL lights (turning the power off and on restores katakana). The LCD has no segment for GRAD.
+- The LCD has two lines of 24 characters. Short bars light above the labels BUSY, PRINT, DEG, RAD and ERROR, and カナ (kana), SMALL, SHIFT and DEF sit at the left edge of the LCD. After `POKE &203C,PEEK &203C AND &7F` in RUN mode, SHIFT+8 toggles lowercase (SMALL) instead of katakana.
 - The parentheses are SHIFT+1 and SHIFT+2, and ¥ is SHIFT+6. There is no Exp key, so write exponents with the letter E (`1E3`). Typing `(`, `)` or `¥` on the PC is converted to those key strokes.
 - SHIFT+8 (カナ) switches to katakana input. Each key then enters the kana printed at its lower right, and with SHIFT the one at its upper right; keys marked with a dot give small kana (ァ, ッ and so on) with SHIFT. Kana typed or pasted on the PC (full-width, half-width or hiragana) are entered by switching to kana input and back afterwards; voiced marks become ゛ (SHIFT+−) and ゜ (SHIFT++) after the kana.
 - RAM is 10 KB, with 9342 bytes free (`MEM`). The PC-1260 has 4 KB with 3198 bytes free.
-- The CPU runs 4/3 as fast as the PC-1251. The ROM needs a longer gap between key strokes, so pasted text is typed at about 0.22 seconds per key stroke. A BASIC program loaded from a file goes in at once, as on the other models.
-- Machine-code samples for the PC-1251 (the PC-Interpreter, the mole game, `noise.bas`) are not listed. PC-1261 samples are in `programs/pc1261/`; those that fit in RAM also work on the PC-1260 and PC-1262 (the PC-1260 has too little RAM for LC-3 and its samples). `ball` is machine code in which a ball bounces across both LCD lines while moving right.
-- The LC-3 compiler (by COR, Pocket Computer Journal, June 1989) is included as `programs/pc1261/lc3.hex`. It compiles a game-oriented language with one-byte integers, whose source is typed in as a BASIC program, into machine code. Choosing "LC-3コンパイラ" in the list writes the compiler and moves the BASIC area out of its way. Then type the source in PRO mode, compile it with `CALL &4000` and run it with `CALL &4900`. Three samples from the article (`lc3-hello`, `lc3-move`, `lc3-chars`) and a breakout game written for this emulator (`lc3-block`) compile and run as soon as they are chosen. In the breakout game, move the paddle on the left edge with 8 (up) and 2 (down) to hit the ball back and clear the 40 bricks on the right. Hitting with an end of the paddle sends the ball off diagonally, hitting with the middle sends it straight. There are three balls; when all bricks are gone or no ball is left, the score is shown and a key press starts again. The compiler is `LC-3.bin` from [hiroog/LC3_Compiler](https://github.com/hiroog/LC3_Compiler) (see [Rights](#rights)).
-- RAM is saved to `~/.pc1251/ram-1261.bin` (`ram-1260.bin`, `ram-1262.bin`).
-
-The case picture is drawn from photographs of the PC-1260 and PC-1261. The PC-1260 and PC-1262 use the same picture with only the printed model name changed; differences in their real cases (colours, printing, details of the shape) are not reproduced.
+- Pasted text is typed at about 0.22 seconds per key stroke.
+- PC-1261 samples are in `programs/pc1261/` (the PC-1260 has too little RAM for LC-3 and its samples). `ball` is machine code in which a ball bounces across both LCD lines while moving right.
+- The LC-3 compiler (by COR, Pocket Computer Journal, June 1989) is included as `programs/pc1261/lc3.hex`. It compiles a game-oriented language with one-byte integers, whose source is typed in as a BASIC program, into machine code. Choosing "LC-3コンパイラ" in the list writes the compiler and moves the BASIC area out of its way. Then type the source in PRO mode, compile it with `CALL &4000` and run it with `CALL &4900`. Three samples from the article (`lc3-hello`, `lc3-move`, `lc3-chars`) and a breakout game (`lc3-block`, paddle on 8 and 2) compile and run as soon as they are chosen. The compiler is `LC-3.bin` from [hiroog/LC3_Compiler](https://github.com/hiroog/LC3_Compiler) (see [Rights](#rights)).
+- RAM is saved to `~/.sc61box/ram-1261.bin` (`ram-1260.bin`, `ram-1262.bin`).
 
 ## Running as a PC-1350
 
 With `--model 1350` the emulator starts as a PC-1350, a model with a 150×32 dot LCD (4 lines of 24 characters). Put its ROM in `rom/` as `cpu-1350.rom` and `bas-1350.rom` (see [Preparing the ROM](#preparing-the-rom)). It was tested with the Japanese ROM, which can type katakana.
 
 ```sh
-uv run pc1251 --model 1350
-uv run pc1251 --model 1350 --card 16      # start with a 16 KB RAM card (CE-202M)
-uv run pc1251 --model 1350 hello --run    # load and run the sample hello.bas
-uv run pc1251 --model 1350 ball --run     # the bouncing ball sample
+uv run sc61box --model 1350
+uv run sc61box --model 1350 --card 16  # start with a 16 KB RAM card (CE-202M)
+uv run sc61box --model 1350 hello --run  # load and run the sample hello.bas
+uv run sc61box --model 1350 ball --run  # the bouncing ball sample
 ```
 
 The program list, export, shortcuts, DEF keys and cassette audio (wav) work as on the PC-1251. The differences are:
 
 - There is no mode switch. RUN and PRO are toggled with the MODE key. F1 selects RUN mode and F2 PRO mode (pressing MODE if the current mode differs). The switch at the top right is the power switch; move it with the mouse or with F3 (ON) and F4 (OFF). Programs survive switching off. The ON key (BRK) does not switch on while the switch is OFF.
 - The annunciators RUN, PRO, カナ, SML, SHIFT and DEF are arranged vertically at the left edge of the LCD.
-- The keys follow the PC-1350 layout. Parentheses, `/`, `:`, `;` and `,` are on the numeric side and need no SHIFT; `<`, `>`, `¥` and `^` are SHIFT plus a numeric-side key. Symbols typed on the computer are converted to these key sequences. Delete is DEL, Insert is INS, Home is CLS, and Backspace deletes one character with ◀ and DEL.
+- The keys follow the PC-1350 layout. Parentheses, `/`, `:`, `;` and `,` are on the numeric side and need no SHIFT; `<`, `>`, `¥` and `^` are SHIFT plus a numeric-side key. Symbols typed on the computer are converted to these key sequences. There is no Exp key, so write exponents with the letter E (`1E3`). Delete is DEL, Insert is INS, Home is CLS, and Backspace deletes one character with ◀ and DEL.
 - The カナ key (F8 on the computer) switches to katakana input and SHIFT+カナ to lower-case input (SML). Katakana typed or pasted on the computer (full-width, half-width or hiragana) is typed in katakana input, switching back afterwards. In program files, lower-case letters inside `"` strings are typed as they are, switching to SML; everything else is upper-cased (keywords must be upper case).
 - RAM is the built-in 4 KB, leaving 3070 bytes for programs (the value of `MEM`). `--card 8` and `--card 16` insert an 8 KB or 16 KB RAM card, leaving 11262 or 19454 bytes.
-- The CPU runs at the same speed as the PC-1261. The ROM needs a long gap between key strokes, so pasted text is typed at about 0.25 s per keystroke. A BASIC program loaded from a file goes in at once, as on the other models.
-- Machine-code samples for the PC-1251 are not listed. PC-1350 samples are in `programs/pc1350/`. `ball` is machine code in which a ball bounces between the bottom and the top of the LCD while moving right, squashing with a thud each time it lands.
-- RAM is saved to `~/.pc1251/ram-1350.bin` (with a card, a name including its size such as `ram-1350-16k.bin`).
+- Pasted text is typed at about 0.25 s per keystroke.
+- PC-1350 samples are in `programs/pc1350/`. `ball` is machine code in which a ball bounces between the bottom and the top of the LCD while moving right.
+- RAM is saved to `~/.sc61box/ram-1350.bin` (with a card, a name including its size such as `ram-1350-16k.bin`).
 
 ![The sample hello.bas running on the PC-1350](images/pc1350.png)
-
-The case picture is drawn from a photograph of the PC-1350 taken from directly above, and is wider than the PC-1251 picture.
 
 ## Differences from the real machine
 
 - Cassette input has been checked with recordings of real tapes (they load with `CLOAD`). The wavs the emulator writes have not been played into a real machine yet.
-- The printer uses the calculator ROM's character shapes in place of the printer's own; printing speed and the paper feed key are not reproduced.
+- The printer's printing speed and paper feed key are not reproduced.
 - Different ROM versions have not been checked.
 - BASIC's `PEEK` can read the internal ROM here (according to the documentation, on the real machine only the `DATA` instruction can read it).
 
@@ -323,7 +364,7 @@ The memory map, I/O ports and LCD RAM layout are summarized in an appendix of th
 uv run pytest -q tests
 ```
 
-Tests that need the ROM are skipped when it isn't there. The PC-1245 tests (`tests/test_pc1245.py`) need `rom/cpu-1245.rom` and `rom/bas-1245.rom`, and the PC-1261 tests (`tests/test_pc1261.py`) need `rom/cpu-1260.rom` and `rom/bas-1260.rom`, and the PC-1350 tests (`tests/test_pc1350.py`) need `rom/cpu-1350.rom` and `rom/bas-1350.rom`.
+Tests that need a ROM are skipped when it isn't there.
 
 ## Development
 

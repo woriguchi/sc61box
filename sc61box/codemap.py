@@ -108,16 +108,20 @@ class CodeMap:
             if not self.kind[b]:
                 self.kind[b], self.why[b] = BODY, why
 
+    def _put_row(self, row: disasm.Ins, why: int) -> None:
+        """DTCの表の1行(DB)をデータの行にする"""
+        self.rows[row.addr] = row
+        for i in range(row.size):
+            b = (row.addr + i) & 0xFFFF
+            self.kind[b], self.why[b] = (DATA if i == 0 else DATA_BODY), why
+
     def _put_table(self, at: int, rows: int, why: int) -> list[disasm.Ins]:
         """DTCの次の番地atからの表をデータの行にする。表の行を返す(置けなければ空)"""
         table = disasm.table(self.read, at, rows)
         if not self._free(at, 3 * rows + 2):
             return []
         for row in table:
-            self.rows[row.addr] = row
-            for i in range(row.size):
-                b = (row.addr + i) & 0xFFFF
-                self.kind[b], self.why[b] = (DATA if i == 0 else DATA_BODY), why
+            self._put_row(row, why)
         return table
 
     def _empty(self, a: int) -> bool:
@@ -251,10 +255,7 @@ class CodeMap:
         """命令として読んだ並びを、guessedの命令にする(DTCの表はデータの行)"""
         for ins in seq:
             if ins.name == "DB":  # DTCの表
-                self.rows[ins.addr] = ins
-                for i in range(ins.size):
-                    b = ins.addr + i
-                    self.kind[b], self.why[b] = (DATA if i == 0 else DATA_BODY), GUESS
+                self._put_row(ins, GUESS)
             else:
                 self._put_ins(ins, GUESS)
 

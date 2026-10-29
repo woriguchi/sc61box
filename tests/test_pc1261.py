@@ -6,10 +6,10 @@ import pygame
 from helpers import boot as _boot
 from helpers import finish, lines, make_app, typ
 
-from pc1251emu import basictext, display, keytype, programs
-from pc1251emu.app import Typer
-from pc1251emu.lcdtext import lcd_text
-from pc1251emu.machine import CLOCK, PC1251
+from sc61box import basictext, display, keytype, programs
+from sc61box.app import Typer
+from sc61box.lcdtext import lcd_text
+from sc61box.machine import CLOCK, PC1251
 
 
 def boot(model="1261"):
@@ -144,7 +144,7 @@ def test_programs_for_1261_family():
 def test_tape_round_trip(tmp_path):
     """ROMのCSAVEでwavにし、別の本体でCLOADすると同じプログラムになる
     (CPUの速さが合っていないと、ROMはテープを読み違える)"""
-    from pc1251emu import tape
+    from sc61box import tape
 
     prog = programs.find("hello", "1261")
     assert prog is not None

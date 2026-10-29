@@ -6,6 +6,11 @@ from .keytype import keys_for, keys_for_program
 from .machine import CLOCK, PC1251
 
 
+def _lf(text: str) -> str:
+    """改行をLFにそろえる"""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 class Typer:
     """キー操作の列を、決まった時間ずつ押して順に届ける。時間はエミュレータのサイクルで数える。
 
@@ -171,13 +176,11 @@ class Typer:
         return any(e[:1] != [self.LIVE] for e in self.queue)
 
     def add_text(self, text: str) -> None:
-        text = text.replace("\r\n", "\n").replace("\r", "\n")
-        self.queue.extend(keys_for(text, self.m.model.name))
+        self.queue.extend(keys_for(_lf(text), self.m.model.name))
 
     def add_program(self, text: str) -> None:
         """BASICの行を打つ。79字を超える行は分けて打つ(keytype.keys_for_program)"""
-        text = text.replace("\r\n", "\n").replace("\r", "\n")
-        self.queue.extend(keys_for_program(text, self.m.model.name))
+        self.queue.extend(keys_for_program(_lf(text), self.m.model.name))
 
     def add_keys(self, keys: list[list[str]]) -> None:
         self.queue.extend(keys)

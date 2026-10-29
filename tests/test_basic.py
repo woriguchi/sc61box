@@ -1,19 +1,19 @@
 """PC-1251のROMで電卓、BASIC、PC-インタープリタを動かす
 
-PC-インタープリタはprograms/pcint.hexを使う(環境変数PC1251_PCINT_DUMPで別のファイルにできる)。
+PC-インタープリタはprograms/pcint.hexを使う(環境変数SC61BOX_PCINT_DUMPで別のファイルにできる)。
 """
 
 import os
 
 from helpers import boot, finish, typ
 
-from pc1251emu.app import Typer, parse_hexdump
-from pc1251emu.audio import Buzzer
-from pc1251emu.lcdtext import lcd_text
-from pc1251emu.machine import CLOCK, PC1251
+from sc61box.app import Typer, parse_hexdump
+from sc61box.audio import Buzzer
+from sc61box.lcdtext import lcd_text
+from sc61box.machine import CLOCK, PC1251
 
 DUMP = os.environ.get(
-    "PC1251_PCINT_DUMP",
+    "SC61BOX_PCINT_DUMP",
     os.path.join(os.path.dirname(__file__), "..", "programs", "pcint.hex"),
 )
 
@@ -50,7 +50,7 @@ def _enter_program(text):
 
 def test_long_line():
     """79字を超える行は、途中まで打ってから▶で行末へ行き、続きを足す"""
-    from pc1251emu.basictext import program_text
+    from sc61box.basictext import program_text
 
     line = "20 " + ": ".join(f"PRINT A{i}" for i in range(9))  # 空白込みで100字
     assert len(line) > 79
@@ -74,8 +74,8 @@ FULL = (  # 行番号と中間コードでちょうど79字。後ろに足すだ
 
 def test_full_line_by_inserting():
     """上限ちょうどの長い行は、命令を先に打ってから残りを途中に挿入して入れる"""
-    from pc1251emu.basictext import program_lines, program_text
-    from pc1251emu.keytype import insert_plan
+    from sc61box.basictext import program_lines, program_text
+    from sc61box.keytype import insert_plan
 
     assert insert_plan(FULL) is not None
     m, t = boot()
@@ -94,7 +94,7 @@ def test_full_line_by_inserting():
 def test_exponent_sign():
     """指数のE(4Bh)は「[E]」か「€」で書いて打ち込め、書き出すと「[E]」に戻る。
     英字のE(55h)とは別の字で、指数として計算される"""
-    from pc1251emu.basictext import program_lines, program_text
+    from sc61box.basictext import program_lines, program_text
 
     m, t = _enter_program("10 A=1[E]-8\n20 B=[E]3\n30 C=2.5€2\n40 PRINT A*1[E]8+B+C\n")
     lines = dict(program_lines(m.mem))
@@ -109,7 +109,7 @@ def test_exponent_sign():
 def test_pi_and_words_in_strings():
     """π(19h)は書き出して打ち直せる。文字列の中の中間コードは、LISTと同じく綴りを
     空白で挟んで出す"""
-    from pc1251emu.basictext import keyword_table, line_text, program_lines, program_text
+    from sc61box.basictext import keyword_table, line_text, program_lines, program_text
 
     m, _ = _enter_program("10 A=π*2\n")
     assert dict(program_lines(m.mem))[10] == bytes([0x51, 0x34, 0x19, 0x37, 0x42])
@@ -120,7 +120,7 @@ def test_pi_and_words_in_strings():
 
 def test_after_dump_written_after_run():
     """# after: のダンプは、実行の文字列を打ったあとに書く(DIMで消されない)"""
-    from pc1251emu.programs import Program
+    from sc61box.programs import Program
 
     m, t = boot()
     m.mode = "PRO"
@@ -223,7 +223,7 @@ def test_store_basic_matches_typing():
     MEMも同じで、そのまま動く。長すぎる行があれば置かずに打ち込みに回す"""
     from helpers import typed_and_stored
 
-    from pc1251emu import basictext, keytype
+    from sc61box import basictext, keytype
 
     src = (
         '10 PRINT "GOTO 10";A$:INPUT "X?";X\n'
@@ -246,7 +246,7 @@ def test_store_basic_matches_typing():
 def test_pc1250_and_pc1255():
     """PC-1250とPC-1255はPC-1251のROMで動き、RAMの範囲だけが違う。MEMはカタログの値になり、
     PC-1251用の見本は、番地がRAMに収まりBASICにかからなければ一覧に出る"""
-    from pc1251emu import basictext, programs
+    from sc61box import basictext, programs
 
     for model, start, free in (
         ("1250", 0xC030, "1438"),
@@ -268,7 +268,7 @@ def test_pc1250_and_pc1255():
     assert "pcint" in names["1250"]
     assert "break" not in names["1250"]  # C000からの見本はBASICにかかる
     # 絵はPC-1251のものを使い、型番を刷り替えた本体の絵だけが機種ごとにある
-    from pc1251emu import display
+    from sc61box import display
 
     for model in ("1250", "1255"):
         assert display.asset_path(model, "keys.json") == display.asset_path("1251", "keys.json")

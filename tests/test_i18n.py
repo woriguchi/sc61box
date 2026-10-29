@@ -15,11 +15,11 @@ import pytest
 from conftest import HAVE_ROM, HAVE_ROM_1245, HAVE_ROM_1260, HAVE_ROM_1350
 from helpers import make_app
 
-from pc1251emu import i18n, romsyms
-from pc1251emu.i18n import tr
-from pc1251emu.i18n_en import EN
+from sc61box import i18n, romsyms
+from sc61box.i18n import tr
+from sc61box.i18n_en import EN
 
-SRC = os.path.join(os.path.dirname(__file__), "..", "pc1251emu")
+SRC = os.path.join(os.path.dirname(__file__), "..", "sc61box")
 JAPANESE = re.compile(r"[぀-ヿ一-鿿]")
 
 
@@ -99,10 +99,10 @@ def test_choose_language_order():
     assert choose(environ=env, **linux) == "ja"
     env = {"LC_MESSAGES": "en_US", "LANG": "ja_JP.UTF-8"}
     assert choose(environ=env, **linux) == "en"
-    # メニューで選んだものはロケールより先、PC1251_LANGと--langはそれより先
+    # メニューで選んだものはロケールより先、SC61BOX_LANGと--langはそれより先
     assert choose(remembered="en", environ={"LANG": "ja_JP"}, **linux) == "en"
-    assert choose(remembered="ja", environ={"PC1251_LANG": "en", "LANG": "ja"}, **linux) == "en"
-    assert choose("ja", remembered="en", environ={"PC1251_LANG": "en"}, **linux) == "ja"
+    assert choose(remembered="ja", environ={"SC61BOX_LANG": "en", "LANG": "ja"}, **linux) == "en"
+    assert choose("ja", remembered="en", environ={"SC61BOX_LANG": "en"}, **linux) == "ja"
     assert choose(remembered="xx", environ={"LANG": "ja_JP"}, **linux) == "ja"
     # macOSでロケールがなければ、言語の設定を見る。読めなければja
     assert choose(environ={}, platform="darwin", mac=lambda: "en") == "en"
@@ -132,7 +132,7 @@ def test_mac_language(monkeypatch):
 
 
 def test_wrap_keeps_words():
-    from pc1251emu.overlay import load_help_font, wrap_text
+    from sc61box.overlay import load_help_font, wrap_text
 
     pygame.init()
     font = load_help_font(15)
@@ -162,15 +162,15 @@ def test_switch_language_from_menu(monkeypatch):
     assert "Key help" in labels and "日本語" in labels
     assert app.bar_buttons()[0].label == "Programs"
     app.frame()
-    # 覚えた言語は、ロケールより先、PC1251_LANGより後
-    monkeypatch.delenv("PC1251_LANG")
+    # 覚えた言語は、ロケールより先、SC61BOX_LANGより後
+    monkeypatch.delenv("SC61BOX_LANG")
     monkeypatch.setenv("LANG", "ja_JP.UTF-8")
     monkeypatch.delenv("LC_ALL", raising=False)
     monkeypatch.delenv("LC_MESSAGES", raising=False)
     i18n.set_language("ja")
     make_app("1251", frames=1, norom=True)
     assert i18n.language() == "en"
-    monkeypatch.setenv("PC1251_LANG", "ja")
+    monkeypatch.setenv("SC61BOX_LANG", "ja")
     make_app("1251", frames=1, norom=True)
     assert i18n.language() == "ja"
     make_app("1251", frames=1, norom=True, lang="en")
@@ -179,7 +179,7 @@ def test_switch_language_from_menu(monkeypatch):
 
 def test_switch_mark_in_english():
     """スイッチの位置の●は、英語の画面でも、いまのスイッチの項目につく"""
-    from pc1251emu.overlay import Popup
+    from sc61box.overlay import Popup
 
     app = make_app("1251", frames=1, norom=True, lang="en")
     app.popup = Popup((10, 10), "machine")
@@ -203,9 +203,9 @@ def test_start_field_message_in_english():
 
 def test_export_hex_in_english_reads_back(tmp_path, monkeypatch):
     """英語の画面で書き出した.hexも、読み込める"""
-    from pc1251emu import programs
+    from sc61box import programs
 
-    monkeypatch.setenv("PC1251_PROGRAMS", str(tmp_path))
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
     app = make_app("1251", frames=1, norom=True, lang="en")
     app.bench.paste("C000 02 7F 10 F8 00 52 37")
     app.bench_export()
@@ -223,7 +223,7 @@ def test_export_hex_in_english_reads_back(tmp_path, monkeypatch):
 def test_cli_help_follows_language():
     from typer.testing import CliRunner
 
-    from pc1251emu.app import make_cli
+    from sc61box.app import make_cli
 
     i18n.set_language("en")
     result = CliRunner().invoke(make_cli(), ["--help"])
@@ -237,7 +237,7 @@ def test_cli_help_follows_language():
 
 
 def test_cli_reads_lang_before_typer(monkeypatch):
-    from pc1251emu import app
+    from sc61box import app
 
     assert app._asked_language(["--scale", "2", "--lang", "en"]) == "en"
     assert app._asked_language(["--lang=ja"]) == "ja"
@@ -246,12 +246,11 @@ def test_cli_reads_lang_before_typer(monkeypatch):
 
 def _draw_everything(app) -> None:
     """メニュー、キーの説明、プログラムの一覧、紙、作業欄を、英語で描いてみる"""
-    from pc1251emu.overlay import Popup
+    from sc61box.overlay import Popup
 
     app.frame()
-    p = app.m.printer
-    p.lines.append("TEST")
-    p.count += 1
+    for code in b"TEST\r":
+        app.m.printer.put(code)
     app.frame()
     for kind in ("program", "machine", "view", "speed", "rec", "context", "paper"):
         app.popup = Popup((20, 20), kind)
@@ -286,7 +285,7 @@ def _draw_everything(app) -> None:
 def test_english_screens(model, norom, have, tmp_path, monkeypatch):
     if not have:
         pytest.skip(f"PC-{model}のROMがない")
-    monkeypatch.setenv("PC1251_PROGRAMS", str(tmp_path))
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
     app = make_app(model, frames=5, norom=norom, lang="en")
     assert i18n.language() == "en"
     assert app.bar_buttons()[0].label == "Programs"
@@ -297,9 +296,9 @@ def test_english_screens(model, norom, have, tmp_path, monkeypatch):
 
 
 def test_cli_language_from_environment():
-    """コマンドの説明は、PC1251_LANGで英語になる(ロケールによらない)"""
-    env = {**os.environ, "PC1251_LANG": "en", "PYTHONIOENCODING": "utf-8"}
-    code = "import sys; sys.argv = ['pc1251', '--help']; from pc1251emu.app import cli; cli()"
+    """コマンドの説明は、SC61BOX_LANGで英語になる(ロケールによらない)"""
+    env = {**os.environ, "SC61BOX_LANG": "en", "PYTHONIOENCODING": "utf-8"}
+    code = "import sys; sys.argv = ['pc1251', '--help']; from sc61box.app import cli; cli()"
     out = subprocess.run(
         [sys.executable, "-c", code],
         capture_output=True,

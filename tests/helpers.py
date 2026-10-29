@@ -2,15 +2,15 @@
 
 import os
 import sys
-import types
+from dataclasses import replace
 
 os.environ["SDL_VIDEODRIVER"] = "dummy"
 os.environ["SDL_AUDIODRIVER"] = "dummy"
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from pc1251emu.autotype import Typer  # noqa: E402
-from pc1251emu.lcdtext import lcd_text  # noqa: E402
-from pc1251emu.machine import CLOCK, new_machine  # noqa: E402
+from sc61box.autotype import Typer  # noqa: E402
+from sc61box.lcdtext import lcd_text  # noqa: E402
+from sc61box.machine import CLOCK, new_machine  # noqa: E402
 
 
 def boot(model="1251", card=0, **kw):
@@ -43,13 +43,9 @@ def lines(m):
 
 def make_app(model="1251", frames=40, **kwargs):
     """ウィンドウを出さずにアプリを作り、framesフレーム動かす"""
-    from pc1251emu.app import App
+    from sc61box.app import App, Options
 
-    args = dict(
-        scale=1.0, type=None, load=None, fresh=True, mute=True, persist=1.0, model=model, card=0
-    )
-    args.update(kwargs)
-    app = App(types.SimpleNamespace(**args))
+    app = App(replace(Options(model=model, fresh=True, mute=True), **kwargs))
     for _ in range(frames):
         app.frame()
     return app
@@ -67,7 +63,7 @@ def settle(app, limit=3000):
 
 def typed_and_stored(model, src):
     """srcを打ち込んだ本体と、中間コードを直に置いた本体を作って返す"""
-    from pc1251emu import basictext, keytype
+    from sc61box import basictext, keytype
 
     typed, t = boot(model)
     t.add_mode("PRO")

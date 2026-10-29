@@ -128,6 +128,18 @@ def draw_status(dst: pygame.Surface, font: pygame.font.Font, text: str) -> None:
     dst.blit(box, (x, dst.get_height() - box.get_height() - 12))
 
 
+def _badge(dst: pygame.Surface, font: pygame.font.Font, text: str, icon: str, right: bool) -> None:
+    """窓の上の隅(rightなら右)に、絵つきの短い知らせを出す。iconは_iconの種類で、
+    "rec"なら赤い丸を点滅させる"""
+    label = font.render(text, True, WHITE)
+    w, h = label.get_width() + 34, label.get_height() + 10
+    x, y = (dst.get_width() - w - 10 if right else 10), 10
+    dst.blit(_panel(w, h, 200), (x, y))
+    if icon != "rec" or time.monotonic() % 1 < 0.6:
+        _icon(dst, icon, x + 9, y + h // 2)
+    dst.blit(label, (x + 26, y + 5))
+
+
 def draw_recording(
     dst: pygame.Surface, font: pygame.font.Font, seconds: float, paused: bool = False
 ) -> None:
@@ -135,28 +147,14 @@ def draw_recording(
     sec = int(seconds)
     clock = f"{sec // 60}:{sec % 60:02d}"
     if paused:
-        text = tr("録画を一時停止中 {clock}", clock=clock)
+        _badge(dst, font, tr("録画を一時停止中 {clock}", clock=clock), "pause", right=True)
     else:
-        text = tr("録画中 {clock}", clock=clock)
-    label = font.render(text, True, WHITE)
-    w, h = label.get_width() + 34, label.get_height() + 10
-    x, y = dst.get_width() - w - 10, 10
-    dst.blit(_panel(w, h, 200), (x, y))
-    if paused:
-        _icon(dst, "pause", x + 9, y + h // 2)
-    elif time.monotonic() % 1 < 0.6:  # 赤い丸を点滅させる
-        pygame.draw.circle(dst, (225, 50, 45), (x + 15, y + h // 2), 6)
-    dst.blit(label, (x + 26, y + 5))
+        _badge(dst, font, tr("録画中 {clock}", clock=clock), "rec", right=True)
 
 
 def draw_halted(dst: pygame.Surface, font: pygame.font.Font, text: str) -> None:
     """実行を一時停止していることを窓の左上に出す(録画には入らない)"""
-    label = font.render(text, True, WHITE)
-    w, h = label.get_width() + 34, label.get_height() + 10
-    x, y = 10, 10
-    dst.blit(_panel(w, h, 200), (x, y))
-    _icon(dst, "pause", x + 9, y + h // 2)
-    dst.blit(label, (x + 26, y + 5))
+    _badge(dst, font, text, "pause", right=False)
 
 
 class ProgramMenu:
@@ -509,6 +507,16 @@ class Bar:
     def hit(self, pos) -> int:
         return next((i for i, r in enumerate(self.rects) if r.collidepoint(pos)), -1)
 
+    @staticmethod
+    def _width(font: pygame.font.Font, b: BarButton, short: bool) -> int:
+        text = b.short if short else b.label
+        return (font.size(text)[0] + 20 if text else 6) + (18 if b.icon else 0) + 6
+
+    @classmethod
+    def min_width(cls, font: pygame.font.Font, buttons: list[BarButton]) -> int:
+        """省けないボタンを短い表示で並べたときの幅(窓の幅の下限に使う)"""
+        return 16 + sum(cls._width(font, b, True) for b in buttons if not b.optional)
+
     def draw(self, dst: pygame.Surface, font: pygame.font.Font, top: int, info: str) -> None:
         w = dst.get_width()
         pygame.draw.rect(dst, BAR_BG, (0, top, w, BAR_H))
@@ -516,8 +524,7 @@ class Bar:
         self.rects = []
 
         def width(b, short: bool) -> int:
-            text = b.short if short else b.label
-            return (font.size(text)[0] + 20 if text else 6) + (18 if b.icon else 0) + 6
+            return self._width(font, b, short)
 
         short = sum(width(b, False) for b in self.buttons) > w - 16
         # 短くしても入らなければ、後ろの「?」などの補助のボタンから省く(省いたボタンの
@@ -565,7 +572,7 @@ class Bar:
 
 class Paper:
     """プリンタの感熱紙。字は1字5×7の点で、点を少しずつ濃さを変えて打つ。新しい行が
-    出ると紙が送られて上へずれる。glyphsは{字: 5列}(lcdtext.glyphs)"""
+    出ると紙が送られて上へずれる。fontはプリンタの字の形{コード: 5列}(printer.load_font)"""
 
     ROWS = 5  # 見せる行の数
     COLS = 24  # 1行の字数
@@ -573,11 +580,11 @@ class Paper:
     LINE = 10  # 1行の高さ(点の数。字が7で、行のすき間が3)
     MARGIN = 24  # 字の外側の紙の余白(px)。左右と上下で同じにする
     PAPER = (249, 249, 245)
-    INK = (22, 24, 48)
+    INK = (2, 2, 10)
 
-    def __init__(self, glyphs: dict[str, bytes]) -> None:
-        self.glyphs = glyphs
-        self.cache: dict[tuple[str, int], pygame.Surface] = {}
+    def __init__(self, font: dict[int, bytes]) -> None:
+        self.font = font
+        self.cache: dict[tuple[int, int], pygame.Surface] = {}
         self.feed = 0.0  # 紙送りの残り(px)。0に向かって減る
         self.close_rect = pygame.Rect(0, 0, 0, 0)
         self.where_rect = pygame.Rect(0, 0, 0, 0)  # 保存先の表示
@@ -591,18 +598,18 @@ class Paper:
         """lines行ぶん紙を送る"""
         self.feed += self.DOT * self.LINE * lines
 
-    def _char(self, ch: str, shade: int) -> pygame.Surface:
-        """1字の絵。shadeで点の濃さを少し変える(感熱紙のむら)"""
-        key = (ch, shade)
+    def _char(self, code: int, shade: int) -> pygame.Surface:
+        """コードcodeの字の絵。shadeで点の濃さを少し変える(感熱紙のむら)"""
+        key = (code, shade)
         img = self.cache.get(key)
         if img is None:
             d = self.DOT
             img = pygame.Surface((6 * d, 7 * d), pygame.SRCALPHA)
-            cols = self.glyphs.get(ch, self.glyphs.get("?", bytes(5)))
+            cols = self.font.get(code, bytes(5))
             for c, bits in enumerate(cols):
                 for r in range(7):
                     if bits >> r & 1:
-                        a = 255 - 9 * ((c * 7 + r + shade) % 4)
+                        a = 255 - 4 * ((c * 7 + r + shade) % 4)
                         pygame.draw.rect(img, (*self.INK, a), (c * d, r * d, d - 1, d - 1))
             self.cache[key] = img
         return img
@@ -612,17 +619,17 @@ class Paper:
         pygame.draw.rect(dst, self.PAPER, paper)
         x0, top, pw, h = paper
         for k in range(4):
-            shade = tuple(c - 10 - 5 * (3 - k) for c in self.PAPER)
+            shade = tuple(c - 5 - 3 * (3 - k) for c in self.PAPER)
             pygame.draw.line(dst, shade, (x0 + k, top), (x0 + k, top + h - 1))
             pygame.draw.line(dst, shade, (x0 + pw - 1 - k, top), (x0 + pw - 1 - k, top + h - 1))
 
-    def _rows(self, dst: pygame.Surface, x: int, y: int, rows: list[str], first: int) -> None:
+    def _rows(self, dst: pygame.Surface, x: int, y: int, rows: list[bytes], first: int) -> None:
         """rowsを(x, y)から打つ。firstはrowsの最初の行が何行目か(点のむらを行ごとに変える)"""
         d = self.DOT
         for n, row in enumerate(rows):
-            for k, ch in enumerate(row[: self.COLS]):
-                if ch != " ":
-                    dst.blit(self._char(ch, (first + n) * 7 + k), (x + k * 6 * d, y + 3 * d))
+            for k, code in enumerate(row[: self.COLS]):
+                if any(self.font.get(code, b"")):
+                    dst.blit(self._char(code, (first + n) * 7 + k), (x + k * 6 * d, y + 3 * d))
             y += d * self.LINE
 
     @property
@@ -630,7 +637,7 @@ class Paper:
         # 字は5列の点のあとに1列あけるので、行の右端の字のあとのすき間は数えない
         return (self.COLS * 6 - 1) * self.DOT + 2 * self.MARGIN
 
-    def picture(self, rows: list[str]) -> pygame.Surface:
+    def picture(self, rows: list[bytes]) -> pygame.Surface:
         """印字したすべての行を、紙の絵にする(画像に保存する用)"""
         d, m = self.DOT, self.MARGIN
         h = d * self.LINE * max(1, len(rows)) - 3 * d + 2 * m  # 最後の行の下の3点は数えない
@@ -641,7 +648,7 @@ class Paper:
         self._rows(img, m, m - 3 * d, rows, 0)  # 字は行の頭から3点下に打つ
         return img
 
-    def draw(self, dst: pygame.Surface, top: int, rows: list[str], where: list[str]) -> None:
+    def draw(self, dst: pygame.Surface, top: int, rows: list[bytes], where: list[str]) -> None:
         """rowsの最後の行を紙の下の端に打つ。whereは紙の左に出す保存先の行"""
         w, h, d = dst.get_width(), self.height, self.DOT
         pygame.draw.rect(dst, (28, 30, 34), (0, top, w, h))

@@ -4,8 +4,8 @@ import pygame
 import pytest
 from helpers import make_app
 
-from pc1251emu import app as appmod
-from pc1251emu import workbench
+from sc61box import app as appmod
+from sc61box import benchview
 
 ev = pygame.event.Event
 
@@ -37,7 +37,7 @@ def test_pane_toggles_and_is_remembered(tmp_path, monkeypatch):
     assert not app.norom and not app.pane_open and app.bench.rom
     narrow = app.window.get_width()
     _ctrl(app, pygame.K_d)
-    assert app.pane_open and app.window.get_width() == narrow + workbench.PANE_W
+    assert app.pane_open and app.window.get_width() == narrow + benchview.PANE_W
     labels = [it.label for it in app.popup_items("view")]
     assert "マシン語の作業欄をしまう" in labels
     app.close()
@@ -152,7 +152,7 @@ def _stopped_before_write(app):
 def test_break_when_loading_and_running(tmp_path, monkeypatch):
     """一覧から「読み込んで実行」したときも、止める所で止まる(読み込みを速く回している
     あいだも、止める所を調べる)。止まったときは、まだC100を書いていない"""
-    from pc1251emu import programs
+    from sc61box import programs
 
     src = tmp_path / "inc.hex"
     src.write_text("# run: CALL &C000\nC000 " + INC_C100.hex().upper() + "\n", "utf-8")
@@ -215,9 +215,9 @@ def test_stop_reason_in_rom(tmp_path, monkeypatch):
 def test_export_after_loading_with_rom(tmp_path, monkeypatch):
     """ROMのある本体で読み込んだダンプも、作業欄から書き出すと0のバイトを含めて全部が出る。
     「読み込む前に戻す」と、作業欄の覚えも読み込む前に戻る"""
-    from pc1251emu import programs
+    from sc61box import programs
 
-    monkeypatch.setenv("PC1251_PROGRAMS", str(tmp_path / "out"))
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path / "out"))
     code = bytes.fromhex("79C020") + bytes(29) + bytes.fromhex("027F10F8005237")
     src = tmp_path / "jump.hex"
     lines = [f"{0xC000 + i:04X} {code[i : i + 8].hex().upper()}" for i in range(0, len(code), 8)]
@@ -266,7 +266,7 @@ def test_cancelled_setup_does_not_mark(tmp_path, monkeypatch):
     やめれば入らない。最後まで読み込めば入る"""
     import os
 
-    from pc1251emu import programs
+    from sc61box import programs
 
     path = os.path.join(os.path.dirname(__file__), "..", "programs", "pc1261", "lc3.bas")
     prog = programs.load_program(path)
@@ -288,7 +288,7 @@ def test_cancelled_setup_does_not_mark(tmp_path, monkeypatch):
 
 def test_export_line_in_pane(tmp_path, monkeypatch):
     """作業欄に書き出す範囲と合計のバイト数が出て、クリックすると書き出す"""
-    monkeypatch.setenv("PC1251_PROGRAMS", str(tmp_path / "out"))
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path / "out"))
     app = _rom_app(tmp_path, monkeypatch)
     app.toggle_pane(True)
     app.bench.paste("C000 027F10F8005237")
@@ -306,9 +306,9 @@ def test_export_line_in_pane(tmp_path, monkeypatch):
 def test_export_button_stays_in_pane(tmp_path, monkeypatch, norom, count):
     """書き出す範囲がいくつあっても、書き出しのボタンは作業欄の中の同じ場所にあり、押すと
     書き出す。範囲の説明は作業欄の幅に入る"""
-    from pc1251emu import workbench
+    from sc61box import benchview
 
-    monkeypatch.setenv("PC1251_PROGRAMS", str(tmp_path / "out"))
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path / "out"))
     app = _rom_app(tmp_path, monkeypatch, norom=norom, frames=2)
     app.toggle_pane(True)
     for k in range(count):
@@ -316,7 +316,7 @@ def test_export_button_stays_in_pane(tmp_path, monkeypatch, norom, count):
     app.bench_view._ranges = ([], 0.0)
     app.frame()
     assert len(app.bench.export_ranges()) == count
-    pane = pygame.Rect(app.body_size[0], 0, workbench.PANE_W, app.window.get_height())
+    pane = pygame.Rect(app.body_size[0], 0, benchview.PANE_W, app.window.get_height())
     rect = next(r for r, kind, _a in app.bench_view.hits if kind == "export")
     assert pane.contains(rect) and rect.x == pane.x + 12
     app.handle(ev(pygame.MOUSEBUTTONDOWN, button=1, pos=rect.center))
@@ -328,7 +328,7 @@ def test_export_button_stays_in_pane(tmp_path, monkeypatch, norom, count):
 def test_export_notice_fits(tmp_path, monkeypatch):
     """範囲が多くても、書き出したときの知らせはファイルの名前とバイト数を先に出し、作業欄の
     下の2行に入る"""
-    monkeypatch.setenv("PC1251_PROGRAMS", str(tmp_path / "out"))
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path / "out"))
     app = _rom_app(tmp_path, monkeypatch, norom=True, frames=2)
     for k in range(12):
         app.bench.paste(_hex_text(0xC000 + 0x80 * k, JUMP_CODE))
@@ -358,7 +358,7 @@ def test_unwritable_places_are_reported(tmp_path, monkeypatch):
     blocker = tmp_path / "root-is-file"
     blocker.write_text("x", "utf-8")
     app = _rom_app(tmp_path, monkeypatch, norom=True, frames=2)
-    monkeypatch.setenv("PC1251_PROGRAMS", str(blocker))
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(blocker))
     monkeypatch.setattr(appmod, "STATE_DIR", str(blocker))
     monkeypatch.setattr(app, "reveal", lambda path: None)
     app.bench.paste("C000 37")
@@ -384,7 +384,7 @@ def test_unwritable_places_are_reported(tmp_path, monkeypatch):
 def test_loading_forgets_edits(tmp_path, monkeypatch):
     """ROMのある本体でも、プログラムを読み込むと、前の書き込みは取り消せなくなる
     (読み込んだプログラムを、前の書き込みを戻して壊さない)"""
-    from pc1251emu import programs
+    from sc61box import programs
 
     app = _rom_app(tmp_path, monkeypatch)
     b = app.bench

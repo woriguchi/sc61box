@@ -6,9 +6,9 @@ import pygame
 import pytest
 from helpers import boot, make_app, settle, typed_and_stored
 
-from pc1251emu import basictext, keytype, programs
-from pc1251emu.app import export_program
-from pc1251emu.overlay import Popup, ProgramMenu
+from sc61box import basictext, keytype, programs
+from sc61box.app import export_program
+from sc61box.overlay import Popup, ProgramMenu
 
 
 def _broken_states(path):
@@ -244,7 +244,7 @@ def test_unreadable_dependency(tmp_path, monkeypatch):
     (lib / "uses.bas").write_text("# hex: broken.hex\n10 PRINT 1\n")
     prog = programs.load_program(str(lib / "uses.bas"))
     assert prog.errors and "broken.hex" in prog.errors[0]
-    monkeypatch.setenv("PC1251_PROGRAMS", str(lib))
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(lib))
     app = make_app()
     app.open_menu()
     assert app.menu is not None and any(p.name == "uses" for p in app.menu.items)
@@ -285,7 +285,7 @@ def test_line_too_long_to_type_is_refused():
 
 def test_typed_line_that_differs_stops(monkeypatch):
     """打ち込んだ行の中身が欠けていたら、そのあとの実行と書き込みをしない"""
-    from pc1251emu import app as app_module
+    from sc61box import app as app_module
 
     real = app_module.keys_for_program
     monkeypatch.setattr(app_module, "keys_for_program", lambda t, m: real(t.replace(":Z=7", ""), m))
@@ -325,7 +325,7 @@ def test_yen_and_backslash(model):
     """ポケコンにはバックスラッシュがないので、「\\」は¥として打つ。PC-1251・PC-1245の¥
     (SHIFT+6、文字コード17h)も打てて、打ち込んだものと直に置いたものが同じになり、
     書き出すと¥に戻る"""
-    from pc1251emu import basictext, keytype
+    from sc61box import basictext, keytype
 
     assert keytype.keys_for("\\", model) == keytype.keys_for("¥", model) != []
     typed, stored = typed_and_stored(model, '10 A$="\\1¥"\n')
@@ -340,7 +340,7 @@ def test_yen_and_backslash(model):
 def test_small_e_is_letter():
     """小文字のeは、数のあとでも英字のまま(指数は[E]か€で書く。PC-1261などでは英小文字を
     打てるので、指数とは決められない)"""
-    from pc1251emu.keytype import EXP, normalize
+    from sc61box.keytype import EXP, normalize
 
     assert normalize("10 A=1e-8:B=1[E]-8:C=1€-8") == f"10 A=1e-8:B=1{EXP}-8:C=1{EXP}-8"
 
@@ -348,7 +348,7 @@ def test_small_e_is_letter():
 @pytest.mark.parametrize("model", ["1251", "1261", "1350"])
 def test_euro_stores_like_exp(model):
     """€で書いた指数は、[E]で書いたものと同じ中間コードになる"""
-    from pc1251emu import basictext, keytype
+    from sc61box import basictext, keytype
 
     m, _ = boot(model)
     one = basictext.encode_program(keytype.typed_text("10 A=1€-8\n", model), m.mem)

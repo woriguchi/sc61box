@@ -71,8 +71,8 @@ EN: dict[str, str | tuple[str, str]] = {
     "表示": "View",
     "一覧、書き出し、貼り付け(一覧は{c}O)": "List, export, paste (list: {c}O)",
     "状態の保存と復元、スイッチ、RESET": "Save and load state, switch, RESET",
-    "キーの説明({c}/)、矢印キーの割り当て、画面の画像、印字": (
-        "Key help ({c}/), arrow keys, screenshot, printout"
+    "キーの説明({c}/)、矢印キー・ゲームパッドの割り当て、液晶だけ、画面の画像、印字": (
+        "Key help ({c}/), arrow keys, gamepad, LCD only, screenshot, printout"
     ),
     "止めている実行を続ける({c}P)": "Resume execution ({c}P)",
     "実行を再開": "Resume",
@@ -114,6 +114,20 @@ EN: dict[str, str | tuple[str, str]] = {
     "矢印キーを↑↓◀▶に戻す": "Arrow keys back to ↑↓◀▶",
     "矢印キーを8・2・4・6にする": "Arrow keys as 8, 2, 4, 6",
     "キーの説明": "Key help",
+    "本体の絵を出す": "Show the calculator",
+    "液晶だけのあいだは出せません": "Not available while showing only the LCD",
+    "◀ 作業欄": "◀ Workbench",
+    "作業欄 ▶": "Workbench ▶",
+    "マシン語の作業欄をしまう({c}D)": "Hide the machine-code workbench ({c}D)",
+    "マシン語の作業欄を出す({c}D)": "Show the machine-code workbench ({c}D)",
+    "本体を出す": "Calculator",
+    "本体の絵を出す(窓の大きさは固定に戻ります)": (
+        "Show the calculator (the window size is fixed again)"
+    ),
+    "液晶だけにする(窓を広げられる)": "LCD only (window can be resized)",
+    "本体の絵を出さず、液晶だけを見せる(窓の大きさを変えられる)": (
+        "Show only the LCD without the calculator picture (the window can be resized)"
+    ),
     "画面を画像で保存": "Save screenshot",
     "マシン語の作業欄をしまう": "Hide workbench",
     "マシン語の作業欄を出す": "Show workbench",
@@ -299,8 +313,8 @@ EN: dict[str, str | tuple[str, str]] = {
     "ROMを使わず、マシン語の作業欄で動かす(ROMがなければ自動でこうなる)": (
         "Run without the ROM, in the machine-code workbench (automatic when there is no ROM)"
     ),
-    "画面の言語(jaかen)。なければPC1251_LANG、メニューで選んだもの、ロケールの順": (
-        "Display language (ja or en). Otherwise PC1251_LANG, the menu choice, then the locale"
+    "画面の言語(jaかen)。なければSC61BOX_LANG、メニューで選んだもの、ロケールの順": (
+        "Display language (ja or en). Otherwise SC61BOX_LANG, the menu choice, then the locale"
     ),
     "版を出して終わる": "Print the version and exit",
     "言語はjaかenです": "The language must be ja or en",
@@ -315,11 +329,11 @@ EN: dict[str, str | tuple[str, str]] = {
     ),
     "音を切ります({error})": "Sound off ({error})",
     "ROMのファイル{name}が見つかりません。実機から読み出した内部ROM(cpu-{model}.rom、"
-    "8KB)とBASIC ROM(bas-{model}.rom、{kb}KB)をrom/に置くか、環境変数PC1251_ROMに"
+    "8KB)とBASIC ROM(bas-{model}.rom、{kb}KB)をrom/に置くか、環境変数SC61BOX_ROMに"
     "置き場所を指定してください(READMEの「ROMの用意」)。": (
         "ROM file {name} not found. Put the internal ROM (cpu-{model}.rom, 8 KB) and the"
         " BASIC ROM (bas-{model}.rom, {kb} KB) read from a real machine in rom/, or set the"
-        ' environment variable PC1251_ROM to their folder (see "Preparing the ROM" in the'
+        ' environment variable SC61BOX_ROM to their folder (see "Preparing the ROM" in the'
         " README)."
     ),
     "{path}は{have}バイトしかありません。{name}は{size}バイト({kb}KB)必要です。": (
@@ -598,4 +612,48 @@ EN: dict[str, str | tuple[str, str]] = {
     "✓:実行済み　.:静的解析　?:推定　U:ユーザ指定": (
         "Marks at right  ✓: executed  .: static analysis  ?: guessed  U: user-specified"
     ),
+    "データの置き場所を~/.sc61boxに移しました({old}はそこへのリンク)": (
+        "Moved the data folder to ~/.sc61box ({old} now links to it)"
+    ),
+    # ---- ゲームパッド ----
+    "ゲームパッドの割り当て…": "Gamepad mapping…",
+    "{names}がつながっています": "{names} connected",
+    "パッドはつながっていません": "No gamepad connected",
+    "ゲームパッドの割り当て": "Gamepad mapping",
+    "パッドがつながっていません(つなぐとここに出ます)": (
+        "No gamepad connected (it appears here once connected)"
+    ),
+    "このプログラム用に保存": "Save for this program",
+    "既定として保存": "Save as default",
+    "初期設定に戻す": "Reset to factory mapping",
+    "# pad: に戻す": "Back to # pad:",
+    "# pad: の行をコピー": "Copy # pad: line",
+    "いまの割り当て: {source}": "Current mapping: {source}",
+    "{name}に割り当てるキーを、本体の絵でクリックするか、パソコンで打ちます。"
+    "Deleteで割り当てを外し、Escでやめます": (
+        "Click a key on the pocket computer or press one on your keyboard to map it to {name}. "
+        "Delete clears the mapping, Esc cancels"
+    ),
+    "パッドのボタンを押すか、下の割り当てをクリックすると、その割り当てを変えられます": (
+        "Press a gamepad button or click a mapping below to change it"
+    ),
+    "下の割り当てをクリックすると、その割り当てを変えられます": (
+        "Click a mapping below to change it"
+    ),
+    "ボタンの名前はA・B・X・Yの位置の約束(SDL)で、パッドの印字と違うことがあります。"
+    "印字と違うときは、割り当てたいボタンを実際に押して選んでください": (
+        "Button names follow the SDL convention for the A/B/X/Y positions and may differ from "
+        "the labels on your pad. If they do, press the button you want to map to select it"
+    ),
+    "対象: (プログラムを読み込んでいません)": "Target: (no program loaded)",
+    "対象: {name}": "Target: {name}",
+    "(変更あり、保存していません)": " (edited, not saved)",
+    "{name}用に保存したもの": "saved for {name}",
+    "{name}の# pad:": "# pad: of {name}",
+    "# pad: の{text}が読めません": "Cannot read {text} in # pad:",
+    "保存した既定": "saved default",
+    "初期設定": "factory mapping",
+    "# pad: の行をクリップボードにコピーしました": "Copied the # pad: line to the clipboard",
+    "割り当てを保存できません: {error}": "Cannot save the mapping: {error}",
+    "割り当てを{path}に保存しました": "Saved the mapping to {path}",
 }

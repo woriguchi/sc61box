@@ -1,6 +1,7 @@
 # title: ブロック崩し(マシン語)
 # norom: ROMなしでは難しさを聞かずにEASYで始める(C5DF番地を00にしてから実行するとNORMAL)。
 # norom: ↑↓でパドル、SPACEで打ち出す。得点は終わったあとC5F6〜C5FA番地に1桁ずつ残る
+# pad: dpup=UP dpdown=DOWN a=SPC x=1 y=2 start=ENTER back=BRK
 # 同じ名前のbreak.hexを先に書き込み、CALL &C100で遊ぶ。↑↓でパドル、SPACEで打ち出す
 # 1(easy)はパドル3段で遅め、2(normal)はパドル2段。C5DF番地に書いてから呼ぶ
 # 得点は遊んでいるあいだは出ない。終わったあとC5F6〜C5FA番地に1桁ずつ残っている

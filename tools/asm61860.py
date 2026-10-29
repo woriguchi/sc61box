@@ -17,7 +17,7 @@
 
 出力は「番地 データ ; 命令  コメント」の行を並べた.hex(このエミュレータの
 16進ダンプの形式)。-Dで名前に値をつけて渡せる。--rom 1251(または1245)を付けると、
-ROMのルーチンの名前(FADD、KEYSCANなど。pc1251emu/romsyms.py)が使える。
+ROMのルーチンの名前(FADD、KEYSCANなど。sc61box/romsyms.py)が使える。
 
     uv run python tools/asm61860.py vline.asm vline.hex
     uv run python tools/asm61860.py sprite.asm sprite.hex -D MASK=1
@@ -346,7 +346,7 @@ def main(
     defines = {}
     if rom:
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-        from pc1251emu.romsyms import symbols
+        from sc61box.romsyms import symbols
 
         try:
             defines.update(symbols(rom))

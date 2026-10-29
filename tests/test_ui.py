@@ -4,7 +4,7 @@ import pygame
 import pytest
 from helpers import make_app
 
-from pc1251emu import programs
+from sc61box import programs
 
 ev = pygame.event.Event
 
@@ -83,7 +83,7 @@ def test_record_buttons(tmp_path, monkeypatch):
     """操作欄の「録画」で録り始めると、そのボタンが録画中の印と経過時間になる。押すと、
     そのすぐ上に止めるか一時停止するかのメニューが出る。録画の一時停止のあいだは動画に
     入らず、実行は止まらない"""
-    monkeypatch.setenv("PC1251_PROGRAMS", str(tmp_path))
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
     app = make_app()
     app.frame()
 
@@ -179,7 +179,7 @@ def test_halt_stops_machine():
 
 def test_undo_loading(tmp_path, monkeypatch):
     """プログラムを読み込むと、直前の状態を取っておき、メニューから戻せる"""
-    monkeypatch.setenv("PC1251_PROGRAMS", str(tmp_path))
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
     app = make_app()
     for _ in range(20):
         app.frame()
@@ -214,7 +214,7 @@ def test_saved_state_time_in_menu(tmp_path, monkeypatch):
 
 def test_undo_restores_program_info(tmp_path, monkeypatch):
     """読み込む前に戻すと、書き出しに使うプログラムの情報(名前、# run:、# hex:)も戻る"""
-    monkeypatch.setenv("PC1251_PROGRAMS", str(tmp_path))
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
     app = make_app()
     alpha = programs.Program(name="alpha", title="アルファ", basic="10 PRINT 111\n")
     beta = programs.Program(name="beta", title="ベータ", basic="10 PRINT 222\n", run="CALL &C300")
@@ -238,7 +238,7 @@ def test_state_file_keeps_program(tmp_path, monkeypatch):
     保存したときの情報で書き出す。情報のない古い状態のファイルでは、前の情報を使わない"""
     import json
 
-    monkeypatch.setenv("PC1251_PROGRAMS", str(tmp_path))
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
     src = tmp_path / "example.bas"
     src.write_text("# title: Alpha\n# run: RUN\n# help: Alpha help\n10 PRINT 111\n", "utf-8")
     app = make_app()
@@ -285,8 +285,8 @@ def _pro(app, model):
 def test_fast_typing_keeps_up(model):
     """パソコンのキーを速く(1フレームに1字)打っても、ROMの入力待ちに届けるあいだは速く回す
     ので、取りこぼさずに遅れもたまらない"""
-    from pc1251emu import basictext
-    from pc1251emu.keytype import keys_for
+    from sc61box import basictext
+    from sc61box.keytype import keys_for
 
     app = make_app(model=model)
     _pro(app, model)
@@ -314,8 +314,8 @@ def test_fast_typing_keeps_up(model):
 def test_held_key_repeats_at_real_speed(monkeypatch):
     """押し続けたキーの繰り返し(ROMが数える)は、速く回さずに実時間のまま。速く回さない
     ときと、液晶が変わる回数と、繰り返しが始まるまでの時間がそろう"""
-    from pc1251emu import app as app_module
-    from pc1251emu.lcdtext import lcd_text
+    from sc61box import app as app_module
+    from sc61box.lcdtext import lcd_text
 
     def changes(rush):
         monkeypatch.setattr(app_module, "RUSH", rush)
@@ -461,7 +461,7 @@ def test_keys_during_program_are_not_rushed():
 def test_rush_does_not_stretch_recording(tmp_path, monkeypatch):
     """キーを速く届けたあいだは音にしないので、録画の長さは実際に動かしたフレームの数と
     そろう(速く回した分だけ動画が引き延ばされない)"""
-    monkeypatch.setenv("PC1251_PROGRAMS", str(tmp_path))
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
     app = make_app()
     _pro(app, "1251")
     app.typer.add_text("NEW\n")
@@ -550,7 +550,7 @@ def test_same_key_from_two_sources():
 
 def test_brk_from_two_sources():
     """BRKキーも、EscキーとマウスでBRKを押しているときは、片方を離しても押したまま"""
-    from pc1251emu import display
+    from sc61box import display
 
     app = make_app()
     m = app.m

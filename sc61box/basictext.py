@@ -81,7 +81,9 @@ def _parse_run(rom: bytes, i: int) -> tuple[dict[int, str], int]:
 
 
 def program_lines(mem, start: int = PROG_START) -> list[tuple[int, bytes]]:
-    """(行番号, 中身)の列。プログラムがなければ空"""
+    """(行番号, 中身)の列。プログラムがなければ空。memのROMがS1系なら、その形で読む"""
+    if is_s1(mem):
+        return program_lines_s1(mem, start)
     out = []
     a = start + 1 if mem[start] == 0xFF else start
     while a < 0xC800:
@@ -135,12 +137,11 @@ def line_text(body: bytes, keywords: dict[int, str]) -> str:
 
 def program_text(mem, keywords: dict[int, str] | None = None, start: int = PROG_START) -> str:
     """RAMのプログラムをBASICの文字にする。startはプログラムの先頭(machine.program_start)"""
-    if is_s1(mem):
-        kw = keywords if keywords is not None else keyword_table_s1(mem)
-        lines = program_lines_s1(mem, start)
-        return "".join(f"{n} {line_text_s1(body, kw)}\n" for n, body in lines)
-    kw = keywords if keywords is not None else keyword_table(mem)
-    return "".join(f"{n} {line_text(body, kw)}\n" for n, body in program_lines(mem, start))
+    s1 = is_s1(mem)
+    if keywords is None:
+        keywords = keyword_table_s1(mem) if s1 else keyword_table(mem)
+    text = line_text_s1 if s1 else line_text
+    return "".join(f"{n} {text(body, keywords)}\n" for n, body in program_lines(mem, start))
 
 
 # 行番号の桁と中身(中間コード)を合わせて79字まで。長い行は、打ち込むと切れる

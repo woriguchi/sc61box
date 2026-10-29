@@ -105,7 +105,7 @@ def font_addr(code: int) -> int:
 
 def install(m) -> None:
     """文字の形の表を、ROMの番地に書く(ROMなしの本体だけ)"""
-    if not getattr(m, "norom", False):
+    if not m.norom:
         return
     for code, ch in CHARS.items():
         if 0x11 <= code < 0x20 or 0x30 <= code < 0x6B:
@@ -114,21 +114,15 @@ def install(m) -> None:
 
 
 # キーの名前(machine.KEYS)から、ROMのキーを読むルーチンが返す本体の文字コードへ。
-# 英字・数字・記号は文字コードの表から引く。ほかは『SC61860入門』で確かめたものだけ
-SPECIAL_KEYS = {"ENTER": 0x00, "CL": 0x02, "LEFT": 0x0F, "SPC": 0x11}
-_BY_CHAR = {ch: code for code, ch in CHARS.items() if len(ch) == 1}
-
-
-def key_code(name: str) -> int | None:
-    if name in SPECIAL_KEYS:
-        return SPECIAL_KEYS[name]
-    return _BY_CHAR.get(name)
+# 英字・数字・記号は文字コードの表から引く。ほかは確かめたものだけ
+KEY_CODES = {ch: code for code, ch in CHARS.items() if len(ch) == 1}
+KEY_CODES.update({"ENTER": 0x00, "CL": 0x02, "LEFT": 0x0F, "SPC": 0x11})
 
 
 def _keyscan(m) -> None:
     """1F44: キーを1回読む。押されていればCを1、Aに本体の文字コード。なければCを0"""
     cpu = m.cpu
-    codes = sorted(c for c in (key_code(k) for k in m.held) if c is not None)
+    codes = sorted(KEY_CODES[k] for k in m.held if k in KEY_CODES)
     if codes:
         cpu.ram[2] = codes[0]
         cpu.c = 1
@@ -152,10 +146,9 @@ ROUTINES = {
 
 def call(m, addr: int) -> bool:
     """addrがまねられるROMのルーチンの入口なら、働きをまねて呼んだ所へ戻し、Trueを返す"""
-    hit = ROUTINES.get(addr) if getattr(m, "norom", False) else None
-    if hit is None:
+    if not m.norom or addr not in ROUTINES:
         return False
-    _name, fn, cycles = hit
+    _name, fn, cycles = ROUTINES[addr]
     fn(m)
     cpu = m.cpu
     lo = cpu.pop()

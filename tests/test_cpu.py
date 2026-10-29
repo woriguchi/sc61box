@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from pc1251emu.sc61860 import SC61860, A, B, Bus  # noqa: E402
+from sc61box.sc61860 import SC61860, A, B, Bus  # noqa: E402
 
 
 class FlatBus(Bus):

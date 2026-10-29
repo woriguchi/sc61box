@@ -6,8 +6,8 @@ import re
 import pygame
 from helpers import make_app, settle
 
-from pc1251emu.lcdtext import lcd_text
-from pc1251emu.overlay import ProgramMenu
+from sc61box.lcdtext import lcd_text
+from sc61box.overlay import ProgramMenu
 
 
 def test_app_types_and_computes():
@@ -30,7 +30,7 @@ def test_switch_knob_matches_label():
     import numpy as np
     from PIL import Image
 
-    from pc1251emu import display
+    from sc61box import display
 
     # 本体の絵での、スイッチの溝のまんなかのxと、溝の中のyの範囲
     slots = {"1251": (1347, 88, 187), "1245": (1344, 81, 191)}
@@ -109,7 +109,7 @@ def test_shortcuts_and_popup():
 
 def test_menu_scrolls():
     """入りきらない一覧は、ホイールとPageDownで動き、選んでいる行は見える範囲に残る"""
-    from pc1251emu import programs
+    from sc61box import programs
 
     app = make_app()
     items = programs.scan() * 3
@@ -136,7 +136,7 @@ def test_menu_scrolls():
 
 def test_run_list_keys():
     """一覧はEnterで読み込んで実行し、Shift+Enterでは読み込むだけ。Rで読み直せる"""
-    from pc1251emu import basictext
+    from sc61box import basictext
 
     app = make_app()
     ev = pygame.event.Event
@@ -178,8 +178,8 @@ def test_open_basic_and_hex_pair(tmp_path=None):
     """同じ名前の.basと.hexを組にして読み込み、#run:で実行できる"""
     import tempfile
 
-    from pc1251emu import programs
-    from pc1251emu.machine import CLOCK
+    from sc61box import programs
+    from sc61box.machine import CLOCK
 
     d = tmp_path or tempfile.mkdtemp()
     with open(os.path.join(d, "pair.hex"), "w") as f:
@@ -203,7 +203,7 @@ def test_open_basic_and_hex_pair(tmp_path=None):
 
 def test_samples_load():
     """リポジトリのprograms/にある見本が読め、PROモードでLISTできる"""
-    from pc1251emu import programs
+    from sc61box import programs
 
     here = os.path.join(os.path.dirname(__file__), "..", "programs")
     items = programs.scan([here])
@@ -229,7 +229,7 @@ def test_samples_load():
 
 def test_mogura_on_pc_interpreter():
     """もぐらたたき(# hex: でPC-インタープリタを読む)で、出た穴の数字キーを押すと得点が入る"""
-    from pc1251emu import programs
+    from sc61box import programs
 
     prog = programs.find("mogura")
     assert prog is not None
@@ -253,7 +253,7 @@ def test_mogura_on_pc_interpreter():
 
 def test_display_stays_on_while_computing():
     """見本noise.bas: CALLで表示をオンにすると、計算中も表示が消えず、棒が伸びる"""
-    from pc1251emu import programs
+    from sc61box import programs
 
     app = make_app()
     m = app.m
@@ -279,7 +279,7 @@ BALL2 = 0xBF84  # break.asmの2個目の玉
 
 
 def _play_breakout(level: str, height: int, model: str = "1251") -> None:
-    from pc1251emu import programs
+    from sc61box import programs
 
     app = make_app(model)
     m = app.m
@@ -364,7 +364,7 @@ def _play_breakout(level: str, height: int, model: str = "1251") -> None:
 
 
 def _start_breakout(app, level="2", model="1251"):
-    from pc1251emu import programs
+    from sc61box import programs
 
     app.open_program(programs.find("break", model), run=True)
     while app.typer.busy:
@@ -411,7 +411,7 @@ def _to_play(m, model="1251"):
 
 def test_model_folders(tmp_path, monkeypatch):
     """置き場所の直下はどの機種でも、pc1251/とpc1245/はその機種用。同じ名前でも別に並ぶ"""
-    from pc1251emu import programs
+    from sc61box import programs
 
     (tmp_path / "pc1245").mkdir()
     (tmp_path / "pc1251").mkdir()
@@ -422,7 +422,7 @@ def test_model_folders(tmp_path, monkeypatch):
     (tmp_path / "pc1245" / "uses.bas").write_text(
         "# hex: code.hex\n10 CALL &C100\n", encoding="utf-8"
     )
-    monkeypatch.setenv("PC1251_PROGRAMS", str(tmp_path))
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
     items = programs.scan([str(tmp_path)])
     assert sorted((p.name, p.model) for p in items) == [
         ("both", ""),
@@ -445,7 +445,7 @@ def test_model_folders(tmp_path, monkeypatch):
 def test_shared_programs_at_top(tmp_path):
     """直下に# model:で機種を並べたものは、その機種の一覧に出る。機種のフォルダに同じ名前の
     ものがあれば、その機種ではフォルダのものだけが出る"""
-    from pc1251emu import programs
+    from sc61box import programs
 
     (tmp_path / "pc1261").mkdir()
     (tmp_path / "game.bas").write_text(
@@ -461,7 +461,7 @@ def test_shared_programs_at_top(tmp_path):
 
 def test_bundled_programs_follow_layout():
     """機種のフォルダの見本には# model:がなく、直下で番地を使う見本には機種が2つ以上ある"""
-    from pc1251emu import programs
+    from sc61box import programs
 
     here = os.path.join(os.path.dirname(__file__), "..", "programs")
     for p in programs.scan([here]):
@@ -475,7 +475,7 @@ def test_bundled_programs_follow_layout():
 
 def test_helper_dumps_hidden(tmp_path):
     """# hex:や# after:で使われるだけのダンプは一覧に出さず、大きさは使う側に出る"""
-    from pc1251emu import programs
+    from sc61box import programs
 
     (tmp_path / "game.bas").write_text("# after: game-ml.hex\n10 DIM A$(9)\n", encoding="utf-8")
     (tmp_path / "game-ml.hex").write_text("C530 00 01 02\n", encoding="utf-8")
@@ -491,7 +491,7 @@ def test_helper_dumps_hidden(tmp_path):
 
 def test_yasm_dump():
     """YASM61860の16進ダンプを.hexとして読める(行の途中から始まる所は空白で埋めてある)"""
-    from pc1251emu import programs
+    from sc61box import programs
 
     # ORG &C103に01〜0B、ORG &C200にAA BBを置いたときの出力
     text = "\n\nc100 :          01 02 03 04 05 : 0f\nc108 : 06 07 08 09 0a 0b \n\nc200 : aa bb "
@@ -511,8 +511,8 @@ def test_yasm_dump():
 
 def test_bin_link(tmp_path):
     """# bin: で.binを番地を添えて読み込む。# after: でも使える。番地がなければエラー"""
-    from pc1251emu import programs
-    from pc1251emu.app import export_program
+    from sc61box import programs
+    from sc61box.app import export_program
 
     (tmp_path / "code.bin").write_bytes(bytes([0x12, 0x34, 0x56]))
     (tmp_path / "late.bin").write_bytes(bytes([0x9A]))
@@ -547,7 +547,7 @@ def test_bin_link(tmp_path):
 
 def test_ball_runs():
     """弾むボールは、どちらの機種でも液晶の全幅を弾んで進み、BRKでBASICへ戻る"""
-    from pc1251emu import programs
+    from sc61box import programs
 
     for model, org in (("1251", 0xC000), ("1245", 0xC100)):
         app = make_app(model)
@@ -592,7 +592,7 @@ def test_ball_runs():
 
 def test_scroll_runs():
     """文字を流すマシン語は、液晶の全幅を1コマで1列ずつずらして写し、BRKでBASICへ戻る"""
-    from pc1251emu import programs
+    from sc61box import programs
 
     for model, org in (("1251", 0xC000), ("1245", 0xC100)):
         rows = _hex_rows(_hex_path(model, "scroll.hex"))
@@ -723,8 +723,8 @@ def test_grid_disappears_when_power_is_off():
 
 def test_sound_has_no_gaps_between_frames():
     """1フレーム(CLOCK/30サイクル)ずつ音を作っても、1秒でちょうどRATE個の標本になる"""
-    from pc1251emu.audio import RATE, Buzzer
-    from pc1251emu.machine import CLOCK
+    from sc61box.audio import RATE, Buzzer
+    from sc61box.machine import CLOCK
 
     b = Buzzer()
     per = CLOCK // 30
@@ -739,8 +739,8 @@ def test_export_basic_round_trip(tmp_path=None):
     """RAMのプログラムを.basに書き出し、打ち込み直すと同じ中間コードになる"""
     import tempfile
 
-    from pc1251emu import basictext, programs
-    from pc1251emu.app import export_program
+    from sc61box import basictext, programs
+    from sc61box.app import export_program
 
     d = str(tmp_path or tempfile.mkdtemp())
     app = make_app()
@@ -864,7 +864,7 @@ def test_arrows_as_numpad():
 
 def test_symbol_shadow_cleared():
     """表示記号が消えると、その影も残らない"""
-    from pc1251emu import display
+    from sc61box import display
 
     app = make_app()
     p = app.panel
@@ -928,7 +928,7 @@ class _Speaker:
         self.pcm: list[bytes] = []
 
     def level(self) -> int:
-        from pc1251emu.audio import TARGET
+        from sc61box.audio import TARGET
 
         return TARGET
 
@@ -975,8 +975,8 @@ def test_sound_at_other_speeds():
     from array import array
     from itertools import pairwise
 
-    from pc1251emu.app import FPS
-    from pc1251emu.audio import RATE
+    from sc61box.app import FPS
+    from sc61box.audio import RATE
 
     for speed in (2, 0.5):
         app = make_app()
@@ -1011,8 +1011,8 @@ def test_sound_at_other_speeds():
 
 def test_tape_round_trip(tmp_path):
     """ROMのCSAVEで作ったwavを、別の本体でCLOAD・CLOAD Mすると元と同じになる"""
-    from pc1251emu import basictext, programs, tape
-    from pc1251emu.machine import CLOCK, PC1251
+    from sc61box import basictext, programs, tape
+    from sc61box.machine import CLOCK, PC1251
 
     prog = programs.find("break", "1251")
     assert prog is not None
@@ -1035,10 +1035,10 @@ def test_tape_round_trip(tmp_path):
 
 def test_csave_writes_wav(tmp_path, monkeypatch):
     """画面でCSAVEすると置き場所にwavができ、別の本体でCLOADすると元に戻る。BEEPはwavにしない"""
-    from pc1251emu import basictext, tape
-    from pc1251emu.machine import CLOCK, PC1251
+    from sc61box import basictext, tape
+    from sc61box.machine import CLOCK, PC1251
 
-    monkeypatch.setenv("PC1251_PROGRAMS", str(tmp_path))
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
     app = make_app()
     app.turbo = 8
     app.typer.add_text("BEEP 3\n")
@@ -1070,7 +1070,7 @@ def test_csave_writes_wav(tmp_path, monkeypatch):
 
 def test_timer_flags():
     """TESTのタイマの印は2msごと・512msごとに立ち、読むと消える。置いておくと約11分で電源が切れる"""
-    from pc1251emu.machine import CLOCK, PC1251, TICK_2MS
+    from sc61box.machine import CLOCK, PC1251, TICK_2MS
 
     m = PC1251()
     m.run(CLOCK)
@@ -1095,7 +1095,7 @@ def test_version():
     """--versionでpyproject.tomlの版を出して終わる"""
     from typer.testing import CliRunner
 
-    from pc1251emu.app import app_cli
+    from sc61box.app import make_cli
 
     with open(
         os.path.join(os.path.dirname(__file__), "..", "pyproject.toml"), encoding="utf-8"
@@ -1103,13 +1103,13 @@ def test_version():
         found = re.search(r'^version = "(.+)"', f.read(), re.M)
     assert found is not None
     want = found.group(1)
-    result = CliRunner().invoke(app_cli, ["--version"])
-    assert result.exit_code == 0 and result.output.strip() == f"pc1251-emu {want}"
+    result = CliRunner().invoke(make_cli(), ["--version"])
+    assert result.exit_code == 0 and result.output.strip() == f"sc61box {want}"
 
 
 def test_lcd_ram_mirrors():
     """液晶RAM(F800-F8FF)は、F900-FFFFの各256バイトにも見える。PC-1245ではE800-EFFFにも"""
-    from pc1251emu.machine import PC1251
+    from sc61box.machine import PC1251
 
     for model in ("1251", "1245"):
         m = PC1251(cpu_rom=bytes(0x2000), bas_rom=bytes(0x4000), model=model)
@@ -1127,7 +1127,7 @@ def _queue_run(fps: float, clock: float, jitter_ms: float, seconds: float = 60) 
     clockは装置の時計の速さの比。(音が切れた回数, 積まずに捨てた回数)を返す"""
     import random
 
-    from pc1251emu import audio
+    from sc61box import audio
 
     class FakeSDL:
         def __init__(self):
@@ -1175,12 +1175,12 @@ def test_recording_without_ffmpeg(tmp_path, monkeypatch):
     """ffmpegがなければ、録画を始めずに知らせるだけで、エミュレータは止まらない"""
     import imageio_ffmpeg
 
-    from pc1251emu import recorder
+    from sc61box import recorder
 
     def missing():
         raise RuntimeError("No ffmpeg exe could be found.")
 
-    monkeypatch.setenv("PC1251_PROGRAMS", str(tmp_path))
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
     monkeypatch.setattr(recorder.shutil, "which", lambda name: None)
     monkeypatch.setattr(imageio_ffmpeg, "get_ffmpeg_exe", missing)
     app = make_app("1251")
@@ -1196,9 +1196,9 @@ def test_recording(tmp_path, monkeypatch):
     長さは録ったフレームの数に合う"""
     import subprocess
 
-    from pc1251emu import recorder
+    from sc61box import recorder
 
-    monkeypatch.setenv("PC1251_PROGRAMS", str(tmp_path))
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
     app = make_app("1251")
     app.toggle_recording()
     assert app.recorder is not None
@@ -1226,7 +1226,7 @@ def test_save_and_load_state(tmp_path):
     import pytest
     from helpers import boot, finish
 
-    from pc1251emu.machine import CLOCK
+    from sc61box.machine import CLOCK
 
     path = str(tmp_path / "state.json")
     for model, card in (("1251", 0), ("1261", 0), ("1350", 16)):
@@ -1255,7 +1255,7 @@ def test_save_and_load_state(tmp_path):
 
 def test_state_shortcuts(tmp_path, monkeypatch):
     """⇧⌘Sで状態を保存し、⇧⌘Lで戻す"""
-    from pc1251emu import app as app_module
+    from sc61box import app as app_module
 
     monkeypatch.setattr(app_module, "STATE_DIR", str(tmp_path))
     app = make_app()

@@ -46,32 +46,25 @@ SHIFTED_1245 = {**SHIFTED, "(": "1", ")": "2"}
 SHIFTED_1261 = {k: v for k, v in SHIFTED_1245.items() if k != EXP} | {"¥": "6"}
 MODELS_1261 = ("1260", "1261", "1262")
 
-# PC-1261などのカナ。カナの入力(SHIFT+8)で、キーだけで打つ字と、SHIFTを押してから打つ字
-# (「・」の印のあるキーでは小さい字)
-_KANA_PLAIN = dict(
-    zip("ｱｲｳｴｵｶｸｺｼｾﾀﾂﾃﾅﾇﾉﾋﾍﾏﾑﾓﾔﾕﾖﾗﾙﾛﾝ｡｣､ｰ", "QWERTYUIOPASDFGHJKL=ZXCVBNM.+*/-", strict=True)
-)
-_KANA_SHIFT = dict(
-    zip("ｧｨｩｪｫｷｹｻｽｿﾁｯﾄﾆﾈﾊﾌﾎﾐﾒｬｭｮﾘﾚﾜｦﾟ｢･ﾞ", "QWERTYUIOPASDFGHJKL=XCVBNM.+*/-", strict=True)
-)
-KANA_1261: dict[str, list[list[str]]] = {ch: [[k]] for ch, k in _KANA_PLAIN.items()}
-for _ch, _k in _KANA_SHIFT.items():
-    KANA_1261[_ch] = [["SHIFT"], [_k]]
 
+def _kana_table(plain_keys: str, shift_keys: str) -> dict[str, list[list[str]]]:
+    """カナの入力での、字ごとの打鍵。plain_keysはキーだけで打つ字のキー、shift_keysは
+    SHIFTを押してから打つ字(「・」の印のあるキーでは小さい字)のキー"""
+    table = {ch: [[k]] for ch, k in zip(_KANA_PLAIN, plain_keys, strict=True)}
+    table.update({ch: [["SHIFT"], [k]] for ch, k in zip(_KANA_SHIFT, shift_keys, strict=True)})
+    return table
+
+
+_KANA_PLAIN = "ｱｲｳｴｵｶｸｺｼｾﾀﾂﾃﾅﾇﾉﾋﾍﾏﾑﾓﾔﾕﾖﾗﾙﾛﾝ｡｣､ｰ"
+_KANA_SHIFT = "ｧｨｩｪｫｷｹｻｽｿﾁｯﾄﾆﾈﾊﾌﾎﾐﾒｬｭｮﾘﾚﾜｦﾟ｢･ﾞ"
+# PC-1261などのカナ。カナの入力はSHIFT+8で切り替える
+KANA_1261 = _kana_table("QWERTYUIOPASDFGHJKL=ZXCVBNM.+*/-", "QWERTYUIOPASDFGHJKL=XCVBNM.+*/-")
 
 # PC-1350。数字の側に括弧と記号のキーがあり、SHIFTで入る記号はQ〜Pの上と数字の側。
 # カナはカナキーで切り替える
 SHIFTED_1350 = dict(zip('!"#$%&?π√@<>¥^', "QWERTYUIOP()*-", strict=True)) | {"\\": "*"}
 PLAIN_1350 = set("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ+-*/=.,;:()")
-_KANA_PLAIN_1350 = dict(
-    zip("ｱｲｳｴｵｶｸｺｼｾﾀﾂﾃﾅﾇﾉﾋﾍﾏﾑﾓﾔﾕﾖﾗﾙﾛﾝ｡｣､ｰ", "QWERTYUIOPASDFGHJKL=ZXCVBNM+-;:,", strict=True)
-)
-_KANA_SHIFT_1350 = dict(
-    zip("ｧｨｩｪｫｷｹｻｽｿﾁｯﾄﾆﾈﾊﾌﾎﾐﾒｬｭｮﾘﾚﾜｦﾟ｢･ﾞ", "QWERTYUIOPASDFGHJKL=XCVBNM+-;:,", strict=True)
-)
-KANA_1350: dict[str, list[list[str]]] = {ch: [[k]] for ch, k in _KANA_PLAIN_1350.items()}
-for _ch, _k in _KANA_SHIFT_1350.items():
-    KANA_1350[_ch] = [["SHIFT"], [_k]]
+KANA_1350 = _kana_table("QWERTYUIOPASDFGHJKL=ZXCVBNM+-;:,", "QWERTYUIOPASDFGHJKL=XCVBNM+-;:,")
 
 
 def _half_kana(text: str) -> str:

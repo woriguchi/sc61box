@@ -21,7 +21,7 @@ import os
 import pygame
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
-from .machine import MODELS
+from .machine import BASE_MODEL
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ASSETS = os.path.join(HERE, "assets")
@@ -30,11 +30,8 @@ MARGIN = 28  # 本体のまわりの机の幅
 
 # PC-1251の絵の寸法(Panelはどの機種もlayout.jsonの値を使う)
 with open(os.path.join(ASSETS, "keys.json")) as _f:
-    _KEYS = json.load(_f)
+    IMG_H = json.load(_f)["height"]
 IMG_W = 1425
-BODY_H = _KEYS["top"]  # 液晶部の高さ。その下がキーボード
-IMG_H = _KEYS["height"]
-KEY_RECTS = {k: tuple(v) for k, v in _KEYS["keys"].items()}
 OUT_W, OUT_H = IMG_W + 2 * MARGIN, IMG_H + 2 * MARGIN
 CORNER_R = 8  # 本体の角の丸み
 CELLS, CW, H = 24, 5, 7
@@ -46,20 +43,17 @@ MAT_H = H * PITCH - 1
 MAT_X, MAT_Y = 152, 160  # 本体の絵(body.png)での液晶の1桁目の左上
 ANN_Y, ANN_H = 125, 18
 
-# RAMの範囲だけが違う機種は、元の機種の絵を使う。型番を刷り替えた本体の絵(body_top.png)
-# だけを、その機種のフォルダに置く
-ART_MODEL = {name: m.base for name, m in MODELS.items() if m.base}
-
 
 def asset_dir(model: str = "1251") -> str:
-    model = ART_MODEL.get(model, model)
+    model = BASE_MODEL.get(model, model)
     return ASSETS if model == "1251" else os.path.join(ASSETS, f"pc{model}")
 
 
 def asset_path(model: str, name: str) -> str:
-    """絵のファイル。その機種のフォルダになければ、元の機種のもの"""
+    """絵のファイル。RAMの範囲だけが違う機種は元の機種の絵を使い、型番を刷り替えた本体の絵
+    (body_top.png)だけをその機種のフォルダに置く"""
     own = os.path.join(ASSETS, f"pc{model}", name)
-    if model in ART_MODEL and os.path.exists(own):
+    if model in BASE_MODEL and os.path.exists(own):
         return own
     return os.path.join(asset_dir(model), name)
 
@@ -104,10 +98,6 @@ def _opacity_table() -> list[int]:
 
 
 OPACITY = _opacity_table()
-
-
-def phys_x(x: int) -> int:
-    return (x // CW) * (CW + 1) + (x % CW)
 
 
 def _surface(img: Image.Image) -> pygame.Surface:
@@ -310,26 +300,26 @@ class Panel:
             im.putpixel((x, y), DOT_INK + (int(a * 0.55),))
         return _surface(im)
 
-    def _shadow(self, k: int) -> pygame.Surface:
-        a = int(SHADOW_ALPHA * k / (LEVELS - 1))
-        dw, dh = self.dot_w, self.dot_h
-        m = Image.new("L", (dw + 6, dh + 6), 0)
-        ImageDraw.Draw(m).rectangle([3, 3, 3 + dw - 1, 3 + dh - 1], fill=255)
-        m = m.filter(ImageFilter.GaussianBlur(1.1)).point(lambda v: v * a // 255)
-        im = Image.new("RGBA", m.size, SHADOW_INK + (0,))
-        im.putalpha(m)
-        return _surface(im)
-
-    def _sym_shadow(self, mask: Image.Image, k: int) -> pygame.Surface:
-        """表示記号の影。左上に3pxの余白をつけ、下は貼り直す下地の範囲で切る"""
+    @staticmethod
+    def _blurred(mask: Image.Image, k: int, bottom: int | None = None) -> pygame.Surface:
+        """maskの形の影(濃さの段k)。まわりに3pxの余白をつけてぼかす。bottomがあれば、
+        その高さで下を切る"""
         a = int(SHADOW_ALPHA * k / (LEVELS - 1))
         m = Image.new("L", (mask.width + 6, mask.height + 6), 0)
         m.paste(mask, (3, 3))
         m = m.filter(ImageFilter.GaussianBlur(1.1)).point(lambda v: v * a // 255)
-        m = m.crop((0, 0, m.width, 3 - SHADOW_DY + self.ann_h + ANN_SHADOW_PAD))
+        if bottom is not None:
+            m = m.crop((0, 0, m.width, bottom))
         im = Image.new("RGBA", m.size, SHADOW_INK + (0,))
         im.putalpha(m)
         return _surface(im)
+
+    def _shadow(self, k: int) -> pygame.Surface:
+        return self._blurred(Image.new("L", (self.dot_w, self.dot_h), 255), k)
+
+    def _sym_shadow(self, mask: Image.Image, k: int) -> pygame.Surface:
+        """表示記号の影。下は貼り直す下地の範囲で切る"""
+        return self._blurred(mask, k, 3 - SHADOW_DY + self.ann_h + ANN_SHADOW_PAD)
 
     # ---- 1フレーム ----
     def key_at(self, x: float, y: float) -> str | None:

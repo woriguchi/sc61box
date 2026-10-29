@@ -7,9 +7,9 @@ from helpers import boot as _boot
 from helpers import make_app
 from helpers import typ as _typ
 
-from pc1251emu import basictext, display, keytype, tape
-from pc1251emu.lcdtext import lcd_text
-from pc1251emu.machine import CLOCK, KEYS_1350, PC1350, new_machine
+from sc61box import basictext, display, keytype, tape
+from sc61box.lcdtext import lcd_text
+from sc61box.machine import CLOCK, KEYS_1350, PC1350, new_machine
 
 
 def boot(card=0):
@@ -150,7 +150,7 @@ def test_panel_and_app():
 def test_bouncing_ball_uses_whole_lcd():
     """見本の弾むボールは液晶のいちばん下で弾んでいちばん上まで上がり、左右の端をまたいで
     進む。地面に着いたときだけ鳴り、BRKでBASICに戻る"""
-    from pc1251emu import programs
+    from sc61box import programs
 
     prog = programs.find("ball", "1350")
     assert prog is not None and prog.blocks[0][0] == 0x6100
@@ -199,9 +199,9 @@ def test_recording_uses_pc1350_picture(tmp_path, monkeypatch):
 
     from PIL import Image
 
-    from pc1251emu import recorder
+    from sc61box import recorder
 
-    monkeypatch.setenv("PC1251_PROGRAMS", str(tmp_path))
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
     pygame.init()
     pygame.display.set_mode(display.out_size("1350"))
     app = make_app("1350")

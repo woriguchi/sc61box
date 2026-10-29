@@ -3,8 +3,8 @@
 
 from helpers import make_app
 
-from pc1251emu import codemap, disasm, programs, workbench
-from pc1251emu.machine import new_machine
+from sc61box import benchview, codemap, disasm, programs, workbench
+from sc61box.machine import new_machine
 
 # PTC 02,C020 / DTC / 表2行 / どれでもないとき / RTN
 TABLE = bytes.fromhex("7A02C020 69 01C010 02C018 C01C 37".replace(" ", ""))
@@ -331,7 +331,7 @@ WITH_TABLE = bytes.fromhex("0201 37 0102030405060708 0202 37".replace(" ", ""))
 def test_data_directive_round_trip(tmp_path, monkeypatch):
     """自分で決めたデータの範囲は、書き出した.hexの# data: に入り、読み込むと同じ範囲の
     データになる。範囲の終わりから先は推し量りに戻る"""
-    monkeypatch.setenv("PC1251_PROGRAMS", str(tmp_path))
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
     app = make_app(scale=0.5, frames=2, norom=True)
     b = app.bench
     b.paste(_lines(0xC000, WITH_TABLE))
@@ -424,7 +424,7 @@ def test_rewrite_through_mirror_forgets_executed():
 
 def test_table_note_follows_language():
     """DTCの表の添え書きは、言語を切り替えると切り替えた言語で出す"""
-    from pc1251emu import i18n
+    from sc61box import i18n
 
     _m, b = bench_with([(0xC000, bytes.fromhex("7A00C00769C00737"))], start=0xC000)
     notes = [ins.note for ins in b.disasm_from(0xC000, 5, 0xC000) if ins.note]
@@ -463,7 +463,7 @@ def test_unterminated_code_reason():
     b.start_by = ""
     cm = b.code_map()
     assert cm.state(0xC005) == ("data", "guessed") and cm.why[0xC005] == codemap.NOEND
-    assert "終わらない" in workbench.why_text(cm, 0xC005)
+    assert "終わらない" in benchview.why_text(cm, 0xC005)
 
 
 def test_after_keeps_own_data_range(tmp_path):

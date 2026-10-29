@@ -5,10 +5,10 @@ import os
 from helpers import boot as _boot
 from helpers import finish, make_app, settle, typ
 
-from pc1251emu import basictext
-from pc1251emu.app import export_program, parse_hexdump
-from pc1251emu.lcdtext import lcd_text
-from pc1251emu.machine import CLOCK
+from sc61box import basictext
+from sc61box.app import export_program, parse_hexdump
+from sc61box.lcdtext import lcd_text
+from sc61box.machine import CLOCK
 
 DUMP = os.path.join(os.path.dirname(__file__), "..", "programs", "pcint.hex")
 
@@ -134,7 +134,7 @@ def test_lcd_right_part():
 
 def test_breakout_versions():
     """ブロック崩しはPC-1251用とPC-1245用があり、一覧にはその機種のものだけが出る"""
-    from pc1251emu import programs
+    from sc61box import programs
 
     here = os.path.join(os.path.dirname(__file__), "..", "programs")
     items = programs.scan([here])
