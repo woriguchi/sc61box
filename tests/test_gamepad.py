@@ -44,7 +44,7 @@ def test_pad_map_parse_checks_model_keys():
 
 
 def test_program_pad_reports_keys_of_other_models(tmp_path, monkeypatch):
-    """# pad: に機種にないキーがあれば、読めない語として知らせ、割り当てに入れない"""
+    """# pad: に機種にないキーがあれば、読めない語としてメッセージ、割り当てに入れない"""
     monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
     app = make_app(frames=3)
     prog = programs.Program(
@@ -170,7 +170,7 @@ def test_program_pad_directive_applies(tmp_path, monkeypatch):
 
 
 def _key_pos(app, key: str):
-    """本体の絵のキーkeyの、窓の中での中心"""
+    """本体の絵のキーkeyの、ウィンドウの中での中心"""
     x0, y0, x1, y1 = app.panel.key_rects[key]
     m = display.MARGIN
     return (int(((x0 + x1) / 2 + m) * app.scale), int(((y0 + y1) / 2 + m) * app.scale))
@@ -224,7 +224,7 @@ def test_pad_panel_keeps_pad_shape_and_wraps_buttons(_sizes, tmp_path, monkeypat
     assert rects["dpup"].bottom <= rects["dpleft"].top < rects["dpdown"].top
     assert rects["x"].bottom <= rects["y"].top and rects["y"].right <= rects["a"].left
     assert rects["dpright"].right < rects["back"].left < rects["start"].left < rects["y"].left
-    # ボタンはすべて窓の中にある
+    # ボタンはすべてウィンドウの中にある
     width = app.window.get_width()
     for r, kind, _ in panel.hits:
         assert r.right <= width, (kind, r)
@@ -314,7 +314,7 @@ def test_pad_map_restored_with_state_and_undo(tmp_path, monkeypatch):
 
 
 def _inside(app) -> bool:
-    """割り当ての欄のすべてのものが窓の中にあるか"""
+    """割り当ての欄のすべてのものがウィンドウの中にあるか"""
     panel = app.pad_panel
     win = app.window.get_rect()
     bar_bottom = max(r.bottom for r in app.bar.rects)
@@ -322,7 +322,7 @@ def _inside(app) -> bool:
 
 
 def test_pad_panel_fits_on_screen(tmp_path, monkeypatch):
-    """欄を出すと本体を縮めてでも画面に入れ、入力を選ぶ・やめるで窓の高さが変わらない"""
+    """欄を出すと本体を縮めてでも画面に入れ、入力を選ぶ・やめるでウィンドウの高さが変わらない"""
     monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
     for screen in ((1024, 768), (1440, 900)):
         with patch.object(pygame.display, "get_desktop_sizes", return_value=[screen]):
@@ -350,6 +350,7 @@ def test_pad_panel_leaves_bench_clicks(tmp_path, monkeypatch):
     """欄と同じ高さにある作業欄のクリックは、欄が受け取らない"""
     monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
     app = make_app(frames=3, norom=True)
+    app.toggle_pane(True)
     app.status = ""
     app.toggle_pad_panel()
     app.frame()
@@ -545,7 +546,7 @@ SCREENS = [(w, h) for w in SCREEN_W for h in SCREEN_H]
 
 @pytest.mark.parametrize("model", ["1251", "1350"])
 def test_pad_panel_fits_every_screen(model, tmp_path, monkeypatch):
-    """欄の高さは幅で増えも減りもする。どの画面でも中身が窓に入り、窓は画面の上限
+    """欄の高さは幅で増えも減りもする。どの画面でも中身がウィンドウに入り、ウィンドウは画面の上限
     (拡大率の下限に当たるときを除く)を超えない"""
     monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
     app = make_app(model=model, frames=1)
@@ -565,7 +566,7 @@ def test_pad_panel_fits_every_screen(model, tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("norom", [False, True])
 def test_pad_warning_survives_load_message(norom, tmp_path, monkeypatch):
-    """# pad: の読めない語の知らせは、読み込み終わりの知らせに続けて出す(上書きしない)"""
+    """# pad: の読めない語のメッセージは、読み込み終わりのメッセージに続けて出す(上書きしない)"""
     monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
     path = tmp_path / "game.hex"
     path.write_text("# pad: a=KANA b=1\n# run: CALL &C000\nC000 37\n", encoding="utf-8")

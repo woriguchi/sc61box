@@ -24,7 +24,7 @@ class Printout:
         self.printer = printer
         self.first, self.skip = cut
         self.file: str | None = None
-        self.error: OSError | None = None  # 名前を取れなかったわけ
+        self.error: OSError | None = None  # 名前を取れなかった理由
         try:
             self.file = unused_file(folder, f"print-{time.strftime('%Y%m%d-%H%M%S')}", ".png")
         except OSError as e:

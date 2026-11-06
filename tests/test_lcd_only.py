@@ -1,6 +1,7 @@
 """液晶だけを見せるモード(--lcd、メニューの「液晶だけにする」)"""
 
 import warnings
+from itertools import pairwise
 from unittest.mock import patch
 
 import pygame
@@ -15,7 +16,7 @@ WIDE = [(1920, 1080)]
 @pytest.mark.parametrize("model", ["1251", "1245", "1261", "1350"])
 @pytest.mark.parametrize("alpha_mask", [False, True])
 def test_lcd_resize_preserves_pixels_with_side_margins(model, alpha_mask):
-    """大きな窓から横長の窓へ戻しても、拡大した液晶の各行と左右の余白が崩れない。"""
+    """大きなウィンドウから横長のウィンドウへ戻しても、拡大した液晶の各行と左右の余白が崩れない"""
     backend = pygame.transform.get_smoothscale_backend()
     pygame.transform.set_smoothscale_backend("GENERIC")
     app = make_app(model=model, frames=2, lcd=True)
@@ -63,7 +64,7 @@ def test_lcd_only_keeps_width_and_shows_lcd(_sizes, tmp_path, monkeypatch):
     app.frame()
     box = app.view_box()
     x0, y0, x1, y1 = app.panel.lcd_box()
-    assert box.contains(pygame.Rect(x0, y0, x1 - x0, y1 - y0)) and box.w > x1 - x0  # 縁を足す
+    assert box.contains(pygame.Rect(x0, y0, x1 - x0, y1 - y0)) and box.w > x1 - x0  # 縁のぶん広い
     assert app.lcd_only and app.win_flags == pygame.RESIZABLE
     # 幅は本体を出すときと同じで、液晶だけがその幅に広がる
     assert app.window.get_width() == full[0]
@@ -80,7 +81,7 @@ def test_lcd_only_keeps_width_and_shows_lcd(_sizes, tmp_path, monkeypatch):
 
 @patch.object(pygame.display, "get_desktop_sizes", return_value=WIDE)
 def test_lcd_only_window_can_be_enlarged(_sizes, tmp_path, monkeypatch):
-    """利用者が窓を広げる(最大化など)と、液晶をその中に入る大きさにしてまんなかに描く"""
+    """利用者がウィンドウを広げる(最大化など)と、液晶をその中に入る大きさにしてまんなかに描く"""
     monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
     app = make_app(frames=3, lcd=True)
     assert app.lcd_only
@@ -98,7 +99,7 @@ def test_lcd_only_window_can_be_enlarged(_sizes, tmp_path, monkeypatch):
     app.handle(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=pos, button=1))
     assert app.popup is not None
     app.popup = None
-    # 割り当ての欄や紙を出しても窓の大きさは変えず、中に収める
+    # 割り当ての欄や紙を出してもウィンドウの大きさは変えず、中に収める
     app.toggle_pad_panel()
     app.frame()
     assert app.window.get_size() == (1800, 1000) and app._window_size()[1] <= 1000
@@ -108,11 +109,11 @@ def test_lcd_only_window_can_be_enlarged(_sizes, tmp_path, monkeypatch):
 
 
 def _native_resize(app, size):
-    """SDLの窓の大きさを変える(利用者が変えたのと同じ道筋。pygameは表示面も変える)"""
+    """SDLのウィンドウの大きさを変える(利用者が変えたのと同じ道筋。pygameは表示面も変える)"""
     from pygame._sdl2.video import Window
 
     pygame.event.clear()
-    with warnings.catch_warnings():  # pygame-ceはfrom_display_moduleに非推奨の印をつけている
+    with warnings.catch_warnings():  # pygame-ceはfrom_display_moduleを非推奨にしている
         warnings.simplefilter("ignore", DeprecationWarning)
         Window.from_display_module().size = size
     for ev in pygame.event.get():
@@ -121,7 +122,7 @@ def _native_resize(app, size):
 
 @patch.object(pygame.display, "get_desktop_sizes", return_value=WIDE)
 def test_lcd_only_follows_native_resize(_sizes, tmp_path, monkeypatch):
-    """窓の大きさが実際に変わったときに置き直す(pygameが表示面を先に変えていても)。
+    """ウィンドウの大きさが実際に変わったときに置き直す(pygameが表示面を先に変えていても)。
     小さくしすぎても止まらず、下限まで戻す"""
     monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
     app = make_app(frames=2, lcd=True)
@@ -129,7 +130,7 @@ def test_lcd_only_follows_native_resize(_sizes, tmp_path, monkeypatch):
     _native_resize(app, (1200, 700))
     app.frame()
     assert app.free_size == (1200, 700) and app.window.get_size() == (1200, 700)
-    assert app.body_size[0] <= 1200 and app.origin[1] > 0  # 幅に合わせて縮め、まんなかに
+    assert app.body_size[0] <= 1200 and app.origin[1] > 0  # 幅に合わせて縮め、まんなかに置く
     _native_resize(app, (400, 200))
     app.frame()
     assert app.free_size is not None and app.free_size[0] >= 320
@@ -143,7 +144,7 @@ def test_lcd_only_follows_native_resize(_sizes, tmp_path, monkeypatch):
 
 @patch.object(pygame.display, "get_desktop_sizes", return_value=WIDE)
 def test_lcd_only_menus_use_whole_window(_sizes, tmp_path, monkeypatch):
-    """細い窓では一覧やメニューを開くあいだだけ窓を高くし、どちらも窓全体に描く"""
+    """細いウィンドウでは一覧やメニューを開くあいだだけウィンドウを高くし、どちらもウィンドウ全体に描く"""
     monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
     app = make_app(frames=2, lcd=True)
     thin = app.window.get_size()
@@ -162,14 +163,14 @@ def test_lcd_only_menus_use_whole_window(_sizes, tmp_path, monkeypatch):
     app.frame()
     assert app.menu is not None and app.window.get_height() >= app.MENU_ROOM
     assert all(win.contains(pygame.Rect(r)) for _act, r in app.menu.button_rects)
-    # 一覧のボタンは窓の位置で押せる
+    # 一覧のボタンはウィンドウの位置で押せる
     r = next(r for act, r in app.menu.button_rects if act == "close")
     app.mouse_down(pygame.Rect(r).center)
     assert app.menu is None
     app.frame()
     assert app.window.get_size() == thin
     # 操作欄に「本体を出す」があり、押すと本体の絵に戻る
-    button = next(b for b in app.bar.buttons if b.label == "本体を出す")
+    button = next(b for b in app.bar.buttons if b.label == "本体を表示")
     button.action()
     assert not app.lcd_only
     app.close()
@@ -177,7 +178,7 @@ def test_lcd_only_menus_use_whole_window(_sizes, tmp_path, monkeypatch):
 
 @patch.object(pygame.display, "get_desktop_sizes", return_value=WIDE)
 def test_lcd_only_small_window_grows_for_panels(_sizes, tmp_path, monkeypatch):
-    """小さくした窓でも、操作欄のボタンは全部入り、割り当ての欄や紙を出せば入るだけ広がる"""
+    """小さくしたウィンドウでも、操作欄のボタンは全部入り、割り当ての欄や紙を出せば入るだけ広がる"""
     monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
     app = make_app(frames=2, lcd=True)
     app.resized(100, 100)
@@ -186,7 +187,7 @@ def test_lcd_only_small_window_grows_for_panels(_sizes, tmp_path, monkeypatch):
     assert all(win.contains(r) for r in app.bar.rects if r.width)  # 省いたボタンは幅0
     assert app.body_size[0] + app.origin[0] <= win.width and app.origin[0] == 0
     labels = [b.label for b, r in zip(app.bar.buttons, app.bar.rects, strict=True) if r.width]
-    assert "本体を出す" in labels and "録画" in labels
+    assert "本体を表示" in labels and "録画" in labels
     app.toggle_pad_panel()
     app.frame()
     win = app.window.get_rect()
@@ -219,7 +220,7 @@ def test_lcd_only_help_gets_room(_sizes, tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("model", ["1251", "1245", "1261", "1350"])
 def test_lcd_only_resuming_keeps_bar_buttons_visible(model):
-    """一時停止中に幅を縮めても、再開後に長くなるボタンが録画ボタンを押し出さない。"""
+    """一時停止中に幅を縮めても、再開後に長くなるボタンが録画ボタンを押し出さない"""
     app = make_app(model=model, frames=2, lcd=True)
     try:
         app.toggle_halt()
@@ -232,7 +233,7 @@ def test_lcd_only_resuming_keeps_bar_buttons_visible(model):
         win = app.window.get_rect()
         assert all(win.contains(r.move(app.origin)) for r in app.bar.rects if r.width)
         visible = [b.label for b, r in zip(app.bar.buttons, app.bar.rects, strict=True) if r.width]
-        assert "本体を出す" in visible and "録画" in visible
+        assert "本体を表示" in visible and "録画" in visible
     finally:
         app.close()
 
@@ -262,8 +263,8 @@ def test_lcd_only_hides_workbench_and_bar_toggles_it(_sizes, tmp_path, monkeypat
 
 
 def test_lcd_only_without_rom_hides_workbench_and_restores_it():
-    """ROMなしでも液晶だけにでき、隠した作業欄に入力せず、戻せば編集を続けられる。"""
-    app = make_app(frames=2, norom=True)
+    """ROMなしでも液晶だけにでき、隠した作業欄に入力せず、戻せば編集を続けられる"""
+    app = make_app(frames=2, norom=True, basic=False)
     try:
         assert app.pane_open and app.pane_keys()
         app.toggle_lcd(True)
@@ -280,7 +281,7 @@ def test_lcd_only_without_rom_hides_workbench_and_restores_it():
 
 
 def _content_inside(app) -> bool:
-    """中身(本体、割り当ての欄、操作欄)がすべて窓の中にあるか"""
+    """中身(本体、割り当ての欄、操作欄)がすべてウィンドウの中にあるか"""
     win = app.window.get_rect()
     content = pygame.Rect(app.origin, app._window_size())
     panel = app.pad_panel
@@ -292,7 +293,7 @@ def _content_inside(app) -> bool:
 @pytest.mark.parametrize("model", ["1251", "1350"])
 @patch.object(pygame.display, "get_desktop_sizes", return_value=WIDE)
 def test_lcd_only_pad_panel_fits_resized_window(_sizes, model, tmp_path, monkeypatch):
-    """割り当ての欄の高さは幅で増えも減りもする。窓の大きさをどう変えても、中身が窓に入る"""
+    """割り当ての欄の高さは幅で増えも減りもする。ウィンドウの大きさをどう変えても、中身がウィンドウに入る"""
     monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
     app = make_app(model=model, frames=2, lcd=True)
     app.status = ""
@@ -329,3 +330,53 @@ def test_lcd_only_language_change_keeps_pane_setting(_sizes, tmp_path, monkeypat
     again = make_app(frames=2)
     assert again.pane_open
     again.close()
+
+
+@pytest.mark.parametrize("model", ["1251", "1245", "1261"])
+def test_packed_lcd_spaces_dots_evenly(model):
+    """液晶の文字の間を詰めると、桁(PC-1261は行も)の境でもドットが同じ間隔で並び、並びは
+    ドットの面の中央に来る。実機と同じに戻すと、元の位置に戻る"""
+    from sc61box import display
+
+    pygame.init()
+    pygame.display.set_mode((10, 10))
+    p = display.Panel(model)
+    wide_x, wide_y = list(p.col_x), list(p.row_y)
+    assert p.can_pack and not p.packed
+    p.set_packed(True)
+    assert {b - a for a, b in pairwise(p.col_x)} == {p.pitch_x}
+    assert {b - a for a, b in pairwise(p.row_y)} == {p.pitch_y}
+    left, right = p.col_x[0], p.mat_w - 1 - p.dot_w - p.col_x[-1]
+    top, bottom = p.row_y[0], p.mat_h - 1 - p.dot_h - p.row_y[-1]
+    assert abs(left - right) <= 1 and abs(top - bottom) <= 1
+    p.set_packed(False)
+    assert (p.col_x, p.row_y) == (wide_x, wide_y)
+
+
+def test_packed_lcd_not_offered_for_1350():
+    """PC-1350の液晶はもともとすきまなく並ぶので、詰める項目を出さない"""
+    app = make_app(model="1350", frames=2)
+    assert not app.panel.can_pack
+    assert not [it for it in app.popup_items("view") if "文字の間" in it.label]
+    app.close()
+
+
+def test_packed_lcd_menu_is_remembered(tmp_path, monkeypatch):
+    """表示のメニューで液晶の文字の間を詰めると、次に起動したときも詰めたまま。PC-1350で
+    起動しても、ほかの機種の設定は消えない"""
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
+    app = make_app(frames=2)
+    item = next(it for it in app.popup_items("view") if it.label == "液晶の文字の間を詰める")
+    assert item.action is not None
+    item.action()
+    assert app.panel.packed
+    app.close()
+    other = make_app(model="1350", frames=2)
+    other.close()
+    again = make_app(model="1245", frames=2)
+    assert again.panel.packed
+    labels = [it.label for it in again.popup_items("view")]
+    assert "液晶の文字の間を実機と同じにする" in labels
+    again.toggle_packed()
+    again.close()
+    assert not make_app(frames=2).panel.packed

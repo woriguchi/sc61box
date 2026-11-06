@@ -1,4 +1,4 @@
-"""pytestで動かすときの設定。ROMやPC-インタープリタのダンプがなければ、それを使う試験を飛ばす"""
+"""pytestで動かすときの設定。ROMやPC-インタープリタのダンプがなければ、ROMやダンプを使う試験を飛ばす"""
 
 import os
 import sys
@@ -38,7 +38,7 @@ NO_ROM_NEEDED = {
 
 @pytest.fixture(autouse=True)
 def _own_state_dir(tmp_path_factory, monkeypatch):
-    """RAM、どこでもセーブ、作業欄の見え方などの置き場所と、プログラムの置き場所を、試験ごとに
+    """RAM、どこでもセーブ、作業欄の見え方などの保存先と、プログラムのフォルダを、試験ごとに
     空のフォルダにする(使う人の~/.sc61boxにあるものに試験の結果が左右されず、試験がそこへ
     書くこともない)"""
     from sc61box import app, paths
@@ -68,7 +68,19 @@ def pytest_collection_modifyitems(config, items):
 
     for item in items:
         if (
-            item.module.__name__ in ("test_cpu", "test_workbench", "test_i18n", "test_paths")
+            item.module.__name__
+            in (
+                "test_cpu",
+                "test_workbench",
+                "test_norom",
+                "test_number",
+                "test_charset",
+                "test_i18n",
+                "test_paths",
+                "test_basic_state",
+                "test_loading",
+                "test_autotype",
+            )
             or f"{item.module.__name__}::{item.name}" in NO_ROM_NEEDED
         ):
             continue
@@ -82,6 +94,14 @@ def pytest_collection_modifyitems(config, items):
             if not HAVE_ROM_1350:
                 item.add_marker(pytest.mark.skip(reason="PC-1350のROMがない(rom/cpu-1350.romなど)"))
             continue
+        if item.module.__name__ in (
+            "test_norom_basic",
+            "test_norom_pc1261",
+            "test_norom1261",
+            "test_norom1350",
+            "test_routines",
+        ):
+            continue  # 試験ごとにROMの有無を見て飛ばす
         if item.module.__name__ == "test_pc1245":
             if not HAVE_ROM_1245:
                 item.add_marker(pytest.mark.skip(reason="PC-1245のROMがない(rom/cpu-1245.romなど)"))

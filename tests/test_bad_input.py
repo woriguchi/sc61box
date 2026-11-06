@@ -70,12 +70,12 @@ def test_program_with_errors_is_not_loaded():
     app.open_program(programs.Program(name="a", title="a", basic="10 PRINT 123\n"))
     settle(app)
     broken = programs.Program(
-        name="b", title="b", basic="10 PRINT 7\n", errors=["# hex: x.hexが見つからない"]
+        name="b", title="b", basic="10 PRINT 7\n", errors=["# hex: x.hexが見つかりません"]
     )
     app.open_program(broken)
     settle(app)
     assert basictext.program_text(app.m.mem, start=app.m.program_start()) == "10 PRINT 123\n"
-    assert "読み込みません" in app.status
+    assert "読み込めません" in app.status
 
 
 def test_dump_outside_ram_is_not_loaded():
@@ -122,14 +122,14 @@ def test_long_lines_are_typed(model):
     assert keytype.typeable("10 " + ":".join("PRINT A" for _ in range(26)) + "\n", model)
 
 
-def test_kana_counts_twice_on_s1():
-    """S1系の入力欄ではカナが2字ぶんになる"""
+def test_kana_counts_twice_on_pc1261():
+    """PC-1261系とPC-1350の入力欄ではカナが2字ぶんになる"""
     assert keytype.typeable('10 A$="' + "ｱ" * 35 + '"\n', "1261")
     assert not keytype.typeable('10 A$="' + "ｱ" * 36 + '"\n', "1261")
 
 
-def test_long_line_typed_and_stored_on_s1():
-    """S1系でも、長い行を打ち込んだ結果と中間コードで置いた結果が同じ"""
+def test_long_line_typed_and_stored_on_pc1261():
+    """PC-1261系とPC-1350でも、長い行を打ち込んだ結果と中間コードで置いた結果が同じ"""
     src = "10 " + ":".join("PRINT A" for _ in range(26)) + "\n20 END\n"
     typed, stored = typed_and_stored("1261", src)
     start = typed.program_start()
@@ -178,7 +178,7 @@ def test_focus_lost_releases_keys():
 
 
 def test_overlays_fit_small_window():
-    """小さく表示しても、一覧の行と右クリックのメニューが窓に収まる"""
+    """小さく表示しても、一覧の行と右クリックのメニューがウィンドウに収まる"""
     app = make_app(scale=0.5)
     h = app.window.get_height()
     app.help = 0
@@ -250,7 +250,7 @@ def test_unreadable_dependency(tmp_path, monkeypatch):
     assert app.menu is not None and any(p.name == "uses" for p in app.menu.items)
     app.menu = None
     app.open_program(prog)
-    assert "読み込みません" in app.status and not app.typer.busy
+    assert "読み込めません" in app.status and not app.typer.busy
     app.close()
 
 
@@ -265,7 +265,7 @@ def test_ram_card_programs():
     with_card.close()
     without = make_app("1350")
     without.open_program(prog)
-    assert "読み込みません" in without.status
+    assert "読み込めません" in without.status
     without.close()
 
 
@@ -297,7 +297,7 @@ def test_typed_line_that_differs_stops(monkeypatch):
     )
     app.open_program(prog, run=True)
     settle(app)
-    assert "10行が、思ったとおりに入りませんでした" in app.status
+    assert "10行を正しく打ち込めませんでした" in app.status
     assert app.m.mem[0xC700] == 0
     app.close()
 

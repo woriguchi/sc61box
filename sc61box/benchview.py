@@ -1,7 +1,7 @@
 """マシン語の作業欄を描く(BenchView)。状態と操作はworkbench.Bench
 
 右の作業欄に、ボタン、開始番地、書き出す範囲、ダンプ、逆アセンブル、レジスタと内部RAM、
-知らせを上から並べる。クリックの場所(hits)もここで覚える。
+メッセージを上から並べる。クリックの場所(hits)もここで覚える。
 """
 
 from __future__ import annotations
@@ -42,42 +42,41 @@ BTN_ON = (84, 90, 104)
 BG_DIM = (44, 46, 52)  # 押せないボタンの地
 TIP_BG = (14, 15, 18)
 WHITE = (240, 240, 235)
-START = (232, 184, 96)  # 開始番地(欄の値と、ダンプと逆アセンブルの印)
+START = (232, 184, 96)  # 開始番地(欄の値と、ダンプと逆アセンブルのマーク)
 UNSURE = (160, 163, 170)  # 命令かどうかわからない行(どこからもたどれない)
 DATA_FG = (134, 172, 160)  # データの行
 
 
 def why_mark(why: str) -> str:
     """逆アセンブルの行の右に出す、命令かデータかを決めた理由の1字"""
-    # 言語によらない記号にする。いちばん多い静的解析の命令は目立たない「.」、実行済みの
-    # 命令は確かめたので「✓」、推定は「?」、ユーザ指定は「U」(user)
+    # 言語によらない記号にする。いちばん多いflow(静的解析)は目立たない「.」にする
     marks = {"executed": "✓", "guessed": "?", "flow": ".", "user": "U"}
     return marks.get(why, "")
 
 
 def why_text(cm: codemap.CodeMap, a: int) -> str:
-    """番地aの行を命令かデータに決めた理由(印にマウスを載せたときに出す)"""
+    """番地aの行を命令かデータに決めた理由(理由の記号にマウスを載せたときに出す)"""
     code, data = cm.why[a & 0xFFFF], cm.state(a)[0] == "data"
     if code == codemap.EXEC:
-        return tr("実行済みの命令")
+        return tr("bench.executed_instruction")
     if code == codemap.FLOW:
-        return tr("分岐と呼び出しをたどり、命令と判定")
+        return tr("bench.code_found_following_branches")
     if code == codemap.TABLE:
-        return tr("DTCの表(行の数はPTCから)")
+        return tr("bench.dtc_table_row_count")
     if code == codemap.GUESS:
         if data:
-            return tr("DTCの表(参照されていない)")
-        return tr("参照されていないため不明")
+            return tr("bench.dtc_table_unreferenced")
+        return tr("bench.unreferenced_so_unknown")
     if code == codemap.TEXT:
-        return tr("文字列と推定")
+        return tr("bench.guessed_text")
     if code == codemap.FILL:
-        return tr("00・FFの連続と推定")
+        return tr("bench.guessed_run_00_ff")
     if code == codemap.JUNK:
-        return tr("未定義命令などを含むため、データと推定")
+        return tr("bench.contains_undefined_opcodes_like")
     if code == codemap.NOEND:
-        return tr("RTNやジャンプで終わらないため、データと推定")
+        return tr("bench.does_not_end_rtn")
     if code == codemap.USER:
-        return tr("ユーザ指定のデータ") if data else tr("ユーザ指定の命令")
+        return tr("bench.user_specified_data") if data else tr("bench.user_specified_code")
     return ""
 
 
@@ -116,28 +115,29 @@ class BenchView:
         self.hits: list[tuple[pygame.Rect, str, int]] = []  # (場所, 種類, 番地)
         self.rows = 8  # ダンプと逆アセンブルの行の数
         self.hover = -1
-        self.flash = ""  # 打てなかったときなどの短い知らせ
-        self.flash_ok = False  # 済んだことの知らせなら緑、ほかは赤で出す
+        self.flash = ""  # 打てなかったときなどの短いメッセージ
+        self.flash_ok = False  # 済んだことを伝えるメッセージなら緑、ほかは赤で出す
         self.flash_until = 0.0
         self.followed = -1  # 一時停止中に、ダンプをPCの行へ動かしたときのPC
         self.show_iram = True  # 内部RAMの16進表記を出すか(見出しのクリックで開く・閉じる)
         # パソコンのキーを作業欄で受けているか(ROMのある本体で、作業欄をクリックしたあと)。
         # ROMなしの本体では、実行していないあいだはいつも作業欄で受ける
         self.focus = False
-        # 書き出す範囲と、それを求めた時刻(RAMを調べるので、毎フレームは求めない)
+        # 書き出す範囲と、範囲を求めた時刻(RAMを調べるので、毎フレームは求めない)
         self._ranges: tuple[list[tuple[int, int]], float] = ([], 0.0)
         self._ranges_span: tuple[int, int] | None = None  # 範囲を求めたときの自分で決めた範囲
         self.span_hover = False  # 書き出す範囲の行にマウスを載せているか
-        self.why_at = -1  # マウスを載せている、逆アセンブルの行の理由の印の番地
+        self.why_at = -1  # マウスを載せている理由の記号の、逆アセンブルの行の番地
 
     def say(self, text: str, seconds: float = 3.0, ok: bool = False) -> None:
-        """作業欄の下に短く出す知らせ。okなら済んだことの知らせ(ふつうは打てなかったなど)"""
+        """作業欄の下に短く出すメッセージ。okなら済んだことを伝えるもの(okでなければ、"
+        "打てなかったときなど)"""
         self.flash = text
         self.flash_until = time.monotonic() + seconds
         self.flash_ok = ok
 
     IRAM_ROWS = 6  # 内部RAMの行の数(16バイトずつ)
-    STATUS_LINES = 2  # 作業欄のいちばん下の知らせの行の数
+    STATUS_LINES = 2  # 作業欄のいちばん下のメッセージの行の数
 
     def min_height(self, show_iram: bool | None = None) -> int:
         """作業欄が収まる高さ。内部RAMを閉じていれば、その行の分だけ低い"""
@@ -156,55 +156,66 @@ class BenchView:
         b, c, s = self.b, self.cmd, self.shift
         at = b.ins_at(b.cursor)
         brk = Button(
-            tr("● 止める所"), "break",
-            tr("カーソルの命令({addr:04X}番地)に止める所を置く。置いてあれば外す({c}B)",
+            tr("bench.breakpoint"), "break",
+            tr("bench.set_breakpoint_instruction_under",
                addr=at, c=c),
         )  # fmt: skip
         back = Button(
-            tr("編集へ"), "abandon",
-            tr("実行を途中でやめて編集に戻る。書き換わったメモリはそのまま(Esc)"),
+            tr("bench.edit"), "abandon",
+            tr("bench.stop_running_go_back"),
         )  # fmt: skip
         if b.state == "run":
             pause = Button(
-                tr("■ 一時停止"), "pause", tr("実行を、いまの命令の前で止める({c}.)", c=c)
+                tr("bench.pause"), "pause", tr("bench.pause_before_next_instruction", c=c)
             )
-            return [pause, brk] if b.rom else [pause, brk, back]
+            if not b.live:
+                return [pause, brk, back]
+            call = Button(
+                tr("bench.run"), "run",
+                tr("bench.if_basic_waiting_input",
+                   addr=b.start, c=c),
+            )  # fmt: skip
+            return [call, pause, brk]
         if b.state == "edit":
             return [
                 Button(
-                    tr("▶ 実行"), "run",
-                    tr("開始番地{addr:04X}から実行する。RTNで戻れば終わり({c}G)",
+                    tr("bench.run"), "run",
+                    tr("bench.run_start_address_ends",
                        addr=b.start, c=c),
                 ),
                 Button(
-                    tr("1命令ずつ"), "step",
-                    tr("開始番地{addr:04X}の最初の命令の前で止める。そこから1命令ずつ進める({c}J)",
+                    tr("bench.step"), "step",
+                    tr("bench.stop_before_first_instruction",
                        addr=b.start, c=c),
                 ),
                 brk,
             ]  # fmt: skip
+        if b.basic_running:
+            # ROMなしのBASICの実行を止めている(マシン語は動いていないので、1命令ずつは進めない)
+            tip = tr("bench.continue_basic", c=c)
+            return [Button(tr("bench.continue"), "resume", tip), brk]
         pc = b.m.cpu.pc
         if b.blocked(pc):
             # ROMなしで使えない番地で止まっている。続けることも1命令進めることもできない
-            tip = tr("{addr:04X}番地からは続けられないので、編集に戻る(Esc)", addr=pc)
-            return [Button(tr("編集へ"), "abandon", tip)]
+            tip = tr("bench.cannot_continue_so_go", addr=pc)
+            return [Button(tr("bench.edit"), "abandon", tip)]
         ins = disasm.decode(b.read, pc)
         specs = [
-            Button(tr("▶ 続ける"), "resume",
-                   tr("{addr:04X}番地から続けて実行する({c}G)", addr=pc, c=c)),
+            Button(tr("bench.continue"), "resume",
+                   tr("bench.continue_running_g", addr=pc, c=c)),
             Button(
-                tr("1命令"), "step",
-                tr("次の命令「{ins}」({addr:04X}番地)だけを実行して止まる({c}J)",
+                tr("bench.step_short"), "step",
+                tr("bench.run_only_next_instruction",
                    ins=ins.text(), addr=pc, c=c),
             ),
         ]  # fmt: skip
         if disasm.is_call(b.read, pc) and ins.target is not None:
             tip = tr(
-                "「{ins}」で{addr:04X}番地を呼び、RTNで戻ってくるまで実行して、次の命令で止まる({s}{c}J)",
+                "bench.call_run_until_rtn",
                 ins=ins.text(), addr=ins.target, s=s, c=c,
             )  # fmt: skip
-            specs.append(Button(tr("CALLごと"), "over", tip))
-        return specs + [brk] if b.rom else specs + [brk, back]
+            specs.append(Button(tr("bench.step_over"), "over", tip))
+        return specs + [brk] if b.live else specs + [brk, back]
 
     def _tip(self, dst: pygame.Surface, rect: pygame.Rect) -> None:
         """マウスを載せたボタンの説明を、ボタンのすぐ下に出す"""
@@ -257,20 +268,27 @@ class BenchView:
         dst.fill(BG, rect)
         self.hits = []
         x0, y = rect.x + 12, rect.y + 8
-        state = {"edit": tr("編集中"), "run": tr("実行中"), "pause": tr("一時停止中")}[b.state]
-        if b.rom:
-            title = tr("マシン語の作業欄  {state}", state=state)
+        state = {
+            "edit": tr("bench.editing"),
+            "run": tr("bench.running"),
+            "pause": tr("bench.paused"),
+        }[b.state]
+        if b.live:
+            title = tr("bench.machine_code_workbench", state=state)
             x = self._text(dst, x0, y, title, HEAD, self.jfont)
             # パソコンのキーがどちらへ行くか(一時停止中はいつも作業欄へ)
             if self.focus or b.state == "pause":
-                where, color = tr("キーは作業欄へ"), OK
+                where, color = tr("bench.keys_go_workbench"), OK
             else:
-                where, color = tr("キーは本体へ"), DIM  # 作業欄へ移す方法は、下の知らせに出る
+                where, color = (
+                    tr("bench.keys_go_machine"),
+                    DIM,
+                )  # 作業欄へ移す方法は、下のメッセージに出る
             self._text(dst, x + 12, y + 1, where, color, self.jfont)
             if self.focus and b.state != "pause":
                 pygame.draw.rect(dst, BTN_ON, rect, 2)
         else:
-            title = tr("マシン語(ROMなし)  {state}", state=state)
+            title = tr("bench.machine_code_no_rom", state=state)
             self._text(dst, x0, y, title, HEAD, self.jfont)
         y += 26
         # ボタン
@@ -283,18 +301,18 @@ class BenchView:
             btn.rect = pygame.Rect(bx, y, w, 26)
             self._button(dst, btn, i, y + 3)
             bx += w + 6
-        if b.state == "pause" and b.blocked(b.m.cpu.pc):
-            # 続けられない理由を、ボタンのすぐ横に出す(詳しい理由は下の知らせに出る)
-            note = tr("ROMなしでは使えない{addr:04X}番地で止まっています", addr=b.m.cpu.pc)
+        if b.state == "pause" and not b.basic_running and b.blocked(b.m.cpu.pc):
+            # 続けられない理由を、ボタンのすぐ横に出す(詳しい理由は下のメッセージに出る)
+            note = tr("bench.stopped_not_usable_without", addr=b.m.cpu.pc)
             if bx + self.jfont.size(note)[0] > rect.right - 12:
                 bx, y = x0, y + 32
             self._text(dst, bx + 4, y + 3, note, WARN, self.jfont)
         y += 34
         # 開始番地と液晶の設定
         x = self._start_field(dst, x0, y)
-        if b.rom:
-            # ROMのある本体では、マシン語はBASICから呼ぶ。液晶はROMが使うので消さない
-            note = tr("(BASICで CALL &{addr:04X} と打って呼ぶ)", addr=b.start)
+        if b.live:
+            # BASICのある本体では、マシン語はBASICから呼ぶ。液晶はBASICが使うので消さない
+            note = tr("bench.run_call_basic_call", addr=b.start)
             self._text(dst, x + 12, y, note, DIM, self.jfont)
             y = self._export_line(dst, x0, y + 24)
             return self._draw_rest(dst, rect, x0, y)
@@ -303,16 +321,16 @@ class BenchView:
         if b.clear_lcd:
             pygame.draw.line(dst, OK, (r.x + 3, r.y + 7), (r.x + 6, r.y + 11), 2)
             pygame.draw.line(dst, OK, (r.x + 6, r.y + 11), (r.x + 11, r.y + 3), 2)
-        x = self._text(dst, r.right + 6, y, tr("実行の前に液晶を消す"), DIM, self.jfont)
+        x = self._text(dst, r.right + 6, y, tr("bench.clear_lcd_before_run"), DIM, self.jfont)
         self.hits.append((pygame.Rect(r.x, r.y, x - r.x, 18), "clearlcd", 0))
         y = self._export_line(dst, x0, y + 24)
         self._draw_rest(dst, rect, x0, y)
 
     def _start_field(self, dst: pygame.Surface, x0: int, y: int) -> int:
         """開始番地の欄。クリックすると16進表記4桁で打てる。値は、ダンプと逆アセンブルの
-        開始番地の印と同じ色で出す。まだ自分で決めていなければ(自動)を添える"""
+        開始番地のマークと同じ色で出す。まだ自分で決めていなければ(自動)を添える"""
         b, cw = self.b, self.cw
-        x = self._text(dst, x0, y, tr("開始番地"), DIM, self.jfont) + 10
+        x = self._text(dst, x0, y, tr("bench.start"), DIM, self.jfont) + 10
         box = pygame.Rect(x - 4, y - 1, 4 * cw + 8, 20)
         typing = b.start_buf is not None
         pygame.draw.rect(dst, CURSOR if typing else BTN, box, 1, border_radius=3)
@@ -326,7 +344,7 @@ class BenchView:
             self._text(dst, x, y + 1, f"{b.start:04X}", START)
         x = box.right
         if b.start_by != "user" and not typing:
-            x = self._text(dst, x + 4, y, tr("(自動)"), DIM, self.jfont)
+            x = self._text(dst, x + 4, y, tr("bench.auto"), DIM, self.jfont)
         self.hits.append((pygame.Rect(x0, y - 1, x - x0, 20), "start", 0))
         return x
 
@@ -335,11 +353,11 @@ class BenchView:
         押せないときは暗く出し、マウスを載せると理由を出す"""
         b, c, s = self.b, self.cmd, self.shift
         note, on = b.undo_note()
-        tip = tr("{note}({key})", note=note, key=f"{c}Z") if on else note
-        undo = Button(tr("取り消す"), "undo", tip, enabled=on)
+        tip = tr("bench.note_key", note=note, key=f"{c}Z") if on else note
+        undo = Button(tr("bench.undo"), "undo", tip, enabled=on)
         note, on = b.undo_note(redo=True)
-        tip = tr("{note}({key})", note=note, key=f"{s}{c}Z") if on else note
-        redo = Button(tr("やり直す"), "redo", tip, enabled=on)
+        tip = tr("bench.note_key", note=note, key=f"{s}{c}Z") if on else note
+        redo = Button(tr("bench.redo"), "redo", tip, enabled=on)
         bx = right
         for btn in (redo, undo):
             w = self.jfont.size(btn.label)[0] + 16
@@ -351,10 +369,9 @@ class BenchView:
             self._button(dst, btn, len(self.buttons) - 1, y + 1)
 
     def _export_line(self, dst: pygame.Surface, x0: int, y: int) -> int:
-        """書き出しのボタン(右端に取り消しとやり直しのボタン)、次の行から書き出す範囲と合計の
-        バイト数(作業欄の幅で折り返す)。ボタンはいつも左端に置き、範囲がいくつあっても位置が
-        変わらないようにする。ボタンを押すと書き出す(⌘E・⇧⌘Eと同じ)。範囲の行をクリック
-        すると、範囲を打てる"""
+        """書き出しのボタンの行(右端に取り消しとやり直しのボタン)と、次の行から書き出す範囲と
+        合計のバイト数(作業欄の幅で折り返す)を描く。書き出しのボタンは、範囲がいくつあっても
+        位置が変わらないように、いつも左端に置く。範囲の行をクリックすると、範囲を打てる"""
         b = self.b
         ranges, at = self._ranges
         # RAMを調べるので、0.5秒に1回だけ求める(自分で範囲を決めたときはすぐ)
@@ -365,8 +382,8 @@ class BenchView:
         if ranges:
             x = x0
             for label, kind in (
-                (tr(".hexに書き出す {c}E", c=self.cmd), "export"),
-                (tr("ダンプリスト"), "listing"),  # ショートカット(⇧⌘E)はメニューと説明に出す
+                (tr("bench.export_hex_e", c=self.cmd), "export"),
+                (tr("bench.dump_list"), "listing"),  # ショートカット(⇧⌘E)はメニューと説明に出す
             ):
                 btn = pygame.Rect(x, y - 2, self.jfont.size(label)[0] + 16, 24)
                 pygame.draw.rect(dst, BTN, btn, border_radius=5)
@@ -374,7 +391,7 @@ class BenchView:
                 self.hits.append((btn, kind, 0))
                 x = btn.right + 6
         else:
-            self._text(dst, x0, y, tr("書き出すダンプはまだありません"), DIM, self.jfont)
+            self._text(dst, x0, y, tr("bench.no_dump_export_yet"), DIM, self.jfont)
         y += 26
         if b.span is not None:
             self._auto_button(dst, x0 + PANE_W - 24, y)
@@ -383,7 +400,7 @@ class BenchView:
         if not ranges:
             # 範囲の1行分をあけておき、取り消しで範囲がなくなってもダンプの位置を変えない。
             # 範囲を決める入口も置く
-            x = self._text(dst, x0, y, tr("範囲を指定する"), FG if self.span_hover else DIM,
+            x = self._text(dst, x0, y, tr("bench.set_range"), FG if self.span_hover else DIM,
                            self.jfont)  # fmt: skip
             self.hits.append((pygame.Rect(x0, y, x - x0, 20), "span", 0))
             return y + 20 + 4
@@ -391,20 +408,20 @@ class BenchView:
         # 範囲は2行まで。入りきらなければ、残りの数を出す
         width = PANE_W - 24
         if b.span is not None:
-            head = tr("範囲(指定、合計{n}バイト) ", n=size)
+            head = tr("bench.range_set_bytes", n=size)
         elif len(ranges) > 1:
-            head = tr("範囲({places}か所、合計{n}バイト) ", places=len(ranges), n=size)
+            head = tr("bench.ranges_bytes", places=len(ranges), n=size)
         else:
-            head = tr("範囲(合計{n}バイト) ", n=size)
-        lines, line, comma = [], head, tr("、")
+            head = tr("bench.range_bytes", n=size)
+        lines, line, comma = [], head, tr("common.ideographic_comma")
         for k, (lo, hi) in enumerate(ranges):
             part = span_text(lo, hi) + (comma if k < len(ranges) - 1 else "")
             rest = len(ranges) - k - 1
             # 2行目では、このあとに残りの数を書く場所もあけておく
-            tail = tr("ほか{n}か所", n=rest) if rest and len(lines) == 1 else ""
+            tail = tr("bench.more", n=rest) if rest and len(lines) == 1 else ""
             if self.jfont.size(line + part + tail)[0] > width:
                 if len(lines) == 1:
-                    line += tr("ほか{n}か所", n=len(ranges) - k)
+                    line += tr("bench.more", n=len(ranges) - k)
                     break
                 lines.append(line.rstrip())
                 line = "　　 "
@@ -419,7 +436,7 @@ class BenchView:
 
     def _auto_button(self, dst: pygame.Surface, right: int, y: int) -> None:
         """自分で決めた範囲を、書いた所から決める範囲に戻すボタン(範囲の行の右端)"""
-        label = tr("自動に戻す")
+        label = tr("bench.automatic")
         w = self.jfont.size(label)[0] + 16
         btn = pygame.Rect(right - w, y - 2, w, 22)
         pygame.draw.rect(dst, BTN, btn, border_radius=5)
@@ -429,7 +446,7 @@ class BenchView:
     def _span_field(self, dst: pygame.Surface, x0: int, y: int) -> int:
         """範囲を打っているあいだの欄(始めと終わりの番地を16進表記4桁ずつ)"""
         b, cw = self.b, self.cw
-        x = self._text(dst, x0, y, tr("範囲"), DIM, self.jfont) + 10
+        x = self._text(dst, x0, y, tr("bench.range"), DIM, self.jfont) + 10
         buf = b.span_buf or ""
         box = pygame.Rect(x - 4, y - 1, 10 * cw + 8, 20)
         pygame.draw.rect(dst, CURSOR, box, 1, border_radius=3)
@@ -443,7 +460,7 @@ class BenchView:
         return y + 20
 
     def _draw_rest(self, dst: pygame.Surface, rect: pygame.Rect, x0: int, y: int) -> None:
-        """ダンプ、逆アセンブル、レジスタ、内部RAM、下の知らせ"""
+        """ダンプ、逆アセンブル、レジスタ、内部RAM、下のメッセージを描く"""
         b, lh = self.b, self.LH
         # 残りの高さをダンプと逆アセンブルに分ける
         iram = lh * (self.IRAM_ROWS + 1) if self.show_iram else lh
@@ -527,14 +544,14 @@ class BenchView:
 
     def _disasm(self, dst, x0: int, y: int) -> int:
         b, cw, lh = self.b, self.cw, self.LH
-        x = self._text(dst, x0, y, tr("逆アセンブル"), HEAD, self.jfont)
-        note = tr("(左の印をクリックで止める所)")
+        x = self._text(dst, x0, y, tr("bench.disassembly"), HEAD, self.jfont)
+        note = tr("bench.click_dot_breakpoint")
         self._text(dst, max(x0 + 130, x + 12), y + 1, note, DIM, self.jfont)
         y += lh + 2
         pc = b.m.cpu.pc
         focus = b.cursor  # ダンプのカーソル(一時停止したときはPCに置かれる)
         cm = b.code_map()
-        tag_w = self.jfont.size(tr("開始"))[0]
+        tag_w = self.jfont.size(tr("bench.start_tag"))[0]
         for ins in b.disasm_from(focus, self.rows, focus):
             a = ins.addr
             if a <= b.cursor < a + ins.size:
@@ -542,11 +559,11 @@ class BenchView:
             at_pc = b.state == "pause" and a == pc
             if at_pc:
                 pygame.draw.rect(dst, PCLINE, (x0 - 4, y, PANE_W - 24, lh - 1))
-            if at_pc or a == b.start:  # PCの行の印は開始番地の印より先
+            if at_pc or a == b.start:  # PCの行のマークを開始番地のマークより優先する
                 tri = [(x0 + 12, y + 3), (x0 + 12, y + 13), (x0 + 18, y + 8)]
                 pygame.draw.polygon(dst, OK if at_pc else START, tri)
             if a == b.start:
-                tag = self.jfont.render(tr("開始"), True, START)
+                tag = self.jfont.render(tr("bench.start_tag"), True, START)
                 dst.blit(tag, (x0 + PANE_W - 32 - tag.get_width(), y - 1))
             if a in b.breaks:
                 pygame.draw.circle(dst, BREAK, (x0 + 5, y + 8), 5)
@@ -559,7 +576,7 @@ class BenchView:
             self._text(dst, x + 5 * cw, y, f"{data:<8}", DIM)
             if b.blocked(a):
                 # ROMなしではROMの中身がない(0が並んでいるだけ)ので、命令としては出さない
-                self._text(dst, x + 14 * cw, y, tr("(ROMの中身なし)"), DIM, self.jfont)
+                self._text(dst, x + 14 * cw, y, tr("bench.no_rom_contents"), DIM, self.jfont)
             else:
                 kind, why = cm.state(a)
                 if not b.in_ram(a):
@@ -581,8 +598,8 @@ class BenchView:
                     self.hits.append((pygame.Rect(mx - 2, y, img.get_width() + 4, lh), "why", a))
             self.hits.append((pygame.Rect(x, y, 30 * cw, lh), "goto", a))
             y += lh
-        # 右端の印の見方(詳しい理由は、印にマウスを載せると出る)
-        legend = tr("✓:実行済み　.:静的解析　?:推定　U:ユーザ指定")
+        # 右端の記号の凡例(詳しい理由は、記号にマウスを載せると出る)
+        legend = tr("bench.marks_right_executed_static")
         self._text(dst, x0, y + 1, legend, DIM, self.small)
         return y + lh
 
@@ -593,11 +610,11 @@ class BenchView:
         hit = next((r for r, kind, _a in self.hits if kind == "span"), None)
         if hit is None:
             return
-        lines = [tr("クリックすると、書き出す範囲を打てます")]
+        lines = [tr("bench.click_type_export_range")]
         self._tooltip(dst, rect, lines, (hit.x, hit.bottom + 2))
 
     def _why_tip(self, dst: pygame.Surface, rect: pygame.Rect) -> None:
-        """マウスを載せた、理由の印の説明を、その行のすぐ下に出す(右に寄せる)"""
+        """マウスを載せた理由の記号の説明を、その行のすぐ下に出す(右に寄せる)"""
         if self.why_at < 0:
             return
         hit = next((r for r, kind, a in self.hits if kind == "why" and a == self.why_at), None)
@@ -614,9 +631,9 @@ class BenchView:
         cpu = b.m.cpu
         ram, old = cpu.ram, b.prev_regs
         mark = b.state != "run" and b.ran
-        x = self._text(dst, x0, y, tr("レジスタ"), HEAD, self.jfont)
+        x = self._text(dst, x0, y, tr("bench.registers"), HEAD, self.jfont)
         cyc = cpu.cycles - b.c0 if b.ran else 0
-        self._text(dst, max(x0 + 80, x + 12), y + 1, tr("サイクル {n}", n=cyc), DIM, self.jfont)
+        self._text(dst, max(x0 + 80, x + 12), y + 1, tr("bench.cycles", n=cyc), DIM, self.jfont)
         y += lh + 2
 
         def item(x: int, label: str, text: str, changed: bool) -> int:
@@ -647,11 +664,11 @@ class BenchView:
         y += lh + 4
         # 見出しをクリックすると、内部RAMの行を開く・閉じる
         mark_s = "▼" if self.show_iram else "▶"
-        x = self._text(dst, x0, y, f"{mark_s} " + tr("内部RAM"), HEAD, self.jfont)
+        x = self._text(dst, x0, y, f"{mark_s} " + tr("bench.internal_ram"), HEAD, self.jfont)
         if self.show_iram:
-            note = tr("(00〜0Bは I J A B XL XH YL YH K L M N)")
+            note = tr("bench.00_0b_i_j")
         else:
-            note = tr("(クリックで開く)")
+            note = tr("bench.click_open")
         x = self._text(dst, x + 8, y + 1, note, DIM, self.jfont)
         self.hits.append((pygame.Rect(x0, y, x - x0, lh), "iram", 0))
         y += lh + 2
@@ -691,30 +708,29 @@ class BenchView:
     def hint(self) -> str:
         b, c = self.b, self.cmd
         if b.start_buf is not None:
-            return tr("開始番地を16進表記4桁で打つ  {c}Vで貼り付け  Escでやめる", c=c)
+            return tr("bench.type_4_digit_hex", c=c)
         if b.span_buf is not None:
             return tr(
-                "始めと終わりの番地を16進表記4桁ずつ打つ  何も打たずにEnterで自動に戻す  "
-                "{c}Vで貼り付け  Escでやめる",
+                "bench.type_first_last_addresses",
                 c=c,
             )
-        if b.rom and b.state == "run":
+        if b.live and b.state == "run":
             if not self.focus:
-                return tr("作業欄をクリックすると、キーで作業欄のダンプを書けます")
+                return tr("bench.click_workbench_write_dump")
             return tr(
-                "16進表記で打つ  {c}.で一時停止  {c}Bで止める所  本体のクリックでキーは本体へ", c=c
+                "bench.type_hex_pause_b",
+                c=c,
             )
-        if b.rom and b.state == "pause":
-            return tr("{c}Gで続ける  {c}Jで次の1命令だけ実行  {s}{c}JでCALLごと", c=c, s=self.shift)
+        if b.live and b.state == "pause":
+            return tr("bench.g_continue_j_step", c=c, s=self.shift)
         if b.state == "run":
-            return tr("実行中です。キーはPC-1251へ(EscはBRK)。{c}.で一時停止", c=c)
+            return tr("bench.running_keys_go_esc", model=b.m.model.title, c=c)
         if b.state == "pause":
-            return tr("{c}Gで続ける  {c}Jで次の1命令だけ実行  Escで編集に戻る", c=c)
+            return tr("bench.g_continue_j_step_c_c", c=c)
         if b.field == "addr":
-            return tr("番地を4桁打ってSpace。続けて8バイトを打ってEnter(本のダンプリストと同じ)")
+            return tr("bench.type_4_digit_address")
         return tr(
-            "16進表記で打つ  Enterで次の行  Tabで番地を打って飛ぶ  {c}Gで実行  "
-            "{c}Aでカーソルの所を開始番地に  {c}Vで貼り付け",
+            "bench.type_hex_enter_next",
             c=c,
         )
 

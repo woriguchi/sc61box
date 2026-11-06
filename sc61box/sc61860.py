@@ -1,21 +1,23 @@
 """SHARP SC61860(ESR-H)のCPUコア
 
-命令の意味とサイクル数はMAMEの実装(src/devices/cpu/sc61860)にならい、次の命令だけ変えた。
+命令の意味とサイクル数はMAMEの実装にならい、次の命令だけ変えた。
 
 * 56h(READ)・54h(READM): 1バイト命令。次の番地のバイトをAか(P)に読み、そのバイトは
   命令として残す(MAMEは2バイト命令)。LC-3コンパイラは、READMの次のバイトを命令として
   実行させている。
 * LOOP: 抜けるときだけスタックの回数を捨てる(MAMEは飛ぶたびに捨てる)。
-* WAIT n: 6+nサイクル(utz82の表、POPCOMの講座。MAMEは9+2n)。
-* CUP・CDN: 待つあいだPを1つずつ増やし、終わったときXinが0ならZを立てる(PC-1350の
-  機械語マニュアル、utz82の表。MAMEは(P)を増やし、ZにXinを入れる)。
-* IYS・DYSは6サイクル、PTCは8、DTCは5+7d(PC-1350の機械語マニュアル)。
-* ANID・ORID・TSID: 書き換える前の(DP)を(R-1)に置く(同じマニュアルとutz82の表)。
-* 72h・73h・76h・77h(LIIH n、資料にない命令): 2バイト命令で、I=H、H=n、Z=0(utz82の表)。
+* WAIT n: 6+nサイクル(MAMEは9+2n)。
+* CUP・CDN: 待つあいだPを1つずつ増やし、終わったときXinが0ならZを立てる(MAMEは(P)を
+  増やし、ZにXinを入れる)。
+* IYS・DYSは6サイクル、PTCは8、DTCは5+7d。
+* ANID・ORID・TSID: 書き換える前の(DP)を(R-1)に置く。
+* 72h・73h・76h・77h(LIIH n): 2バイト命令で、I=H、H=n、Z=0。
   「走れ!セコイライン」COR版が「72 00」をI=0の意味で使っている。MAMEは何もしない。
+* ADN・SBN・ADW・SBW: 1バイトごとに2進で足し引きしてから、Z80のDAAと同じ補正をする
+  (MAMEは桁ごとに10進で計算する)。10進でない桁(A〜F)を含むときに答えが違う。PC-1350の
+  BASICは&0を読むとき、指数にFの桁を置いたままSBNで1を引く。
 
-READ・LOOP・WAITの根拠は『PC-インタープリタを読む』1.4節、CUP・CDNはROMのカセットの
-読み書きに合わせ、PockEmulとPokecomGOの実装とも比べた。
+CUP・CDNの動きは、ROMのカセットの読み書きが正しく動くことで確かめた。
 """
 
 from .i18n import tr
@@ -68,31 +70,36 @@ class Bus:
 
 
 def _bcd_add(dst: int, src: int, carry: int) -> tuple[int, int]:
-    lo = (dst & 0x0F) + (src & 0x0F) + carry
-    c = 0
-    if lo > 9:
-        lo -= 10
+    """2進で足してから10進に補正する(Z80のDAAと同じ補正)"""
+    r = dst + src + carry
+    half = (dst & 0x0F) + (src & 0x0F) + carry > 0x0F
+    c = 1 if r > 0xFF else 0
+    v = r & 0xFF
+    if (v & 0x0F) > 9 or half:
+        r = v + 6
+    else:
+        r = v
+    if v > 0x99 or c:
+        r += 0x60
         c = 1
-    hi = (dst >> 4) + (src >> 4) + c
-    c = 0
-    if hi > 9:
-        hi -= 10
-        c = 1
-    return ((hi << 4) | lo) & 0xFF, c
+    return r & 0xFF, c
 
 
 def _bcd_sub(dst: int, src: int, borrow: int) -> tuple[int, int]:
-    lo = (dst & 0x0F) - (src & 0x0F) - borrow
-    c = 0
-    if lo < 0:
-        lo += 10
+    """2進で引いてから10進に補正する(Z80のDAAと同じ補正。8086のDASと違い、6を引いたときの
+    借りではキャリーを立てない)"""
+    r = dst - src - borrow
+    half = (dst & 0x0F) - (src & 0x0F) - borrow < 0
+    c = 1 if r < 0 else 0
+    v = r & 0xFF
+    if (v & 0x0F) > 9 or half:
+        r = v - 6
+    else:
+        r = v
+    if v > 0x99 or c:
+        r -= 0x60
         c = 1
-    hi = (dst >> 4) - (src >> 4) - c
-    c = 0
-    if hi < 0:
-        hi += 10
-        c = 1
-    return ((hi << 4) | lo) & 0xFF, c
+    return r & 0xFF, c
 
 
 class SC61860:
@@ -103,18 +110,20 @@ class SC61860:
         # (PC-1261などは768kHz)では、命令のサイクル数をratio(分子, 分母)倍して足す
         self.ratio = ratio
         self._frac = 0
+        self.cycles = 0
         self.trapped = False  # runがguardの番地で止まったか
         self.reset()
         self._ops = [self._build(op) for op in range(256)]
 
     def reset(self) -> None:
+        """レジスタを初めの値にする。cyclesは戻さない(周辺と共通の時刻なので、RESETやONのあとも
+        進み続ける。戻すと、キーの打ち込みなど、時刻で待っているものがいつまでも終わらない)"""
         self.pc = 0
         self.dp = 0
         self.p = self.q = self.r = 0
         self.c = self.z = 0
         self.h = 0  # PTCで積む件数
         self.hreg = 0  # LIIHが読み書きするHレジスタ
-        self.cycles = 0
 
     REGISTERS = ("pc", "dp", "p", "q", "r", "c", "z", "h", "hreg", "cycles", "_frac")
 
@@ -131,24 +140,24 @@ class SC61860:
     def check_state(self, state: object) -> dict:
         """stateの値を確かめて、set_stateに渡せる形にして返す。おかしければValueError"""
         if not isinstance(state, dict):
-            raise ValueError(tr("CPUの状態がありません"))
+            raise ValueError(tr("cpu.no_cpu_state"))
         out: dict[str, int | bytes] = {}
         for name in self.REGISTERS:
             v = state.get(name)
             if type(v) is not int or v < 0:
-                raise ValueError(tr("CPUの{name}がおかしい値です", name=name))
+                raise ValueError(tr("cpu.bad_value_cpu", name=name))
             if name == "_frac":
                 if v >= self.ratio[1]:
-                    raise ValueError(tr("CPUの{name}がおかしい値です", name=name))
+                    raise ValueError(tr("cpu.bad_value_cpu", name=name))
             elif v > self._LIMITS.get(name, v):
-                raise ValueError(tr("CPUの{name}がおかしい値です", name=name))
+                raise ValueError(tr("cpu.bad_value_cpu", name=name))
             out[name] = v
         try:
             ram = bytes.fromhex(state.get("ram", ""))
         except (TypeError, ValueError):
             ram = b""
         if len(ram) != len(self.ram):
-            raise ValueError(tr("CPUの内部RAMの大きさが違います"))
+            raise ValueError(tr("cpu.cpu_internal_ram_size"))
         out["ram"] = ram
         return out
 
@@ -201,9 +210,9 @@ class SC61860:
         周辺がcyclesで読むので、cyclesは命令ごとに進める。
 
         guard(番地ごとのバイト列)を渡すと、命令を読む前にPCの番地を見て、0でなければ
-        その命令を実行せずに止まり、trappedをTrueにする(マシン語の作業欄の止める所)。
+        その命令を実行せずに止まり、trappedをTrueにする(マシン語の作業欄のブレークポイント)。
         seen(番地ごとのバイト列)を渡すと、命令を読んだPCの番地に1を書く(作業欄の
-        逆アセンブルで、実行した命令の印にする)"""
+        逆アセンブルで、実行した命令を見分けるのに使う)"""
         ops = self._ops
         fetch = self._fetch
         start = self.cycles

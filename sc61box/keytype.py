@@ -17,7 +17,7 @@ def normalize(text: str) -> str:
     return text.replace("\\", "¥")
 
 
-# SHIFTを押してから打つ記号(MAMEのキー名による)
+# SHIFTを押してから打つ記号
 SHIFTED = {
     ">": "-",
     "<": "*",
@@ -49,7 +49,7 @@ MODELS_1261 = ("1260", "1261", "1262")
 
 def _kana_table(plain_keys: str, shift_keys: str) -> dict[str, list[list[str]]]:
     """カナの入力での、字ごとの打鍵。plain_keysはキーだけで打つ字のキー、shift_keysは
-    SHIFTを押してから打つ字(「・」の印のあるキーでは小さい字)のキー"""
+    SHIFTを押してから打つ字(「・」の記号があるキーでは小さい字)のキー"""
     table = {ch: [[k]] for ch, k in zip(_KANA_PLAIN, plain_keys, strict=True)}
     table.update({ch: [["SHIFT"], [k]] for ch, k in zip(_KANA_SHIFT, shift_keys, strict=True)})
     return table
@@ -244,7 +244,7 @@ def _keys_for_1350(text: str) -> list[list[str]]:
 # 2回目からはその長さを見積もって、残りに収まるだけ打つ。
 LINE_MAX = 79
 
-# BASICの命令と関数の綴り(PC-1251のBASIC ROMの表から)。中間コードでは1字になる
+# BASICの命令と関数の綴り(PC-1251で打つと、中間コードの1字になるもの)
 KEYWORDS = sorted(
     """OUTSTAT RESTORE DEGREE INKEY$ INSTAT LPRINT RADIAN RANDOM RETURN RIGHT$ SETCOM
     AREAD CHAIN CLEAR CLOAD CSAVE DEBUG ERROR GOSUB INPUT LEFT$ LLIST MERGE PAUSE
@@ -441,12 +441,12 @@ def _append_fits(line: str, parts: list[str]) -> bool:
 
 def too_long(text: str, model: str = "1251") -> str | None:
     """keys_for_programで打ち込むと欠ける最初の行。どの行も欠けずに入ればNone。
-    S1系はカナを2字に数え、カナを含めて79字を超える行は入らないとみる"""
-    s1 = model in MODELS_1261 or model == "1350"
+    PC-1261系とPC-1350はカナを2字に数え、カナを含めて79字を超える行は入らないとみる"""
+    pc1261 = model in MODELS_1261 or model == "1350"
     for line in normalize(text).split("\n"):
         if not line.strip():
             continue
-        if s1:
+        if pc1261:
             typed = typed_text(line, model)
             kana = sum(1 for ch in typed if "\uff61" <= ch <= "\uff9f")
             if kana and len(typed) + kana > LINE_MAX:

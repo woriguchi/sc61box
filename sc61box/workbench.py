@@ -1,11 +1,11 @@
 """マシン語の作業欄(ROMなしで、マシン語を打ち込み、実行し、1命令ずつ調べる)
 
 ROMのファイルがなくても、CPU、液晶、キー、ブザー、タイマはエミュレータが動かせる。
-BASICとROMのルーチンの代わりに、この作業欄が次のことを受け持つ。
+BASICと代替ROMルーチンに、この作業欄が次のことを受け持つ。
 
 - 16進ダンプの打ち込み(番地、8バイト、チェックサムの行。本のダンプリストと同じ形)
 - 打ち込んだマシン語の逆アセンブル
-- 実行(戻り先を積んでから飛ぶ。RTNで戻ると終わる)、一時停止、1命令ずつの実行、止める所
+- 実行(戻り先を積んでから飛ぶ。RTNで戻ると終わる)、一時停止、1命令ずつの実行、ブレークポイント
 - レジスタと内部RAMの表示(前に止まったときから変わったところに色をつける)
 
 Benchは画面を持たない部分で、試験から直接使える。描くのはbenchview.BenchView。
@@ -18,8 +18,8 @@ import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 
-from . import codemap, disasm, norom, romsyms
-from .i18n import language, tr
+from . import codemap, disasm, norom, routines
+from .i18n import Text, language, tr
 
 SENTINEL = 0x0000  # 実行を始めるときに積む戻り先。ここへ戻ったら終わり
 STACK_TOP = 0x5C  # 実行を始めるときのR(内部RAMの5C〜5Fは入出力のポートの値)
@@ -28,6 +28,15 @@ ROW = 8  # ダンプの1行のバイト数(本のダンプリストと同じ)
 
 def checksum(data: bytes) -> int:
     return sum(data) & 0xFF
+
+
+@dataclass(frozen=True)
+class Said:
+    """開始番地や範囲を決める操作のメッセージと、決められたか(okでなければ、textは理由。
+    打っている途中なら空)"""
+
+    text: str
+    ok: bool = False
 
 
 @dataclass
@@ -45,11 +54,11 @@ class Edit:
     メモリを比べて、変わったところだけを持つ。番地はメモリの実体の番地(ミラーの番地に書いても、
     同じRAMは1つにまとまる)。before・afterは書く前と書いたあとのカーソルと開始番地"""
 
-    # 知らせに出す名前(「C003番地の打ち込み」など)。言語を切り替えても出すときの言語に
+    # メッセージに出す名前(「C003番地の打ち込み」など)。言語を切り替えても出すときの言語に
     # なるように、名前を作る関数を持つ
     what: Callable[[], str]
     mem: dict[int, tuple[int, int]] = field(default_factory=dict)  # 実体の番地: (前, 後)
-    marks: dict[int, tuple[int, int]] = field(default_factory=dict)  # 書いた印: (前, 後)
+    marks: dict[int, tuple[int, int]] = field(default_factory=dict)  # writtenのフラグ: (前, 後)
     before: tuple = ()
     after: tuple = ()
     at: int = 0  # 打ち込んだ番地(打ち込みのとき)
@@ -149,14 +158,18 @@ MAP_EVERY = 0.3  # 実行中に、命令とデータの見分けを作り直す�
 class Bench:
     """作業欄の状態と操作(画面を持たない)。
 
-    ROMなしの本体では、作業欄からマシン語を実行する(編集中・実行中・一時停止中)。
-    ROMのある本体では、本体はいつもROMで動いていて(実行中)、マシン語はBASICのCALLで呼ぶ。
-    作業欄は、止める所で止めたり、一時停止して1命令ずつ進めたりする道具になる。ROMの中にも
-    止める所を置け、1命令ずつ進められる"""
+    BASICのない本体(ROMなしで、ROMなしのBASICもない機種)では、作業欄からマシン語を実行する
+    (編集中・実行中・一時停止中)。BASICのある本体(ROMのある本体と、ROMなしのBASICを付けた
+    本体)では、本体はいつもBASICで動いていて(実行中)、マシン語はBASICのCALLか、実行の
+    ボタン(BASICが入力を待っているときにCALLを打つ)で呼ぶ。作業欄は、ブレークポイントで止めたり、
+    一時停止して1命令ずつ進めたりする道具になる。ROMのある本体では、ROMの中にもブレークポイントを
+    置け、1命令ずつ進められる"""
 
     def __init__(self, m, start: int | None = None) -> None:
         self.m = m
         self.rom = not m.norom  # ROMのある本体か
+        # BASICで動いている本体か(ROMのある本体か、ROMなしのBASICを付けた本体)
+        self.live = self.rom or getattr(m, "basic", None) is not None
         norom.install(m)
         lo, hi = m.model.ram
         if start is None:
@@ -170,13 +183,14 @@ class Bench:
         # 自分で決めた書き出す範囲([始め, 終わり))。Noneなら書いた所から決める
         self.span: tuple[int, int] | None = None
         self.span_buf: str | None = None  # 範囲の欄に打っている途中の字(始めと終わりの8桁まで)
-        # edit(編集中)、run(実行中)、pause(一時停止中)。ROMのある本体はrunから始まり、
+        # edit(編集中)、run(実行中)、pause(一時停止中)。BASICのある本体はrunから始まり、
         # editにはならない
-        self.state = "run" if self.rom else "edit"
-        self.reason = ""  # 止まった理由など、作業欄の下に出す知らせ
+        self.state = "run" if self.live else "edit"
+        # 止まった理由など、作業欄の下に出すメッセージ。IDと値で持ち、出すときに訳す(reason)
+        self._reason: str | Text = ""
         self.breaks: set[int] = set()
-        self.temp_stop: int | None = None  # 呼び出しを飛び越すときの止める所
-        self.temp_r = 0  # 呼び出しを飛び越す前のR(戻ってきたら、Rはこれと同じ)
+        self.temp_stop: int | None = None  # 呼び出しを飛び越すときのブレークポイント
+        self.temp_r = 0  # 呼び出しを飛び越す前のR(戻ってきたら、Rはtemp_rと同じ)
         # 次に実行を進めるときに、止めずに1命令だけ実行する番地(再帰の内側の戻り先)
         self.pass_pc: int | None = None
         self.clear_lcd = True  # 実行の前に液晶を消して表示をつける
@@ -195,6 +209,7 @@ class Bench:
         self.prev_ptr = self.ptrs()
         self.ran = False  # 1度でも実行したか(レジスタの色づけに使う)
         self._guard: bytearray | None = None
+        self._guard_ram: tuple[int, int] | None = None  # _guardを作ったときのRAMの範囲
         # 作業欄から書いた番地(打ち込み、貼り付け、ファイルの読み込み)。書き出す範囲に使う。
         # 0のバイトも書いたものとして数える
         self.written = bytearray(0x10000)
@@ -208,7 +223,7 @@ class Bench:
         # 読み込んだプログラムの# data: の範囲。ダンプを書くと、その範囲の指定を消してから
         # 置き直す
         self.prog_data: list[tuple[int, int | None]] = []
-        self._before: tuple[bytes, bytes] = (b"", b"")  # 書き込みを始めたときのメモリと書いた印
+        self._before: tuple[bytes, bytes] = (b"", b"")  # 書き込みを始めたときのメモリとwritten
         # 命令とデータの見分け(code_map)と、作ったときの材料と時刻
         self._map: codemap.CodeMap | None = None
         self._map_key: tuple = ()
@@ -219,10 +234,16 @@ class Bench:
     def read(self, a: int) -> int:
         return self.m.read(a & 0xFFFF)
 
-    def blocked(self, pc: int) -> str:
-        """番地pcの命令を実行できなければ、その理由(できれば空)。RAMの外は、まねられる
+    @property
+    def basic_running(self) -> bool:
+        """ROMなしのBASICが動いているか(マシン語は実行していないので、CPUのPCは止まった所ではない)"""
+        basic = getattr(self.m, "basic", None)
+        return basic is not None and basic.active
+
+    def blocked(self, pc: int) -> str | Text:
+        """番地pcの命令を実行できなければ、その理由(できれば空)。RAMの外は、代替ROMルーチンのある
         ROMのルーチンの入口のほかは実行できない(ROMなしではROMの中身がない)"""
-        if self.rom or self.in_ram(pc) or pc in norom.ROUTINES:
+        if self.rom or self.in_ram(pc) or pc in routines.for_machine(self.m):
             return ""
         return self._outside(pc)
 
@@ -237,7 +258,7 @@ class Bench:
         return lo <= a < hi or bool(mirror and mirror[0] <= a < mirror[1])
 
     def write(self, a: int, v: int) -> bool:
-        """番地aにvを書き、書いた印をつける"""
+        """番地aにvを書き、writtenのフラグを立てる"""
         a &= 0xFFFF
         if not self.m.writable(a):
             return False
@@ -248,7 +269,7 @@ class Bench:
         return True
 
     def _forget_run(self, at: int) -> None:
-        """RAMの番地atで実行した印を消す。ミラーの番地から実行した印(CPUはミラーの番地で覚える)も
+        """RAMの番地atのexecutedのフラグを消す。ミラーの番地のフラグ(CPUはミラーの番地で記録する)も
         消す"""
         self.executed[at] = 0
         mirror = self.m.model.mirror
@@ -256,7 +277,8 @@ class Bench:
             self.executed[at - mirror[2]] = 0
 
     def _mark_at(self, a: int) -> int:
-        """書いた印を置く番地。ミラーの番地に書いたものは、RAMの番地に書いたものとして数える"""
+        """writtenのフラグを立てる番地。ミラーの番地に書いたものは、"
+        "RAMの番地に書いたものとして数える"""
         mirror = self.m.model.mirror
         if mirror and mirror[0] <= a < mirror[1]:
             return a + mirror[2]
@@ -273,7 +295,7 @@ class Bench:
             self.start, self.start_by = start, start_by
 
     def _begin(self, what: Callable[[], str], edit: Edit | None = None) -> Edit:
-        """書き込みを始める。書く前のメモリと書いた印を控えておく(editがあれば、その続き)"""
+        """書き込みを始める。書く前のメモリとwrittenを控えておく(editがあれば、その続き)"""
         self._before = (bytes(self.m.mem), bytes(self.written))
         return edit if edit is not None else Edit(what, before=self._view())
 
@@ -309,10 +331,10 @@ class Bench:
         self._set_view(edit.after if new else edit.before)
 
     def can_undo(self) -> bool:
-        return bool(self.undos) and not (self.state == "run" and not self.rom)
+        return bool(self.undos) and not (self.state == "run" and not self.live)
 
     def can_redo(self) -> bool:
-        return bool(self.redos) and not (self.state == "run" and not self.rom)
+        return bool(self.redos) and not (self.state == "run" and not self.live)
 
     def undo_note(self, redo: bool = False) -> tuple[str, bool]:
         """取り消し(redoならやり直し)の説明と、いまできるか。できなければ説明は理由"""
@@ -320,10 +342,14 @@ class Bench:
         if self.can_redo() if redo else self.can_undo():
             return self.describe(stack[-1], not redo), True
         if stack:
-            return (tr("実行中はやり直せません") if redo else tr("実行中は取り消せません")), False
+            return (
+                tr("bench.cannot_redo_while_running")
+                if redo
+                else tr("bench.cannot_undo_while_running")
+            ), False
         if redo:
-            return tr("やり直せる書き込みはありません"), False
-        return tr("取り消せる書き込みはありません"), False
+            return tr("bench.nothing_redo"), False
+        return tr("bench.nothing_undo"), False
 
     @staticmethod
     def describe(edit: Edit, undo: bool) -> str:
@@ -332,36 +358,34 @@ class Bench:
         if edit.at and len(edit.mem) == 1:
             old, new = next(iter(edit.mem.values()))
             if undo:
-                return tr("{addr:04X}番地を{new:02X}から{old:02X}に戻す",
+                return tr("bench.set_back",
                           addr=edit.at, new=new, old=old)  # fmt: skip
-            return tr(
-                "{addr:04X}番地を{old:02X}から{new:02X}にする", addr=edit.at, new=new, old=old
-            )
+            return tr("bench.set", addr=edit.at, new=new, old=old)
         if undo:
-            return tr("{what}を取り消す", what=edit.what())
-        return tr("{what}をやり直す", what=edit.what())
+            return tr("bench.undo_what", what=edit.what())
+        return tr("bench.redo_what", what=edit.what())
 
     def undo(self) -> str:
-        """直前の書き込みを取り消す。知らせの文を返す"""
-        if self.state == "run" and not self.rom:
-            return tr("実行中は取り消せません")
+        """直前の書き込みを取り消す。メッセージを返す"""
+        if self.state == "run" and not self.live:
+            return tr("bench.cannot_undo_while_running")
         if not self.undos:
-            return tr("取り消せる書き込みはありません")
+            return tr("bench.nothing_undo")
         edit = self.undos.pop()
         self._apply(edit, new=False)
         self.redos.append(edit)
-        return tr("{what}を取り消しました", what=edit.what())
+        return tr("bench.undid", what=edit.what())
 
     def redo(self) -> str:
-        """取り消した書き込みをやり直す。知らせの文を返す"""
-        if self.state == "run" and not self.rom:
-            return tr("実行中はやり直せません")
+        """取り消した書き込みをやり直す。メッセージを返す"""
+        if self.state == "run" and not self.live:
+            return tr("bench.cannot_redo_while_running")
         if not self.redos:
-            return tr("やり直せる書き込みはありません")
+            return tr("bench.nothing_redo")
         edit = self.redos.pop()
         self._apply(edit, new=True)
         self.undos.append(edit)
-        return tr("{what}をやり直しました", what=edit.what())
+        return tr("bench.redid", what=edit.what())
 
     def row_bytes(self, a: int) -> bytes:
         return bytes(self.read(a + i) for i in range(ROW))
@@ -373,8 +397,8 @@ class Bench:
 
     def type_hex(self, v: int) -> str:
         """16進表記の1字(0〜15)を打つ。打てなかったら理由を返す"""
-        if self.state == "run" and not self.rom:
-            return tr("実行中は書き換えられません")
+        if self.state == "run" and not self.live:
+            return tr("bench.cannot_edit_while_running")
         self.addr_done = False
         if self.field == "addr":
             shift = 12 - 4 * self.nib
@@ -387,18 +411,18 @@ class Bench:
                 self.addr_done = True
             return ""
         if self.col >= ROW:
-            return tr("行の終わりです。Enterで次の行へ")
+            return tr("bench.end_line_enter_goes")
         a = self.cursor
         old = self.read(a)
         new = (old & 0x0F | v << 4) if self.nib == 0 else (old & 0xF0 | v)
         if not self.m.writable(a):
-            return tr("{addr:04X}番地はRAMの外なので書けません", addr=a)
+            return tr("bench.outside_ram_cannot_written", addr=a)
         # 1バイトの2桁は、続けて打てば1回の打ち込みとして取り消す
         top = self.undos[-1] if self.undos else None
         if self.nib == 1 and top is not None and top.partial and top.at == a:
             edit = self._begin(top.what, self.undos.pop())
         else:
-            edit = self._begin(lambda: tr("{addr:04X}番地の打ち込み", addr=a))
+            edit = self._begin(lambda: tr("bench.typing", addr=a))
             edit.at = a
         edit.partial = self.nib == 0
         self.write(a, new)
@@ -525,7 +549,7 @@ class Bench:
         res = PasteResult()
         rows, res.skipped = parse_dump(text)
         at = self.cursor if self.field == "data" else self.row
-        edit = self._begin(lambda: tr("貼り付け"))
+        edit = self._begin(lambda: tr("bench.paste"))
         for addr, data, total in rows:
             if addr is not None:
                 at = addr
@@ -546,7 +570,7 @@ class Bench:
             self.go(res.first)
         if res.written:
             n = res.written
-            edit.what = lambda: tr("貼り付け({n}バイト)", n=n)
+            edit.what = lambda: tr("bench.paste_bytes", n=n)
             self._commit(edit)
         return res
 
@@ -559,7 +583,7 @@ class Bench:
             for a in [a for a in self.marks if lo <= a < hi]:
                 del self.marks[a]
         # 前のプログラムの、手前から続くデータの指定は、読み込んだ所の手前で切る(読み込んだ
-        # 所から先は推し量り)。いま読み込んでいるプログラムの# data: の指定は切らない
+        # 所から先は推測する)。いま読み込んでいるプログラムの# data: の指定は切らない
         own = {lo for lo, _hi in self.prog_data}
         for lo, _hi in spans:
             before = [a for a in self.marks if a < lo]
@@ -606,7 +630,7 @@ class Bench:
         self._put_data()
 
     def _put_data(self) -> None:
-        """prog_dataの範囲をデータの指定にする。範囲の終わりには、データをそこで終える印
+        """prog_dataの範囲をデータの指定にする。範囲の終わりには、データをそこで終える指定
         ("end")を置く(そこに指定がなければ)"""
         for lo, hi in self.prog_data:
             if not self.real_ram(lo):
@@ -614,7 +638,7 @@ class Bench:
             self.marks[lo] = "data"
             if hi is not None and self.real_ram(hi) and hi not in self.marks:
                 self.marks[hi] = "end"
-        for lo, hi in self.prog_data:  # 番地だけの指定は、ほかの範囲の終わりの印より先に効く
+        for lo, hi in self.prog_data:  # 番地だけの指定を、ほかの範囲の終わりの"end"より優先する
             if hi is None and self.real_ram(lo):
                 self.marks[lo] = "data"
 
@@ -675,62 +699,62 @@ class Bench:
         """番地addrを開始番地にできなければ、その理由(できれば空)"""
         if self.rom or self.in_ram(addr):
             return ""
-        return tr("{addr:04X}番地はRAMの外なので、ROMなしでは開始番地にできません", addr=addr)
+        return tr("bench.outside_ram_so_without", addr=addr)
 
-    def set_start_at(self, addr: int) -> str:
+    def set_start_at(self, addr: int) -> Said:
         """番地addrを開始番地に決める(カーソルの移動や貼り付けでは変わらなくなる)。
-        知らせの文を返す。できなければ理由"""
+        メッセージを返す。できなければ理由"""
         addr &= 0xFFFF
         self.start_buf = None
         why = self.start_refusal(addr)
         if why:
-            return why
+            return Said(why)
         self.start, self.start_by = addr, "user"
-        return tr("開始番地を{addr:04X}にしました", addr=addr)
+        return Said(tr("common.start_address_set", addr=addr), ok=True)
 
-    def paste_start(self, text: str) -> str:
+    def paste_start(self, text: str) -> Said:
         """開始番地の欄に貼り付ける。16進表記の番地(「C010」「&C010」)なら開始番地にする。
         番地でなければ欄はそのままにして、理由を返す"""
         hit = re.fullmatch(r"&?([0-9A-Fa-f]{1,4})", text.strip())
         if hit is None:
-            return tr("貼り付けた文字は番地ではありません(16進表記の4桁で)")
+            return Said(tr("bench.pasted_text_not_address"))
         return self.set_start_at(int(hit[1], 16))
 
-    def type_start(self, v: int) -> str:
-        """開始番地の欄に16進表記の1字を打つ。4桁そろえば開始番地にして知らせの文を返す"""
+    def type_start(self, v: int) -> Said:
+        """開始番地の欄に16進表記の1字を打つ。4桁そろえば開始番地にしてメッセージを返す"""
         buf = (self.start_buf or "") + f"{v:X}"
         if len(buf) < 4:
             self.start_buf = buf
-            return ""
+            return Said("")
         return self.set_start_at(int(buf, 16))
 
     # ---- 書き出す範囲 ----
-    def set_span(self, lo: int, last: int) -> str:
-        """書き出す範囲をlo〜lastに決める。知らせの文を返す。できなければ理由"""
+    def set_span(self, lo: int, last: int) -> Said:
+        """書き出す範囲をlo〜lastに決める。メッセージを返す。できなければ理由"""
         self.span_buf = None
         if last < lo:
-            return tr("終わりの番地が始めの番地より前です")
+            return Said(tr("bench.last_address_before_first"))
         self.span = (lo, last + 1)
-        return tr("書き出す範囲を{where}にしました", where=span_text(lo, last + 1))
+        return Said(tr("common.export_range_set", where=span_text(lo, last + 1)), ok=True)
 
     def clear_span(self) -> str:
         """書き出す範囲を、書いた所から決めるのに戻す"""
         self.span, self.span_buf = None, None
-        return tr("書き出す範囲を自動に戻しました")
+        return tr("bench.export_range_automatic_again")
 
-    def type_span(self, v: int) -> str:
-        """範囲の欄に16進表記の1字を打つ。8桁そろえば範囲にして知らせの文を返す"""
+    def type_span(self, v: int) -> Said:
+        """範囲の欄に16進表記の1字を打つ。8桁そろえば範囲にしてメッセージを返す"""
         buf = (self.span_buf or "") + f"{v:X}"
         if len(buf) < 8:
             self.span_buf = buf
-            return ""
+            return Said("")
         return self.set_span(int(buf[:4], 16), int(buf[4:], 16))
 
-    def paste_span(self, text: str) -> str:
+    def paste_span(self, text: str) -> Said:
         """範囲の欄に貼り付ける(「C000-C0FF」「&C000〜&C0FF」など)。範囲でなければ理由"""
         hit = re.fullmatch(r"&?([0-9A-Fa-f]{4})\s*[-〜~, ]?\s*&?([0-9A-Fa-f]{4})", text.strip())
         if hit is None:
-            return tr("貼り付けた文字は範囲ではありません(始めと終わりを16進表記の4桁で)")
+            return Said(tr("bench.pasted_text_not_range"))
         return self.set_span(int(hit[1], 16), int(hit[2], 16))
 
     def dump_text(self, start: int, end: int) -> str:
@@ -766,7 +790,7 @@ class Bench:
                 self.written[a] = 1
 
     def export_ranges(self) -> list[tuple[int, int]]:
-        """書き出す範囲([始め, 終わり)の並び)。自分で決めた範囲があればそれ、なければ
+        """書き出す範囲([始め, 終わり)の並び)。自分で決めた範囲があればその範囲、なければ
         written_ranges"""
         if self.span is not None:
             return [self.span]
@@ -779,7 +803,7 @@ class Bench:
         RAMにはBASICやROMの作業域も入っているので、書いた番地だけにする"""
         lo, hi = self.ram
         marks = bytearray(self.written[lo:hi])
-        if not self.rom and lo <= self.start < hi and self.read(self.start):
+        if not self.live and lo <= self.start < hi and self.read(self.start):
             end = min(self.used_end(self.start), hi)
             marks[self.start - lo : end - lo] = b"\x01" * (end - self.start)
         ranges: list[tuple[int, int]] = []
@@ -799,10 +823,10 @@ class Bench:
         if not ranges:
             return ""
         size = sum(hi - lo for lo, hi in ranges)
-        where = tr("、").join(span_text(lo, hi) for lo, hi in ranges[:2])
+        where = tr("common.ideographic_comma").join(span_text(lo, hi) for lo, hi in ranges[:2])
         if len(ranges) > 2:
-            where = tr("{where}ほか{n}か所", where=where, n=len(ranges) - 2)
-        return tr("{where}({n}バイト)", where=where, n=size)
+            where = tr("bench.more_where_n", where=where, n=len(ranges) - 2)
+        return tr("bench.bytes", where=where, n=size)
 
     def used_end(self, start: int) -> int:
         """startから、0が16バイト続く手前まで(書いた番地がわからないときの、プログラムの
@@ -817,7 +841,7 @@ class Bench:
 
     # ---- 状態の保存 ----
     def save(self) -> dict:
-        """どこでもセーブに一緒に書く作業欄の状態(開始番地、実行の状態、止める所、書いた範囲、
+        """どこでもセーブに一緒に書く作業欄の状態(開始番地、実行の状態、ブレークポイント、書いた範囲、
         命令とデータの見分けに使うもの)"""
         mirror = self.m.model.mirror
         executed = self._spans(self.executed, *self.ram)
@@ -838,7 +862,7 @@ class Bench:
 
     @staticmethod
     def _spans(marks: bytearray, lo: int, hi: int) -> list[list[int]]:
-        """lo〜hi-1のうち、印のついた番地のひと続きを[始め, 終わり]の並びにする"""
+        """lo〜hi-1のうち、フラグの立った番地のひと続きを[始め, 終わり]の並びにする"""
         spans, a = [], lo
         while a < hi:
             if marks[a]:
@@ -851,12 +875,21 @@ class Bench:
                 a += 1
         return spans
 
-    def restore(self, info: object, why: str | None = None) -> None:
+    @property
+    def reason(self) -> str:
+        """作業欄の下に出すメッセージ(いまの言語の文)"""
+        return str(self._reason)
+
+    @reason.setter
+    def reason(self, why: str | Text) -> None:
+        self._reason = why
+
+    def restore(self, info: object, why: str | Text | None = None) -> None:
         """saveで書いた状態に戻す。実行中か一時停止中に保存したものは、保存したときのPCで
-        一時停止した状態にする(「続ける」で続きから動く)。情報がなければ編集中にする。
-        whyは作業欄の下に出す知らせ(なければ「保存した状態に戻しました」)"""
+        一時停止した状態にする(「続行」で続きから動く)。情報がなければ編集中にする。
+        whyは作業欄の下に出すメッセージ(なければ「保存した状態に戻しました」)"""
         if why is None:
-            why = tr("保存した状態に戻しました")
+            why = Text("common.state_loaded")
         info = info if isinstance(info, dict) else {}
 
         def addr(v: object, default: int) -> int:
@@ -900,45 +933,35 @@ class Bench:
         self.changed = set()
         self._remember_regs()
         self.c0 = self.m.cpu.cycles
-        if self.rom:
-            # ROMのある本体は、保存したときに一時停止していればそこで止め、ほかは動かしておく
+        if self.live:
+            # BASICのある本体は、保存したときに一時停止していればそこで止め、ほかは動かしておく
             self.ran = True
             if info.get("state") == "pause":
                 self.state = "pause"
                 self.reason = (
-                    tr("{why}。{addr:04X}番地で一時停止しています", why=why, addr=self.m.cpu.pc)
-                    if why
-                    else ""
+                    Text("bench.paused_why_addr", why=why, addr=self.m.cpu.pc) if why else ""
                 )
             else:
                 self.state, self.reason = "run", why
         elif info.get("state") in ("run", "pause"):
             self.state, self.ran = "pause", True
             pc = self.m.cpu.pc
-            self.reason = (
-                tr("{why}。{addr:04X}番地から続けられます", why=why, addr=pc) if why else ""
-            )
+            self.reason = Text("bench.can_continue", why=why, addr=pc) if why else ""
         else:
             self.state = "edit"
             self.reason = why
 
     # ---- 実行 ----
     def needs_guard(self) -> bool:
-        """命令ごとにguardを調べる要があるか。ROMのある本体では、止める所も呼び出しの戻り先も
+        """命令ごとにguardを調べる要があるか。ROMのある本体では、ブレークポイントも呼び出しの戻り先も
         なければ要らない(ROMのBASICを、調べずに速く動かす)"""
         return not self.rom or bool(self.breaks) or self.temp_stop is not None
 
     def guard(self) -> bytearray:
-        """命令を読む前に止まる番地。止める所と、ROMなしの本体ではRAMの外"""
-        if self._guard is None:
-            g = bytearray(b"\x01" * 0x10000)
-            lo, hi = self.ram
-            g[lo:hi] = bytes(hi - lo)
-            mirror = self.m.model.mirror
-            if mirror:
-                g[mirror[0] : mirror[1]] = bytes(mirror[1] - mirror[0])
-            if self.rom:
-                g[:] = bytes(0x10000)
+        """命令を読む前に止まる番地。ブレークポイントと、ROMなしの本体ではRAMの外"""
+        if self._guard is None or self._guard_ram != self.ram:  # # ram: でRAMの終わりが動く
+            self._guard_ram = self.ram
+            g = bytearray(0x10000) if self.rom else self.m.outside_ram()
             self._base_guard = bytes(g)
             self._guard = g
         g = self._guard
@@ -981,28 +1004,28 @@ class Bench:
         self.reason = ""
 
     def resume(self) -> None:
-        """一時停止したところから続ける。止める所にいるなら、その命令を実行してから。
+        """一時停止したところから続ける。ブレークポイントにいるなら、その命令を実行してから。
         実行できない番地(ROMなしで使えないROM)で止まっているときは、何もしない"""
         if self.state != "pause" or self._refuse():
             return
         self._before_going()
-        if self.m.cpu.pc in self.breaks:
+        if self.m.cpu.pc in self.breaks and not self.basic_running:
             self._step1()
             if self.state != "pause":
                 return
         self.state = "run"
         self.reason = ""
 
-    def pause(self, why: str | None = None) -> None:
+    def pause(self, why: str | Text | None = None) -> None:
         if self.state == "run":
-            self._stopped("pause", tr("一時停止しました") if why is None else why)
+            self._stopped("pause", Text("bench.paused_message") if why is None else why)
 
     def abandon(self) -> None:
-        """実行をやめて編集に戻る(止まっているプログラムの続きは捨てる)。ROMのある本体では
-        何もしない(本体はROMで動き続ける)"""
-        if self.state != "edit" and not self.rom:
+        """実行をやめて編集に戻る(止まっているプログラムの続きは捨てる)。BASICのある本体では
+        何もしない(本体はBASICで動き続ける)"""
+        if self.state != "edit" and not self.live:
             self.temp_stop = None
-            self._stopped("edit", tr("実行を途中でやめて、編集に戻りました(メモリはそのまま)"))
+            self._stopped("edit", Text("bench.stopped_running_went_back"))
 
     def step(self) -> None:
         """1命令だけ実行する。編集中なら、開始番地で止まった状態にする。ROMなしで使えない
@@ -1010,7 +1033,7 @@ class Bench:
         if self.state == "edit":
             self._prepare(self.start)
             self.state = "pause"
-            self.reason = tr("{addr:04X}番地の最初の命令の前で止まっています", addr=self.start)
+            self.reason = Text("bench.stopped_before_first_instruction", addr=self.start)
             return
         if self.state == "pause" and not self._refuse(step=True):
             self._before_going()
@@ -1031,7 +1054,7 @@ class Bench:
         self.temp_stop = (pc + disasm.length(self.read(pc))) & 0xFFFF
         self.temp_r = self.m.cpu.r
         self._step1()  # 呼び出しの命令を実行してから、戻り先で止まるまで回す
-        # ROMのルーチンの代わりを済ませたときは、_step1のうちに戻り先で止まっている
+        # 代替ROMルーチンを済ませたときは、_step1のうちに戻り先で止まっている
         # (temp_stopが消える)。そうでなければ、戻り先まで実行を続ける
         if self.state == "pause" and self.temp_stop is not None:
             self.state = "run"
@@ -1043,21 +1066,27 @@ class Bench:
         self.prev_ptr = self.ptrs()
 
     def _before_going(self) -> None:
-        """一時停止から続けるか1命令進める前に控えるもの。ROMのある本体では、本体はずっと
-        ROMで動いていて作業欄から実行を始めたところがないので、メモリの変化とサイクルも
+        """一時停止から続けるか1命令進める前に控えるもの。BASICのある本体では、本体はずっと
+        BASICで動いていて作業欄から実行を始めたところがないので、メモリの変化とサイクルも
         ここから数える"""
         self._remember_regs()
-        if self.rom:
+        if self.live:
             self.snap, self.changed, self.c0 = bytes(self.m.mem), set(), self.m.cpu.cycles
             self.ran = True
 
     def _refuse(self, step: bool = False) -> bool:
-        """いまのPCの命令を実行できなければ、理由を知らせにしてTrueを返す(状態は変えない)。
-        stepなら1命令ずつ進めるとき。ROMのある本体でCPUがキーかタイマを待って止まっている
-        (HALT)ときは、進める命令がないので断る"""
+        """いまのPCの命令を実行できなければ、理由をメッセージにしてTrueを返す(状態は変えない)。
+        stepなら1命令ずつ進めるとき。BASICのある本体でCPUがキーかタイマを待って止まっている
+        (HALT)ときと、ROMなしのBASICが動いている(マシン語を実行していない)ときは、進める
+        命令がないので断る"""
+        if self.basic_running:  # CPUは動いていない(BASICが動いている)
+            if not step:
+                return False
+            self.reason = Text("bench.basic_running_now_single")
+            return True
         why = self.blocked(self.m.cpu.pc)
-        if not why and step and self.rom and self.m.halted:
-            why = tr("CPUはキーかタイマを待って止まっています(HALT)。「続ける」で進みます")
+        if not why and step and self.live and self.m.halted:
+            why = Text("bench.cpu_waiting_key_timer")
         if why:
             self.reason = why
         return bool(why)
@@ -1067,18 +1096,31 @@ class Bench:
         if self._refuse():
             return
         m = self.m
-        if not self.rom:  # ROMのある本体では、キーかタイマを待つHALTを勝手に起こさない
+        if not self.live:  # BASICのある本体では、キーかタイマを待つHALTを勝手に起こさない
             m.halted = False
         self.pass_pc = None
-        m.run(1, None, self.executed)
+        pc = m.cpu.pc
+        try:
+            entered = not self.in_ram(pc) and routines.call(m, pc)
+        except routines.Stalled as e:
+            self._stopped("pause", e.text)
+            return
+        if entered:
+            # 代替ROMルーチンの入口では、ROMの番地の0を実行せずに代替ROMルーチンを1回動かす。
+            # キーを待っていて入口にとどまったなら、そこで一時停止のまま
+            if m.cpu.pc == pc:
+                self.state, self.reason = "pause", ""
+                return
+        else:
+            m.run(1, None, self.executed)
         self._check(m.cpu.pc, after_step=True)
 
     def pass_step(self) -> None:
         """pass_pcの命令を、止めずに1つ実行する(再帰の内側の戻り先を通り過ぎる)。実行を進める
-        側(App._advance)が、1回ずつ呼ぶ。続く番地も止める所などなら、そこで調べる"""
+        側(App._advance)が、1回ずつ呼ぶ。続く番地もブレークポイントなどなら、そこで調べる"""
         self.pass_pc = None
         m = self.m
-        if not self.rom:
+        if not self.live:
             m.halted = False
         m.run(1, None, self.executed)
         pc = m.cpu.pc
@@ -1087,60 +1129,70 @@ class Bench:
 
     def trapped(self) -> bool:
         """実行中にguardの番地で止まったときに呼ぶ。実行を続けるならTrue(ROMのルーチンの
-        代わりを済ませて、呼んだ所へ戻ったとき)"""
+        代替ROMルーチンを済ませて、呼んだ所へ戻ったとき)"""
         self._check(self.m.cpu.pc, after_step=False)
         return self.state == "run"
 
     def _check(self, pc: int, after_step: bool) -> None:
-        if not self.in_ram(pc) and norom.call(self.m, pc):
-            # ROMのルーチンの代わりを済ませて、呼んだ所へ戻った
+        try:
+            entered = not self.in_ram(pc) and routines.call(self.m, pc)
+        except routines.Stalled as e:
+            self._stopped("pause", e.text)
+            return
+        if entered:
+            if self.m.cpu.pc == pc and not after_step:
+                return  # キーを待って入口にとどまっている(入口のブレークポイントでも止めない)
+            # 代替ROMルーチンを済ませて、呼んだ所へ戻った
             pc = self.m.cpu.pc
             if not after_step and pc not in self.breaks and pc != self.temp_stop:
                 return
-        if pc == SENTINEL and not self.rom:
+        if pc == SENTINEL and not self.live:
             cyc = self.m.cpu.cycles - self.c0
             ms = f"{cyc / 192:.1f}"
-            self._stopped("edit", tr("RTNで戻りました({n}サイクル、約{ms}ミリ秒)", n=cyc, ms=ms))
+            self._stopped("edit", Text("bench.returned_rtn_cycles_about", n=cyc, ms=ms))
             return
         if pc == self.temp_stop:
             if self.m.cpu.r >= self.temp_r:
                 self.temp_stop = None
-                self._stopped("pause", tr("呼び出しから戻りました"))
+                self._stopped("pause", Text("bench.returned_call"))
                 return
             if not after_step and pc not in self.breaks:
                 # 再帰で、内側の呼び出しから同じ戻り先へ戻っただけ(Rがまだ深い)。戻り先の
                 # 命令は、実行を進める側が止めずに1つ実行して(pass_step)、そのまま続ける。
-                # 止める所なら、下で止まる
+                # ブレークポイントなら、下で止まる
                 self.pass_pc = pc
                 return
+        basic = getattr(self.m, "basic", None)
+        if self.live and basic is not None and not self.in_ram(pc) and basic.trapped(pc, True):
+            # ROMなしのBASICから呼んだマシン語が、代替ROMルーチンのないROMの番地へ入った。BASICに
+            # 戻してやめる(作業欄は止めない)
+            return
         why = self.blocked(pc)  # ROMなしで使えない番地(ROMがあれば、どこでも実行できる)
         if why:
             self._stopped("pause", why)
             return
         if pc in self.breaks and not after_step:
-            self._stopped("pause", tr("止める所({addr:04X})で止まりました", addr=pc))
+            self._stopped("pause", Text("bench.stopped_breakpoint", addr=pc))
             return
         if after_step:
             self.state = "pause"
             self.reason = ""
         else:
-            self._stopped("pause", tr("{addr:04X}番地で止まりました", addr=pc))
+            self._stopped("pause", Text("bench.stopped", addr=pc))
 
-    @staticmethod
-    def _outside(pc: int) -> str:
-        """RAMの外の番地pcへ飛んで止まったときの知らせ"""
-        name = rom_name(pc)
-        if name:
-            return tr("ROMの{name}({addr:04X})へ飛んだので止めました。ROMなしでは使えません",
-                      name=name, addr=pc)  # fmt: skip
-        return tr("RAMの外の{addr:04X}番地へ飛んだので止めました。ROMなしでは使えません", addr=pc)
+    def _outside(self, pc: int) -> Text:
+        """RAMの外の番地pcへ飛んで止まったときのメッセージ"""
+        r = routines.find(self.m.model.name, pc)
+        if r is not None:
+            return Text("bench.stopped_jumped_rom_routine", name=_rom_label(r), addr=pc)
+        return Text("bench.stopped_jumped_outside_ram", addr=pc)
 
-    def _stopped(self, state: str, why: str) -> None:
+    def _stopped(self, state: str, why: str | Text) -> None:
         self.pass_pc = None
         self.state = state
         self.reason = why
-        if self.rom and not self.ran:
-            # ROMのある本体で、作業欄から続けたことがないうちは、どこからの変化か決まらない
+        if self.live and not self.ran:
+            # BASICのある本体で、作業欄から続けたことがないうちは、どこからの変化か決まらない
             # (ROMはずっと動いている)ので色をつけない
             self.changed = set()
             return
@@ -1156,7 +1208,7 @@ class Bench:
         return addr
 
     def toggle_break(self, addr: int) -> bool | None:
-        """止める所を置くか外す。置いたらTrue、外したらFalse。実行できない番地(ROMなしで
+        """ブレークポイントを設定するか解除する。設定したらTrue、解除したらFalse。実行できない番地(ROMなしで
         使えないROM)には置かずにNone"""
         if addr not in self.breaks and self.blocked(addr):
             return None
@@ -1170,27 +1222,27 @@ class Bench:
     def mark_refusal(self, addr: int, what: str | None) -> str:
         """番地addrの指定をwhat("data"、"code"、Noneは消す)にできなければ、その理由"""
         if what is None:
-            return "" if addr in self.marks else tr("指定はありません")
+            return "" if addr in self.marks else tr("bench.no_mark_here")
         if not self.real_ram(addr):
-            return tr("RAMの外です")
+            return tr("bench.outside_ram")
         if self.marks.get(addr) == what:
-            return tr("いまの指定です")
+            return tr("bench.already_marked_so")
         return ""
 
     def set_mark(self, addr: int, what: str | None) -> str:
         """番地addrから、データ("data")か命令("code")に決める。Noneなら指定を消して、
-        推し量りに戻す。知らせの文を返す(できなければ理由)"""
+        推測に戻す。メッセージを返す(できなければ理由)"""
         addr &= 0xFFFF
         why = self.mark_refusal(addr, what)
         if why:
             return why
         if what is None:
             del self.marks[addr]
-            return tr("{addr:04X}番地の指定を消しました", addr=addr)
+            return tr("bench.cleared_mark", addr=addr)
         self.marks[addr] = what
         if what == "data":
-            return tr("{addr:04X}番地からデータにしました", addr=addr)
-        return tr("{addr:04X}番地から命令にしました", addr=addr)
+            return tr("bench.marked_data", addr=addr)
+        return tr("bench.marked_code", addr=addr)
 
     def target_ok(self, t: int) -> bool:
         """飛び先tが、ありそうな番地か(RAM、ROMのある本体ではROM、ROMなしでは名前の
@@ -1200,7 +1252,7 @@ class Bench:
         if self.rom:
             bas = self.m.model.bas_addr
             return t < 0x2000 or bas <= t < bas + self.m.model.bas_size
-        return t in norom.ROUTINES or any(a == t for a, _ in romsyms.ROUTINES_1251.values())
+        return t in routines.for_machine(self.m)
 
     def _executed_list(self) -> list[int]:
         """実行した番地(RAMの中。ミラーの番地はRAMの番地にする)"""
@@ -1305,14 +1357,17 @@ class Bench:
         return out
 
 
-def rom_name(addr: int) -> str:
+def rom_name(addr: int, model: str = "1251") -> str:
     """番地addrのROMのルーチンの名前と働き(なければ空)。働きは画面の言語で書く"""
-    for name, (a, what) in romsyms.ROUTINES_1251.items():
-        if a == addr:
-            return tr("{name}({what})", name=name, what=tr(what))
-    return ""
+    r = routines.find(model, addr)
+    return "" if r is None else str(_rom_label(r))
+
+
+def _rom_label(r: routines.Routine) -> str | Text:
+    """ROMのルーチンの名前と働き(「BA2X(…)」)"""
+    return Text("bench.name_what", name=r.name, what=Text(r.what)) if r.what else r.name
 
 
 def span_text(lo: int, hi: int) -> str:
     """範囲[lo, hi)の書き方(「C000〜C026」)"""
-    return tr("{lo:04X}〜{last:04X}", lo=lo, last=hi - 1)
+    return tr("bench.lo_last", lo=lo, last=hi - 1)

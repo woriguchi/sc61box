@@ -1,5 +1,5 @@
 # title: LC-3 ブロック崩し
-# norom: off
+# norom: basic
 # help: 何かキーを押すと始まる。8で上、2で下へパドルを動かして、右のブロックを消す
 # help: パドルの端で打つと斜め、まんなかで打つとまっすぐ返る。BRK(Esc)で止める
 # hex: lc3.hex

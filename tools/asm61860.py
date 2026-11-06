@@ -1,7 +1,7 @@
 """SC61860の小さなアセンブラ。このエミュレータで読める.hexを書き出す
 
 1行に1命令。「ラベル:」「命令 オペランド」「; コメント」が書ける。
-オペランドには数(16進は&か0x、または末尾h)、ラベル、EQUで決めた名前、
+オペランドには数(16進表記は頭に&か0x、または末尾にh)、ラベル、EQUで決めた名前、
 それらの足し算・引き算、lo()・hi()が使える。
 
     ORG  &C200          以降の番地
@@ -16,8 +16,9 @@
                         どれでもないときの行き先「DB hi(行き先),lo(行き先)」を1行置く
 
 出力は「番地 データ ; 命令  コメント」の行を並べた.hex(このエミュレータの
-16進ダンプの形式)。-Dで名前に値をつけて渡せる。--rom 1251(または1245)を付けると、
-ROMのルーチンの名前(FADD、KEYSCANなど。sc61box/romsyms.py)が使える。
+16進ダンプの形式)。-Dで名前に値をつけて渡せる。--rom 1251(または1245、1261、1350)を付けると、
+ROMのルーチンの名前(FADD、KEYSCANなど。sc61box/romsyms.py)と、データのフォルダのroutinesに
+記述した代替ROMルーチンの名前(sc61box/routines.py)が使える。
 
     uv run python tools/asm61860.py vline.asm vline.hex
     uv run python tools/asm61860.py sprite.asm sprite.hex -D MASK=1
@@ -106,7 +107,7 @@ def evaluate(expr: str, syms: dict[str, int]) -> int:
 
 
 def parse(src: str) -> list[tuple[int, str, str, str, str]]:
-    """(行番号, ラベル, 命令, オペランド, コメント)の列"""
+    """(行番号, ラベル, 命令, オペランド, コメント)のリスト"""
     out = []
     for n, raw in enumerate(src.splitlines(), 1):
         code, _, com = raw.partition(";")
@@ -198,7 +199,7 @@ def check_page(arg: str, syms: dict[str, int], tables: dict[str, int]) -> None:
 
 
 def assemble(src: str, defines: dict[str, int] | None = None) -> list[tuple[int, bytes, str, str]]:
-    """(番地, バイト, 命令の文字列, コメント)の列"""
+    """(番地, バイト, 命令の文字列, コメント)のリスト"""
     lines = parse(src)
     syms: dict[str, int] = dict(defines or {})
     # 1回目: 番地を決める。DBの表は、ラベルから次の命令までの長さも覚えておく
@@ -314,7 +315,7 @@ def to_hex(rows: list[tuple[int, bytes, str, str]], header: str = "") -> str:
         if addr < 0:
             lines.append(f"; {com}")
             continue
-        if not text:  # DB は12バイトずつ
+        if not text:  # DBは12バイトずつ
             for i in range(0, len(data), 12):
                 chunk = data[i : i + 12]
                 c = f"  ; {com}" if com and i == 0 else ""
@@ -327,7 +328,7 @@ def to_hex(rows: list[tuple[int, bytes, str, str]], header: str = "") -> str:
 
 
 def build(src: str, defines: dict[str, int]) -> tuple[list[tuple[int, bytes, str, str]], str]:
-    """ソースの文字列を組んで、行の列と.hexの中身を返す。「#」の行は.hexの頭に写す"""
+    """ソースの文字列をアセンブルし、行のリストと.hexの中身を返す。「#」の行は.hexの頭にコピーする"""
     text = select(src, defines)
     header = "\n".join(ln for ln in text.splitlines() if ln.startswith("#")) + "\n"
     body = "\n".join("" if ln.startswith("#") else ln for ln in text.splitlines())
@@ -340,13 +341,13 @@ def main(
     out: str,
     define: list[str] = typer.Option([], "-D", help="NAME=値。IFやEQUの式で使える"),
     rom: str | None = typer.Option(
-        None, help="ROMのルーチンの名前を使う機種(1251か1245)。FADD、KEYSCANなど"
+        None, help="ROMのルーチンの名前を使う機種(1251、1245、1261、1350)。FADD、KEYSCANなど"
     ),
 ) -> None:
     defines = {}
     if rom:
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-        from sc61box.romsyms import symbols
+        from sc61box.routines import symbols
 
         try:
             defines.update(symbols(rom))

@@ -1,4 +1,4 @@
-"""ROMなしで動くCPUコアの試験(命令の並びは『PC-インタープリタを読む』の逆アセンブルに合わせた)"""
+"""ROMなしで動くCPUコアの試験"""
 
 import os
 import sys
@@ -63,7 +63,7 @@ def test_external_memory():
 
 
 def test_cycles_from_manual():
-    # IYS / DYS / IXL。PC-1350の機械語マニュアルの値
+    # IYS / DYS / IXL
     cpu = SC61860(FlatBus(bytes([0x26, 0x27, 0x24])))
     cpu.ram[4:8] = bytes([0x00, 0x20, 0x00, 0x30])  # X=2000、Y=3000(命令を書き換えないように)
     assert [cpu.step() for _ in range(3)] == [6, 6, 7]
@@ -112,6 +112,55 @@ def test_readm_is_one_byte():
     assert cpu.ram[0] == 0xFF  # I
     assert cpu.ram[B] == 0x25
     assert cpu.pc == 6
+
+
+def test_bcd_non_decimal_digits_like_real_machine():
+    """ADN・SBNに10進でない桁(A〜F)を与えたときの答えとキャリーが、実機と同じ"""
+    for op, before, a, after, carry in (
+        (0x0D, 0xF0, 0x10, 0x80, 1),  # SBN
+        (0x0D, 0x0F, 0x01, 0x08, 0),
+        (0x0D, 0xA0, 0x00, 0x40, 1),
+        (0x0D, 0x0A, 0x00, 0x04, 0),
+        (0x0D, 0x00, 0x10, 0x90, 1),
+        (0x0D, 0x00, 0xE0, 0xC0, 1),
+        (0x0D, 0x10, 0x0F, 0xFB, 0),  # 6を引くときに借りが出ても、キャリーは立てない
+        (0x0D, 0x20, 0x1F, 0xFB, 0),
+        (0x0D, 0x10, 0x0C, 0xFE, 0),
+        (0x0D, 0x10, 0x0B, 0xFF, 0),
+        (0x0D, 0x15, 0x0F, 0x00, 0),
+        (0x0D, 0x00, 0x0F, 0x8B, 1),
+        (0x0C, 0xF0, 0x10, 0x60, 1),  # ADN
+        (0x0C, 0x0A, 0x00, 0x10, 0),
+        (0x0C, 0x9F, 0x01, 0x06, 1),
+        (0x0C, 0xAA, 0x00, 0x10, 1),
+        (0x0C, 0x95, 0x10, 0x05, 1),
+    ):
+        # LII 00 / LP 08 / ADNかSBN
+        cpu = SC61860(FlatBus(bytes([0x00, 0x00, 0x88, op])))
+        cpu.ram[8] = before
+        cpu.ram[A] = a
+        for _ in range(3):
+            cpu.step()
+        assert (cpu.ram[8], cpu.c) == (after, carry), (hex(op), hex(before), hex(a))
+
+
+def test_bcd_decimal_digits():
+    """10進の値どうしなら、10進で足し引きした答えになる"""
+    from sc61box.sc61860 import _bcd_add, _bcd_sub
+
+    def dec(v):
+        return (v >> 4) * 10 + (v & 0x0F)
+
+    def bcd(n):
+        return (n // 10) << 4 | n % 10
+
+    for x in range(100):
+        for y in range(100):
+            for c in (0, 1):
+                s, k = divmod(x + y + c, 100)
+                assert _bcd_add(bcd(x), bcd(y), c) == (bcd(k), s)
+                d = x - y - c
+                assert _bcd_sub(bcd(x), bcd(y), c) == (bcd(d % 100), int(d < 0))
 
 
 if __name__ == "__main__":

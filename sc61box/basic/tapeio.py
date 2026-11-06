@@ -1,0 +1,287 @@
+"""カセット: CSAVE・CLOAD・CLOAD?・CLOAD M・MERGE・CHAIN(系統によらない部分)。テープの
+形は系統ごとのcassette.py(FORMAT)が受け持ち、ここはBASICの命令としての
+ふるまい(待ち方、液晶、BRK、RAMへの置き方)を受け持つ。字のコードと中間コードの番号は
+Basicのものを使う
+"""
+
+from collections.abc import Generator
+from types import ModuleType
+
+from ..machine import TICK_2MS
+from . import timing
+from .cassette import Received
+from .errors import BasicError
+from .evaluate import Evaluator, expect_end
+from .variables import word
+
+Steps = Generator[int, None, None]
+
+TAPE_END = timing.ms(13.0)  # カセットを読み終えてから>を出すまで(観察)
+CSAVE_END = timing.ms(5.0)  # カセットに送り終えてから>を出すまで(観察)
+CSAVE_M_START = timing.ms(80.0)  # CSAVE Mで、音を出し始めるまでに余分にかかる(観察)
+
+
+class TapeIO:
+    """FORMATはテープの形(系統ごとのcassette.py)、T_CHAINはCHAINの中間コード"""
+
+    FORMAT: ModuleType
+    T_CHAIN: int
+    TAIL_ONES = 0  # CSAVEで、最後のバイトのあとに足す1のビットの数
+    M_START = CSAVE_M_START
+    END_HOLD: tuple[int, int] | None = None  # 送り終えたあとCポートに出す音の値と時間
+    BIT_PERIOD: float | None = None  # CSAVEの1ビットの時間(NoneならFORMAT.BIT)
+
+    def __init__(self, basic) -> None:
+        self.basic = basic
+        self.m = basic.m
+        self.dialect = basic.dialect
+        codes = basic.CODES
+        self.QUOTE, self.COMMA, self.SPACE = basic.QUOTE, basic.COMMA, basic.SPACE
+        self.QUESTION, self.SEMICOLON, self.LETTER_M = codes["?"], codes[";"], codes["M"]
+        self.T_CSAVE, self.T_CLOAD, self.T_MERGE = basic.T_CSAVE, basic.T_CLOAD, basic.T_MERGE
+        self.program = basic.PROGRAM
+
+    def command(self, code: bytes) -> Steps:
+        """RUN・PROモードのCSAVE・CLOAD・CLOAD?・CLOAD M・MERGE。BRKで止めると、何も
+        出さずに>に戻る(観察)"""
+        try:
+            if code[0] == self.T_CSAVE:
+                yield from self.csave(code, 1)
+            else:
+                yield from self.cload(code)
+        finally:
+            self.quiet()
+        self.basic._prompt()
+
+    def csave(self, code: bytes, pos: int) -> Generator[int, None, bool]:
+        """CSAVE ["名前"]、CSAVE M ["名前";]始め,終わり。送り終えたらTrue、BRKで止めたら
+        False"""
+        e = self.basic.EVALUATOR(self.m, code, pos)
+        machine = e.take(self.LETTER_M)
+        name = e.string_literal() if e.peek() == self.QUOTE else b""
+        place = b""
+        if machine:
+            if name and not e.take(self.SEMICOLON):
+                raise BasicError(1, e.pos)
+            start = self._address(e)
+            if not e.take(self.COMMA):
+                raise BasicError(1, e.pos)
+            last = self._address(e)
+            expect_end(e)
+            if start > last:
+                raise BasicError(9, e.pos - 1)
+            data = bytes(self.m.read(a) for a in range(start, last + 1))
+            place = self.FORMAT.place_field(start, last - start + 1)
+            yield self.M_START
+        else:
+            expect_end(e)
+            data = bytes(self.m.mem[self.program.top(self.m) : self.program.end(self.m)])
+        kind = self.FORMAT.MACHINE if machine else self.FORMAT.BASIC
+        bits = self.FORMAT.bits(self.FORMAT.file_bytes(kind, name, data, place))
+        bits += [1] * self.TAIL_ONES
+        head = self.FORMAT.HEAD + (len(place) + 1 if place else 0)
+        return (yield from self._send_bits(bits, head))
+
+    def _address(self, e: Evaluator) -> int:
+        v = e.integer()
+        if not 0 <= v <= 0xFFFF:
+            raise BasicError(3, e.pos)
+        return v
+
+    def _send_bits(self, bits: list[int], head: int) -> Generator[int, None, bool]:
+        """ビットを、Cポートの4kHzと2kHzの音の切り替えで送る(1ビット2ms。観察)。headは
+        BRKを見ない頭のバイトの数"""
+        m = self.m
+        mode = -1
+        period, spent = self.BIT_PERIOD or self.FORMAT.BIT, 0.0
+        yield self.dialect.tape_before
+        try:
+            for i, b in enumerate(bits):
+                if m.brk and self._brk_checked(i, head):
+                    return False  # 音は止める(プログラムの中なら、このあとBREAK)
+                want = self.FORMAT.ONE if b else self.FORMAT.ZERO
+                if want != mode:
+                    m.out_c(m.pc_out & 0x0F | want << 4)
+                    mode = want
+                spent += period
+                step = round(spent)
+                spent -= step
+                yield step
+            if self.END_HOLD is not None:
+                level, hold = self.END_HOLD
+                m.out_c(m.pc_out & 0x0F | level << 4)
+                yield hold
+        finally:
+            self.quiet()
+        yield CSAVE_END + self.dialect.csave_after
+        return True
+
+    def _brk_checked(self, i: int, head: int) -> bool:
+        """CSAVEでi番目のビットを送る前にBRKを見るか。初めの1のあいだは約500msごと。
+        そのあとは、頭のheadバイト(種類と名前、CSAVE Mの置く場所)では見ず、中身の
+        1バイトごとに、下位の4ビットを送ったところで見る(観察)"""
+        f = self.FORMAT
+        if i < f.LEADER:
+            return i % 250 == self.dialect.leader_brk and i > 0
+        i -= f.LEADER + head * f.HEAD_BITS
+        return i >= 0 and i % f.DATA_BITS == f.BRK_AT
+
+    def quiet(self) -> None:
+        if self.m.pc_out & 0xF0:
+            self.m.out_c(self.m.pc_out & 0x0F)
+
+    def cload(self, code: bytes, pos: int = 1) -> Generator[int, None, bool]:
+        """CLOAD ["名前"]、CLOAD M ["名前"[;番地]]、CLOAD? ["名前"]、MERGE ["名前"]、
+        CHAIN ["名前"]。読み終えたらTrue、BRKで止めたらFalse。名前や種類の違うファイル、
+        名前のチェックサムの合わないファイルは飛ばし、読めるファイルが来るまで待つ(観察)"""
+        head = code[pos - 1]
+        e = self.basic.EVALUATOR(self.m, code, pos)
+        verify = head == self.T_CLOAD and e.take(self.QUESTION)
+        machine = head == self.T_CLOAD and not verify and e.take(self.LETTER_M)
+        name = e.string_literal() if e.peek() == self.QUOTE else None
+        place: int | None = None
+        if machine and (
+            name is None and e.pos < len(code) or name is not None and e.take(self.SEMICOLON)
+        ):
+            place = self._address(e)
+        if head != self.T_CHAIN:
+            expect_end(e)
+        kind = self.FORMAT.MACHINE if machine else self.FORMAT.BASIC
+        yield self.dialect.tape_before
+        found = yield from self._find_file(kind, name)
+        if found is None:
+            return False
+        try:
+            if self.dialect.cload_busy:
+                # 読むファイルが見つかると、右端に*を出し、液晶を点けてBUSYの記号を点ける(観察)
+                self._show_found()
+                self.basic.display(True)
+                self.basic.screen.symbol("BUSY", True)
+            return (yield from self._cload_body(head, verify, machine, place, *found))
+        finally:
+            if self.dialect.cload_busy:
+                self.basic.screen.symbol("BUSY", False)
+
+    def _show_found(self) -> None:
+        """読むファイルが見つかったことを、液晶の右端の*で知らせる(1行の液晶は消してから)"""
+        cells = self.basic.screen.cells
+        self.basic.screen.show([self.SPACE] * (cells - 1) + [self.basic.CODES["*"]])
+
+    def _cload_body(
+        self, head: int, verify: bool, machine: bool, place: int | None, tape, rec
+    ) -> Generator[int, None, bool]:
+        """cloadの続き: 見つけたファイルの中身を読んで置く"""
+        m = self.m
+        error: int | None = None
+        cut = False
+        start = 0
+        try:
+            if machine:
+                start, data, last = self.FORMAT.machine_body(rec.data, self.FORMAT.HEAD)
+            else:
+                data, last = self.FORMAT.basic_body(rec.data, self.FORMAT.HEAD)
+        except self.FORMAT.ChecksumError as err:
+            data, last, error, cut = err.data, err.at, err.at, err.cut
+            start = self.FORMAT.machine_start(rec.data, self.FORMAT.HEAD) if machine else 0
+        # 中身は届いたバイトから順に置く(観察: CLOADはプログラムの終わりを読み始める所に
+        # してから置き、MERGEは終わりのFFの所から置く。PC-1261系とPC-1350は区切りを置くことがある)
+        if machine:
+            at, first = start if place is None else place, self.FORMAT.HEAD + 9
+        else:
+            at = self.program.merge_at(m) if head == self.T_MERGE else self.program.top(m)
+            first = self.FORMAT.HEAD
+            if not verify and head != self.T_MERGE:
+                self.basic.VARS.set_end(m, at)
+        reset_at = self.program.end(m) if head == self.T_MERGE else at
+        program_load = not machine and not verify
+        late = self.dialect.verify_error_after
+        differs = False  # CLOAD?で違いを見つけた(終わりまで読む機種)
+        vars_ = self.basic.VARS
+        for k, b in enumerate(data):
+            yield from self._tape_wait(tape, rec.at(first + k + k // self.FORMAT.BLOCK))
+            if m.brk:
+                break
+            if verify:
+                if m.read(at + k) != b:
+                    if late is None:
+                        raise BasicError(8)
+                    differs = True
+                continue
+            if program_load and at + k >= word(m, vars_.ARRAY_PTR):
+                # 行が配列の場所に届くと、配列(PC-1261系とPC-1350は2字の名前の変数も)を消して
+                # 続け、固定の変数の場所に届くとERROR 6。プログラムは読み始めた所で終わる(観察)
+                if at + k >= vars_.ARRAY_TOP:
+                    self.program.put(m, reset_at, b"")
+                    raise BasicError(6)
+                vars_.clear_arrays(m)
+            m.write((at + k) & 0xFFFF, b)  # ROMの番地には置かない(本体の書き込みと同じ)
+        yield from self._tape_wait(tape, rec.at(last))
+        while cut and not m.brk:
+            yield TICK_2MS  # テープが途中で切れていれば、続きを待ち続ける(観察)
+        if error is not None or m.brk:
+            # チェックサムが合わないときとBRKで止めたときは、プログラムの終わりの番地にFFを置く。
+            # プログラムを読んでいたなら、読み始めた所で終わる(観察)
+            if program_load:
+                self.program.put(m, reset_at, b"")
+            else:
+                m.mem[self.program.end(m)] = 0xFF
+        elif program_load:
+            self.program.put(m, at, data)
+            self.program.loaded(m, at, data)
+        if m.brk:
+            return False
+        if program_load:
+            self.basic.stopped_at = None
+        if error is not None:
+            raise BasicError(8)
+        if verify and (differs or m.read(at + len(data)) != 0xFF):
+            if late is not None:
+                yield late
+            raise BasicError(8)
+        if self.dialect.cload_busy:
+            yield self.dialect.cload_after
+            self.basic.display(False)
+        if head == self.T_MERGE:
+            self.program.merged(m)
+        yield TAPE_END
+        return True
+
+    def _find_file(
+        self, kind: int, name: bytes | None
+    ) -> Generator[int, None, tuple[object, Received] | None]:
+        """テープから、種類と名前の合うファイルを探して、名前のチェックサムまで読む。(テープ,
+        読んだもの)。BRKで止めたらNone。テープがなければ、入れられるまで待つ"""
+        m, f = self.m, self.FORMAT
+        tape = None
+        files: list[Received] = []
+        k = 0
+        while True:
+            if m.brk:
+                return None
+            if m.tape is not tape:
+                tape = m.tape
+                files, k = [], 0
+                if tape is not None:
+                    m.xin(m.cpu.cycles)  # 読み始めると再生が始まる
+                    files = f.files(tape)
+            if tape is not None and k < len(files):
+                rec = files[k]
+                k += 1
+                if rec.times[0] < m.cpu.cycles - (tape.start or 0) or len(rec.data) < f.HEAD:
+                    continue  # 頭を聞き逃したか、短すぎる
+                yield from self._tape_wait(tape, rec.at(f.HEAD - 1))
+                if m.brk:
+                    return None
+                field = rec.data[1 : f.HEAD - 1]
+                if f.checksum(field) != rec.data[f.HEAD - 1] or rec.data[0] != kind:
+                    continue
+                if name is not None and f.read_name(field) != name[: f.NAME_SIZE]:
+                    continue
+                return tape, rec
+            yield TICK_2MS
+
+    def _tape_wait(self, tape, at: float) -> Steps:
+        """テープの時刻at(再生を始めてからのサイクル)まで待つ。BRKで抜ける"""
+        m = self.m
+        while m.cpu.cycles - (tape.start or 0) < at and not m.brk:
+            yield max(1, min(TICK_2MS, int(at - (m.cpu.cycles - (tape.start or 0)))))

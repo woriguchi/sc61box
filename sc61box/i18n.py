@@ -1,18 +1,18 @@
-"""画面に出す文の言語。文は日本語で書き、trで選んだ言語の文に引き直す
+"""画面に出す文の言語。文はmessages.MESSAGESにIDごとに置き、trでいまの言語の文を引く
 
-英語の文はi18n_en.ENの表にある(日本語の文から英語の文を引く)。表にない文は日本語のまま
-出す。数で形の変わる英語の文は(1のときの形, ほかの形)の組にしておき、数はnの名前で渡す
-(tr("{n}バイト", n=3)は"3 bytes")。
+数で形の変わる文は(1のときの形, ほかの形)の組にしておき、数はnの名前で渡す
+(英語でtr("app.wrote_bytes", n=3)は"Wrote 3 bytes")。
 """
 
 import os
 import re
+import string
 import subprocess
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 
 from . import paths
-from .i18n_en import EN
+from .messages import MESSAGES
 
 LANGUAGES = ("ja", "en")
 _lang = "ja"
@@ -30,16 +30,89 @@ def language() -> str:
     return _lang
 
 
-def tr(text: str, /, **kw: object) -> str:
-    """日本語の文textを、いまの言語の文にする。{addr:04X}のような差し込みは名前で書き、
-    kwで値を渡す(語順が言語によって変わるため)"""
-    if _lang == "en":
-        found = EN.get(text)
-        if isinstance(found, tuple):
-            found = found[0] if kw.get("n") == 1 else found[1]
-        if found is not None:
-            text = found
+def tr(key: str, /, **kw: object) -> str:
+    """IDkeyの文を、いまの言語で返す。{addr:04X}のような差し込みは名前で書き、kwで値を渡す
+    (語順が言語によって変わるため)。表にないkey(利用者が記述した代替ROMルーチンの働きなど)は、
+    そのまま出す"""
+    return _render(key, _lang, kw)
+
+
+def _render(key: str, lang: str, kw: Mapping[str, object]) -> str:
+    found = MESSAGES.get(key)
+    text: str | tuple[str, str] = key
+    if found is not None:
+        text = found.get(lang) or found["ja"]
+    if isinstance(text, tuple):
+        text = text[0] if kw.get("n") == 1 else text[1]
     return text.format(**kw) if kw else text
+
+
+def fields(key: str) -> set[str]:
+    """IDkeyの文の差し込みの名前(どの言語の、どの形の文でも同じ)"""
+    found = MESSAGES.get(key, {})
+    forms = [f for t in found.values() for f in (t if isinstance(t, tuple) else (t,))]
+    return {name for f in forms for _l, name, _s, _c in string.Formatter().parse(f) if name}
+
+
+class Text:
+    """IDと差し込みの値で持つ文。str()で、そのときの言語の文にする。止まった理由や読めなかった
+    わけのように、覚えておいてあとで出す文はこれで持つ(言語を切り替えたあとも新しい言語で出る)。
+    差し込みの値にTextを渡してもよい"""
+
+    __slots__ = ("key", "kw")
+
+    def __init__(self, key: str, /, **kw: object) -> None:
+        self.key = key
+        self.kw = kw
+
+    def __str__(self) -> str:
+        return tr(self.key, **self.kw)
+
+    def __format__(self, spec: str) -> str:
+        return format(str(self), spec)
+
+    def __repr__(self) -> str:
+        return f"Text({self.key!r}, **{self.kw!r})"
+
+    def to_state(self) -> dict[str, object]:
+        """状態のファイルに書く形(from_stateで読む)。差し込みの値は文字列か数だけにする"""
+        return {"id": self.key, "args": dict(self.kw)}
+
+    @classmethod
+    def from_state(cls, saved: object, ids: Iterable[str]) -> "Text | None":
+        """to_stateで書いたものを読む。IDがidsにない、差し込みの名前が文と合わない、値が文字列か
+        数でない、どれかの言語の文にできない(番地の{addr:04X}に文字列など)ときはNone。出すときに
+        なって例外にならないように、読むときに確かめる"""
+        if not isinstance(saved, dict):
+            return None
+        key, args = saved.get("id"), saved.get("args", {})
+        if not isinstance(key, str) or key not in set(ids) or key not in MESSAGES:
+            return None
+        if not isinstance(args, dict) or set(args) != fields(key):
+            return None
+        if not all(isinstance(k, str) and type(v) in (str, int) for k, v in args.items()):
+            return None
+        for lang in LANGUAGES:
+            try:
+                _render(key, lang, args)
+            except (ValueError, TypeError, KeyError, IndexError):
+                return None
+        return cls(key, **args)
+
+
+class Joined:
+    """いまの言語の区切り(「、」か「, 」)でつないだ並び。Textの差し込みの値に渡す"""
+
+    __slots__ = ("items",)
+
+    def __init__(self, items: Iterable[object]) -> None:
+        self.items = list(items)
+
+    def __str__(self) -> str:
+        return tr("common.ideographic_comma").join(map(str, self.items))
+
+    def __format__(self, spec: str) -> str:
+        return format(str(self), spec)
 
 
 def from_locale(value: str | None) -> str | None:

@@ -3,7 +3,7 @@
 OSにつながっているゲームパッドのうち、SDLのGameControllerの対応表にあるもの(8BitDo、Xbox、
 PlayStation、Switchのコントローラなど)を使う。ボタン、十字キー、スティックの向き、トリガーの
 それぞれに、ポケコンのキーを1つ割り当てる(PadMap)。割り当ては、読み込んだプログラムの
-「# pad:」の行、置き場所に保存した自分の割り当て、既定の順に決まる(App.pad_map_for)。
+「# pad:」の行、プログラムのフォルダに保存した自分の割り当て、既定の順に決まる(App.pad_map_for)。
 
 PadMapは画面を持たず、試験から直接使える。パッドのイベントを入力の名前に直すのはPads。
 """
@@ -15,6 +15,7 @@ import pygame
 from pygame._sdl2 import controller
 
 from . import machine
+from .i18n import Text
 
 # 入力の名前はSDLの対応表の書き方(a、dpup、leftshoulderなど)。表示はLABELS
 BUTTONS = {
@@ -73,11 +74,21 @@ DEFAULT = {
 
 
 class PadMap:
-    """入力の名前からポケコンのキーの名前への割り当て。sourceは割り当ての出どころの説明"""
+    """入力の名前からポケコンのキーの名前への割り当て。originは割り当ての出どころ(IDと値で持ち、
+    sourceで、そのときの言語の説明にする)"""
 
-    def __init__(self, keys: dict[str, str] | None = None, source: str = "") -> None:
+    def __init__(self, keys: dict[str, str] | None = None, source: str | Text = "") -> None:
         self.keys = dict(DEFAULT if keys is None else keys)
-        self.source = source
+        self.origin = source
+
+    @property
+    def source(self) -> str:
+        """割り当ての出どころの説明(いまの言語の文)"""
+        return str(self.origin)
+
+    @source.setter
+    def source(self, text: str | Text) -> None:
+        self.origin = text
 
     def get(self, name: str) -> str | None:
         return self.keys.get(name)
@@ -88,7 +99,7 @@ class PadMap:
         else:
             self.keys[name] = key
 
-    def copy(self, source: str) -> "PadMap":
+    def copy(self, source: str | Text) -> "PadMap":
         return PadMap(self.keys, source)
 
     def text(self) -> str:
@@ -97,7 +108,7 @@ class PadMap:
 
     @classmethod
     def parse(
-        cls, value: str, source: str = "", names: frozenset[str] = KEY_NAMES
+        cls, value: str, source: str | Text = "", names: frozenset[str] = KEY_NAMES
     ) -> tuple["PadMap", list[str]]:
         """# pad: の値を読む。読めなかった語も返す(入力の名前が違うものと、キーの名前が
         namesにないもの)。区切りは空白だけ(PC-1350には「,」のキーがある)"""
@@ -113,7 +124,7 @@ class PadMap:
         return cls(keys, source), bad
 
     @classmethod
-    def load(cls, path: str, source: str) -> "PadMap | None":
+    def load(cls, path: str, source: str | Text) -> "PadMap | None":
         """保存した割り当てを読む。なければ、読めなければNone"""
         try:
             with open(path, encoding="utf-8") as f:
@@ -140,7 +151,7 @@ class Pads:
 
     def __init__(self) -> None:
         self.devices: dict[int, controller.Controller] = {}  # instance_id: 開いたコントローラ
-        # (instance_id, 入力の名前): 押している元の集まり("button"か軸の番号)
+        # (instance_id, 入力の名前): 押している元の集合("button"か軸の番号)
         self.held: dict[tuple[int, str], set[int | str]] = {}
         self.axis_on: dict[tuple[int, int], str] = {}  # (instance_id, 軸): 倒している向きの入力
         try:

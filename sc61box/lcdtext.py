@@ -13,12 +13,12 @@
 _A = bytes.fromhex("7c1211127c")  # 「A」の形
 
 
-def _table_s1(
+def _table_pc1261(
     mem, base: int, ascii_end: int, ascii_off: int, kana_off: int, pi_sqrt: tuple[int, int]
 ) -> dict[bytes, str]:
-    """S1系(PC-1261など、PC-1350)の文字の形の表。文字コードcの形は、英数字と記号なら
+    """PC-1261系とPC-1350の文字の形の表。文字コードcの形は、英数字と記号なら
     base+5*(c-ascii_off)、半角カナ(A1h〜DFh)ならbase+5*(c-kana_off)にある。pi_sqrtは
-    π・√の形の番目"""
+    π・√の形が表の何番目にあるか"""
     t = {bytes(5): " "}
 
     def glyph(index: int) -> bytes:
@@ -33,11 +33,11 @@ def _table_s1(
     return t
 
 
-def _table(mem) -> dict[bytes, str]:
-    if mem[0x812F : 0x812F + 5] == _A:  # PC-1350のROM
-        return _table_s1(mem, 0x808A, 0x80, 0x20, 0x40, (0xAB, 0xAC))
+def _table(mem, family: str = "") -> dict[bytes, str]:
+    if family == "1350" or mem[0x812F : 0x812F + 5] == _A:  # PC-1350のROM
+        return _table_pc1261(mem, 0x808A, 0x80, 0x20, 0x40, (0xAB, 0xAC))
     if mem[0x80EA : 0x80EA + 5] == _A:  # PC-1261などのROM
-        return _table_s1(mem, 0x7FA5, 0x7C, 0, 0x25, (0xC6, 0xC7))
+        return _table_pc1261(mem, 0x7FA5, 0x7C, 0, 0x25, (0xC6, 0xC7))
     t = {bytes(5): " "}
     base = 0x43C4
     for code in range(0x40, 0x4A):
@@ -50,7 +50,7 @@ def _table(mem) -> dict[bytes, str]:
 def lcd_text(machine, unknown: str = "?") -> str:
     t = getattr(machine, "_glyphs", None)
     if t is None:
-        t = machine._glyphs = _table(machine.mem)
+        t = machine._glyphs = _table(machine.mem, machine.model.family)
     cols = machine.columns()
     if machine.model.family == "1350":
         rows = []

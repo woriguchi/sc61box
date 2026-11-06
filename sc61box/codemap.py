@@ -4,15 +4,15 @@
 理由を持つ。理由は次の4つ。
 
 - executed: 作業欄を使っているあいだに、CPUがその番地から命令を読んだ
-- flow: 入口(開始番地、BASICのCALLの番地、止める所、実行した命令、DTCの表の行き先)から
+- flow: 入口(開始番地、BASICのCALLの番地、ブレークポイント、実行した命令、DTCの表の行き先)から
   命令の流れをたどって着いた。ジャンプと呼び出しの先、条件つきのジャンプは両方の先、
   呼び出しのあと(呼んだ先から戻るものとみる)をたどり、RTNと条件なしのジャンプで止める
-- guessed: どこからもたどれないので、形から推し量った。文字が並んでいる、00かFFが並んで
+- guessed: どこからもたどれないので、形から推測した。文字が並んでいる、00かFFが並んで
   いる、命令として読むとない命令かRAMとROMの外へ飛ぶ命令がある、のどれかならデータ。
   ほかは命令として読む(どれでもないので、作業欄では暗く出す)
 - user: 自分で決めた(作業欄の右クリックで、その番地からデータ・命令にした)
 
-推し量るのは、作業欄で書いた範囲(書き出す範囲)の中だけ。流れはRAMの中ならどこでもたどる。
+推測するのは、作業欄で書いた範囲(書き出す範囲)の中だけ。流れはRAMの中ならどこでもたどる。
 データは4バイトずつの行にする(DTCの表は表の行ごと)。
 """
 
@@ -32,7 +32,7 @@ KINDS = {HEAD: "head", BODY: "body", DATA: "data", DATA_BODY: "data"}
 
 DATA_ROW = 4  # データの1行のバイト数
 TEXT_MIN = 5  # 文字がこのバイト数以上並べば文字列とみる
-FILL_MIN = 4  # 00かFFがこのバイト数以上並べば埋め草とみる
+FILL_MIN = 4  # 00かFFがこのバイト数以上並べば空きとみる
 MARK_SPAN = 256  # 書いた範囲の外で、データの指定が続く長さの上限
 
 JUMPS = ("JP", "JR")  # 条件なしのジャンプ(先だけをたどる。条件つきは両方をたどる)
@@ -170,7 +170,7 @@ class CodeMap:
             todo.append((nxt, FLOW, rows))
 
     def guess(self, lo: int, hi: int, target_ok: Callable[[int], bool]) -> None:
-        """lo〜hi-1のうち、まだ見分けていないところを形から推し量る"""
+        """lo〜hi-1のうち、まだ見分けていないところを形から推測する"""
         a = lo
         while a < hi:
             if self.kind[a]:
@@ -183,8 +183,8 @@ class CodeMap:
             a = b
 
     def _guess_gap(self, lo: int, hi: int, target_ok: Callable[[int], bool]) -> None:
-        """見分けていないひと続きlo〜hi-1。文字と埋め草の並びを先にデータにし、残りを
-        命令として読んでみる"""
+        """見分けていないひと続きlo〜hi-1。文字の並びと00・FFの並びを先にデータにし、
+        残りを命令として読んでみる"""
         rest = lo
         a = lo
         while a < hi:
@@ -199,7 +199,7 @@ class CodeMap:
                     b += 1
                 text = [self.read(i) for i in range(a, b)]
                 letters = sum(chr(c).isalnum() for c in text)
-                # 英数字が半分以上で、3種類以上の字(同じ字の並びは、字の形の点などが多い)
+                # 英数字が半分以上で、3種類以上の字(同じ字ばかりの並びは、文字の形のデータが多い)
                 ok = letters * 2 >= len(text) and len(set(text)) >= 3
                 # 終わりの00か0Dまで文字列に入れる
                 if b < hi and self.read(b) in (0x00, 0x0D):
@@ -220,7 +220,7 @@ class CodeMap:
         """lo〜hi-1を命令として読んでみる。おかしな命令(ない命令、ありそうにない番地へ飛ぶ
         命令、終わりをまたぐ命令)のない並びのうち、RTNか条件なしのジャンプで終わるところ
         までを命令(guessed)にする。そのあとから、おかしな命令(なければ終わり)まではデータ。
-        終わりの00・FFは、命令のあとの埋め草とみる"""
+        終わりの00・FFは、命令のあとの空きとみる"""
         end = hi
         while end > lo and self.read(end - 1) in (0x00, 0xFF):
             end -= 1
@@ -282,8 +282,8 @@ def build(
     marks: dict[int, str],
     ram_end: int,
 ) -> CodeMap:
-    """見分けた結果を作る。regionsは推し量る範囲、entriesは流れをたどる入口(開始番地、
-    CALLの番地、止める所)、executedは実行した番地、marksは自分で決めた指定(番地: "data"か
+    """見分けた結果を作る。regionsは推測する範囲、entriesは流れをたどる入口(開始番地、
+    CALLの番地、ブレークポイント)、executedは実行した番地、marksは自分で決めた指定(番地: "data"か
     "code")。指定のデータは、次の指定か実行した番地の手前まで(書いた範囲の外なら
     MARK_SPANバイトまで)"""
     cm = CodeMap(read)

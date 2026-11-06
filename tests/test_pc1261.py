@@ -56,7 +56,7 @@ def test_hidden_symbol_right_of_error():
     assert panel.symbols["HIDDEN"][0] > panel.symbols["ERROR"][0]
 
 
-def test_pc1260_has_4kb():
+def test_pc1261_has_4kb():
     m, t = boot("1260")
     assert m.model.ram == (0x5800, 0x6800)
     typ(m, t, "MEM\n")
@@ -110,7 +110,7 @@ def test_program_export_and_save(tmp_path):
     assert m.mem[m.model.prog_start] == 0xFF
     text = basictext.program_text(m.mem, start=m.model.prog_start)
     assert text == src
-    # 液晶RAM(角度の単位の印がある)も保存する
+    # 液晶RAM(角度の単位の記号がある)も保存する
     typ(m, t, "RADIAN\n")
     path = tmp_path / "ram.bin"
     m.save_ram(str(path))
@@ -380,7 +380,7 @@ def test_program_ram_directive(tmp_path):
     assert prog.runs_on("1261") and prog.runs_on("1260")
     bad = programs.load_program(_ram_hex(tmp_path, "bad", "# ram: 6800\n"))
     assert bad.errors and "# ram:" in bad.errors[0]
-    # 置き場所の直下に置いたものは、広げたRAMに収まる機種で動く
+    # プログラムのフォルダの直下に置いたものは、広げたRAMに収まる機種で動く
     top = tmp_path / "top.hex"
     top.write_text("# ram: 6800-7FFF\n7F00 37\n", encoding="utf-8")
     assert programs.load_program(str(top)).inferred == ["1261"]  # PC-1350は7000から液晶RAM
@@ -418,3 +418,30 @@ def test_open_program_extends_ram_and_keeps_it(tmp_path, monkeypatch):
     back = app._saved_prog(app._prog_fields(wide))
     assert back is not None and back.ram == (0x6800, 0x8000)
     app.close()
+
+
+def test_card_directive(tmp_path):
+    """# card: は、PC-1350で要るRAMカードの大きさ。差したカードが小さければ読み込まずに
+    --cardを知らせ、足りていれば読み込む。8か16のほかは読めない"""
+    path = tmp_path / "big.hex"
+    path.write_text("# model: 1350\n# card: 16\n2040 37\n", encoding="utf-8")
+    prog = programs.load_program(str(path))
+    assert prog.card == 16 and not prog.errors
+    bad = tmp_path / "bad.hex"
+    bad.write_text("# card: 4\n2040 37\n", encoding="utf-8")
+    assert programs.load_program(str(bad)).errors
+    for card, loaded in ((0, False), (8, False), (16, True)):
+        app = make_app("1350", frames=3, card=card, norom=True)
+        app.open_program(prog, run=False)
+        if loaded:
+            assert app.m.read(0x2040) == 0x37
+        else:
+            assert "--card 16" in app.status and app.m.read(0x2040) != 0x37
+        app.close()
+
+
+def test_hex_zero():
+    """&0・&00は0として読む"""
+    m, t = boot()
+    typ(m, t, "&00+5\n")
+    assert lines(m)[1].strip() == "5."

@@ -1,5 +1,5 @@
 # title: LC-3 サンプル1 文字を流す
-# norom: off
+# norom: basic
 # help: 字が右へ流れたあと、液晶いっぱいに字が次々に出る。BRKで止める
 # hex: lc3.hex
 # setup: EQU#43

@@ -9,7 +9,7 @@ PC-1251・PC-1245のプログラムは、B830番地(PC-1245はC000番地)のFF�
 中間コード(7Dh以上)の並び。中間コードと綴りの対応はBASIC ROMの命令の表から読む。
 空白はROMが打ち込みのときに捨てるので、文字に戻すときに命令の前後に補う。
 
-PC-1260/1261/1262とPC-1350(S1系のBASIC)は次の形の行が並ぶ。
+PC-1260/1261/1262とPC-1350(PC-1261系とPC-1350のBASIC)は次の形の行が並ぶ。
 
     行番号(2バイト、上位が先)  長さ(中身と0Dのバイト数)  中身…  0D
 
@@ -56,6 +56,11 @@ def keyword_table(mem) -> dict[int, str]:
         if len(table) > len(best):
             best = table
         i = j + 1 if table else i + 1
+    if not best:
+        # ROMがなければ、ROMなしのBASICの表(ROMの表と同じ中間コード)
+        from .basic.pc1251.tokens import KEYWORDS_1251
+
+        best = dict(KEYWORDS_1251)
     out = dict(OPERATORS)
     out.update(best)
     return out
@@ -80,10 +85,13 @@ def _parse_run(rom: bytes, i: int) -> tuple[dict[int, str], int]:
     return (table, i) if len(table) >= 20 else ({}, i)
 
 
-def program_lines(mem, start: int = PROG_START) -> list[tuple[int, bytes]]:
-    """(行番号, 中身)の列。プログラムがなければ空。memのROMがS1系なら、その形で読む"""
-    if is_s1(mem):
-        return program_lines_s1(mem, start)
+def program_lines(
+    mem, start: int = PROG_START, pc1261: bool | None = None
+) -> list[tuple[int, bytes]]:
+    """(行番号, 中身)の列。プログラムがなければ空。pc1261(NoneならmemのROMで決める)なら
+    PC-1261系とPC-1350の形で読む"""
+    if is_pc1261(mem) if pc1261 is None else pc1261:
+        return program_lines_pc1261(mem, start)
     out = []
     a = start + 1 if mem[start] == 0xFF else start
     while a < 0xC800:
@@ -135,13 +143,20 @@ def line_text(body: bytes, keywords: dict[int, str]) -> str:
     return "".join(out).rstrip()
 
 
-def program_text(mem, keywords: dict[int, str] | None = None, start: int = PROG_START) -> str:
-    """RAMのプログラムをBASICの文字にする。startはプログラムの先頭(machine.program_start)"""
-    s1 = is_s1(mem)
+def program_text(
+    mem,
+    keywords: dict[int, str] | None = None,
+    start: int = PROG_START,
+    pc1261: bool | None = None,
+) -> str:
+    """RAMのプログラムをBASICの文字にする。startはプログラムの先頭(machine.program_start)。
+    pc1261はPC-1261系とPC-1350の形か(NoneならmemのROMで決める。ROMなしの本体では機種から渡す)"""
+    pc1261 = is_pc1261(mem) if pc1261 is None else pc1261
     if keywords is None:
-        keywords = keyword_table_s1(mem) if s1 else keyword_table(mem)
-    text = line_text_s1 if s1 else line_text
-    return "".join(f"{n} {text(body, keywords)}\n" for n, body in program_lines(mem, start))
+        keywords = keyword_table_pc1261(mem) if pc1261 else keyword_table(mem)
+    text = line_text_pc1261 if pc1261 else line_text
+    lines = program_lines(mem, start, pc1261)
+    return "".join(f"{n} {text(body, keywords)}\n" for n, body in lines)
 
 
 # 行番号の桁と中身(中間コード)を合わせて79字まで。長い行は、打ち込むと切れる
@@ -195,54 +210,64 @@ def encode_line(line: str, keywords: dict[int, str]) -> tuple[int, bytes] | None
     return number, head + bytes(body) + b"\x00"
 
 
-def encode_program(text: str, mem) -> bytes | None:
+def encode_program(
+    text: str, mem, pc1261: bool | None = None, keywords: dict[int, str] | None = None
+) -> bytes | None:
     """BASICのプログラムを、ROMが打ち込みで作るのと同じ中間コードの行の並びにする(先頭と
     終わりのFFは含まない)。行番号の順に並べ、同じ番号の行はあとのもので置き換え、行番号
-    だけの行はその行を消す。memのROMでPC-1251系かS1系かを決める。入らない長さの行があればNone"""
-    s1 = is_s1(mem)
-    keywords = keyword_table_s1(mem) if s1 else keyword_table(mem)
+    だけの行はその行を消す。PC-1251系かPC-1261系とPC-1350かはpc1261で決める(NoneならmemのROMで決める)。
+    keywordsを省くとmemのROMの表を読む(ROMなしの本体では、その機種の表を渡す)。
+    入らない長さの行があればNone"""
+    pc1261 = is_pc1261(mem) if pc1261 is None else pc1261
+    if keywords is None:
+        keywords = keyword_table_pc1261(mem) if pc1261 else keyword_table(mem)
     lines: dict[int, bytes] = {}
     for line in text.split("\n"):
         if not line.strip():
             continue
-        enc = encode_line_s1(line, keywords) if s1 else encode_line(line, keywords)
+        enc = encode_line_pc1261(line, keywords) if pc1261 else encode_line(line, keywords)
         if enc is None:
             return None
         number, data = enc
-        if len(data) == (4 if s1 else 3):  # 中身がない
+        if len(data) == (4 if pc1261 else 3):  # 中身がない
             lines.pop(number, None)
         else:
             lines[number] = data
     return b"".join(lines[n] for n in sorted(lines))
 
 
-# ---- S1系(PC-1260/1261/1262、PC-1350) ----
-CHARS_S1: dict[int, str] = {c: chr(c) for c in range(0x20, 0x7F)}
-CHARS_S1.update({0x5C: "¥", 0xFB: "π", 0xFC: "√"})
+# ---- PC-1261系(PC-1260・1261・1262)とPC-1350 ----
+CHARS_PC1261: dict[int, str] = {c: chr(c) for c in range(0x20, 0x7F)}
+CHARS_PC1261.update({0x5C: "¥", 0xFB: "π", 0xFC: "√"})
 for _c in range(0xA1, 0xE0):
-    CHARS_S1[_c] = bytes([_c]).decode("cp932")
+    CHARS_PC1261[_c] = bytes([_c]).decode("cp932")
 
 
-def is_s1(mem) -> bool:
-    """S1系のBASIC ROMが入っているか。文字の形の表の「A」で見分ける(PC-1350は812Fh)"""
+def is_pc1261(mem) -> bool:
+    """PC-1261系とPC-1350のBASIC ROMが入っているか。文字の形の表の「A」で見分ける(PC-1350は812Fh)"""
     a = bytes.fromhex("7c1211127c")
     return bytes(mem[0x80EA:0x80EF]) == a or bytes(mem[0x812F:0x8134]) == a
 
 
-def keyword_table_s1(mem) -> dict[int, str]:
-    """S1系のBASIC ROMの命令の表を読む。{中間コード: 綴り}"""
+def keyword_table_pc1261(mem) -> dict[int, str]:
+    """PC-1261系とPC-1350のBASIC ROMの命令の表を読む。{中間コード: 綴り}"""
     rom = bytes(mem)
     best: dict[int, str] = {}
     i = 0x8000
     while i < 0x10000:
-        table, j = _parse_run_s1(rom, i)
+        table, j = _parse_run_pc1261(rom, i)
         if len(table) > len(best):
             best = table
         i = j + 1 if table else i + 1
+    if not best:
+        # ROMがなければ、ROMなしのBASICの表(ROMの表と同じ中間コード。PC-1261系)
+        from .basic.pc1261.tokens import KEYWORDS_1261
+
+        best = dict(KEYWORDS_1261)
     return best
 
 
-def _parse_run_s1(rom: bytes, i: int) -> tuple[dict[int, str], int]:
+def _parse_run_pc1261(rom: bytes, i: int) -> tuple[dict[int, str], int]:
     table: dict[int, str] = {}
     while i < len(rom) - 4:
         n = rom[i] & 0x0F
@@ -259,8 +284,8 @@ def _parse_run_s1(rom: bytes, i: int) -> tuple[dict[int, str], int]:
     return (table, i) if len(table) >= 20 else ({}, i)
 
 
-def program_lines_s1(mem, start: int) -> list[tuple[int, bytes]]:
-    """S1系の(行番号, 中身)の列。中身は終わりの0Dを含まない"""
+def program_lines_pc1261(mem, start: int) -> list[tuple[int, bytes]]:
+    """PC-1261系とPC-1350の(行番号, 中身)の列。中身は終わりの0Dを含まない"""
     out = []
     a = start + 1 if mem[start] == 0xFF else start
     while a + 3 < 0x7000 and mem[a] != 0xFF:
@@ -273,15 +298,15 @@ def program_lines_s1(mem, start: int) -> list[tuple[int, bytes]]:
     return out
 
 
-def line_text_s1(body: bytes, keywords: dict[int, str]) -> str:
-    """S1系の1行の中身を文字にする。空白の補い方はline_textと同じ"""
+def line_text_pc1261(body: bytes, keywords: dict[int, str]) -> str:
+    """PC-1261系とPC-1350の1行の中身を文字にする。空白の補い方はline_textと同じ"""
     out: list[str] = []
     in_string = False
     rest_raw = False
     escaped = False  # FEhのあとの字(カナ)
     for i, c in enumerate(body):
         if escaped:
-            out.append(CHARS_S1.get(c, "?"))
+            out.append(CHARS_PC1261.get(c, "?"))
             escaped = False
             continue
         if c == 0xFE:
@@ -291,23 +316,24 @@ def line_text_s1(body: bytes, keywords: dict[int, str]) -> str:
         if word is None:
             if c == 0x22 and not rest_raw:
                 in_string = not in_string
-            out.append(CHARS_S1.get(c, "?"))
+            out.append(CHARS_PC1261.get(c, "?"))
             continue
         if out and (out[-1][-1].isalnum() or out[-1][-1] in '")$'):
             out.append(" ")
         out.append(word)
         nxt = body[i + 1] if i + 1 < len(body) else None
-        if nxt is not None and (nxt in keywords or CHARS_S1.get(nxt, "?") in _SPACE_BEFORE):
+        if nxt is not None and (nxt in keywords or CHARS_PC1261.get(nxt, "?") in _SPACE_BEFORE):
             out.append(" ")
         if word == "REM":
             rest_raw = True
     return "".join(out).rstrip()
 
 
-def encode_line_s1(line: str, keywords: dict[int, str]) -> tuple[int, bytes] | None:
-    """S1系の1行を、ROMが打ち込みで作るのと同じ中間コードにする。(行番号, 行の全体)を返し、
-    行番号がないか、長すぎて入らない行はNone。文字列とREMのあとの外では空白を落とし、いちばん長く合う命令の綴りを
-    中間コードにする。lineはkeytype.typed_textを通してから渡す"""
+def encode_line_pc1261(line: str, keywords: dict[int, str]) -> tuple[int, bytes] | None:
+    """PC-1261系とPC-1350の1行を、ROMが打ち込みで作るのと同じ中間コードにする。(行番号, 行の
+    全体)を返し、行番号がないか、長すぎて入らない行はNone。文字列とREMのあとの外では空白を
+    落とし、いちばん長く合う命令の綴りを中間コードにする。lineはkeytype.typed_textを通してから
+    渡す"""
     text = line.strip()
     k = 0
     while k < len(text) and text[k].isdigit():
@@ -316,7 +342,7 @@ def encode_line_s1(line: str, keywords: dict[int, str]) -> tuple[int, bytes] | N
         return None
     number, rest = int(text[:k]), text[k:]
     words = _keyword_list(keywords)
-    codes = {ch: c for c, ch in CHARS_S1.items()}
+    codes = {ch: c for c, ch in CHARS_PC1261.items()}
     body = bytearray()
     in_string = raw = False
     j = 0

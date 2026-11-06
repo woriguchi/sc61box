@@ -4,9 +4,9 @@
 入力の割り当ては、パッドの並びにならべる(左に十字キー、まんなかにSelect・Start、右に
 A・B・X・Y、上にL・R)。割り当てを変えるときは、パッドのボタンを押すか割り当てをクリックして
 入力を選び、本体の絵のキーをクリックするか、パソコンのキーを打つ。本体の絵のキーには、
-割り当ててある入力の札を出す(draw_badges)。
+割り当ててある入力のラベルを出す(draw_badges)。
 
-パッドの入力の名前は、欄の中でも本体の絵の上でも同じ札(暗い地に黄色の字)で書き、
+パッドの入力の名前は、欄の中でも本体の絵の上でも同じラベル(暗い地に黄色の字)で書き、
 割り当てたキーの名前は白の字で書く。どちらがパッドでどちらがキーかを色で見分ける。
 """
 
@@ -22,16 +22,16 @@ CHIP_ON = (70, 92, 140)
 CHIP_PRESSED = (96, 150, 110)
 BUTTON = (58, 61, 68)
 BUTTON_OFF = (40, 42, 48)
-BADGE = (26, 28, 34)  # パッドの入力の札(欄の中でも本体の絵の上でも同じ)
+BADGE = (26, 28, 34)  # パッドの入力のラベル(欄の中でも本体の絵の上でも同じ)
 BADGE_INK = (255, 214, 120)
 BADGE_ON = (96, 150, 110)
-NONE_INK = (120, 124, 132)  # 割り当てていない印
+NONE_INK = (120, 124, 132)  # 割り当てていないときの「―」の色
 LH = 26
 CHIP_H = 26
 ROW_H = 30
 
 # 入力を置く場所(列, 行)。パッドを上から見た並び(8BitDo SN30 Proの印字の位置)。列の幅は
-# その列に置く入力の札の幅で決める(列ごとに違う)。Homeは3列目と4列目のまんなか
+# その列に置く入力のラベルの幅で決める(列ごとに違う)。Homeは3列目と4列目のまんなか
 LAYOUT: dict[str, tuple[float, int]] = {
     "lefttrigger": (0, 0), "leftshoulder": (1, 0), "rightshoulder": (6, 0), "righttrigger": (7, 0),
     "dpup": (1, 1), "back": (3, 1), "start": (4, 1), "x": (6, 1),
@@ -53,7 +53,7 @@ def key_label(key: str | None) -> str:
 
 
 def badge(font, text: str, on: bool = False) -> pygame.Surface:
-    """パッドの入力の札(暗い地に黄色の字。onなら緑の地に白)"""
+    """パッドの入力のラベル(暗い地に黄色の字。onなら緑の地に白)"""
     img = font.render(text, True, WHITE if on else BADGE_INK)
     out = pygame.Surface((img.get_width() + 8, img.get_height() + 2), pygame.SRCALPHA)
     pygame.draw.rect(out, BADGE_ON if on else BADGE, out.get_rect(), border_radius=4)
@@ -62,7 +62,7 @@ def badge(font, text: str, on: bool = False) -> pygame.Surface:
 
 
 def chip_width(font, small, name: str, pad_map: PadMap) -> int:
-    """入力nameの割り当て1つの幅(札と、キーの名前と、余白)"""
+    """入力nameの割り当て1つの幅(ラベルと、キーの名前と、余白)"""
     return small.size(LABELS[name])[0] + 8 + 8 + font.size(key_label(pad_map.get(name)))[0] + 16
 
 
@@ -88,7 +88,7 @@ class PadPanel:
         self.selected: str | None = None  # 割り当てを変える入力
         self.hits: list[tuple[pygame.Rect, str, str]] = []  # (場所, 種類, 値)
         self.height = 0  # 欄の高さ(measureで決める)
-        self.top = 0  # 窓の中で欄を描いた位置(drawで決める)
+        self.top = 0  # ウィンドウの中で欄を描いた位置(drawで決める)
 
     def hit(self, pos) -> tuple[str, str] | None:
         """posにあるもの。("input", 入力の名前)か("action", 動作の名前)"""
@@ -99,12 +99,12 @@ class PadPanel:
 
     def _buttons(self, prog: str | None, prog_pad: bool) -> list[tuple[str, str, bool]]:
         return [
-            ("save_prog", tr("このプログラム用に保存"), prog is not None),
-            ("save_default", tr("既定として保存"), True),
-            ("reset", tr("初期設定に戻す"), True),
-            ("from_prog", tr("# pad: に戻す"), prog_pad),
-            ("copy", tr("# pad: の行をコピー"), True),
-            ("close", tr("閉じる(Esc)"), True),
+            ("save_prog", tr("pad.save_program"), prog is not None),
+            ("save_default", tr("pad.save_default"), True),
+            ("reset", tr("pad.reset_factory_mapping"), True),
+            ("from_prog", tr("pad.back_pad"), prog_pad),
+            ("copy", tr("pad.copy_pad_line"), True),
+            ("close", tr("common.close_esc"), True),
         ]
 
     def _notes(self, names: list[str], selected: str | None) -> list[str]:
@@ -112,21 +112,17 @@ class PadPanel:
         if selected is not None:
             return [
                 tr(
-                    "{name}に割り当てるキーを、本体の絵でクリックするか、パソコンで打ちます。"
-                    "Deleteで割り当てを外し、Escでやめます",
+                    "pad.click_key_pocket_computer",
                     name=LABELS[selected],
                 )
             ]
         if names:
-            first = tr(
-                "パッドのボタンを押すか、下の割り当てをクリックすると、その割り当てを変えられます"
-            )
+            first = tr("pad.press_gamepad_button_click")
         else:
-            first = tr("下の割り当てをクリックすると、その割り当てを変えられます")
+            first = tr("pad.click_mapping_below_change")
         return [
             first,
-            tr("ボタンの名前はA・B・X・Yの位置の約束(SDL)で、パッドの印字と違うことがあります。"
-               "印字と違うときは、割り当てたいボタンを実際に押して選んでください"),
+            tr("pad.button_names_follow_sdl"),
         ]  # fmt: skip
 
     def _layout(
@@ -209,7 +205,7 @@ class PadPanel:
         prog_pad: bool,
         dirty: bool,
     ) -> None:
-        """窓のtopから下に欄を描く。namesはつながっているパッド、pressedはいま押している入力、
+        """ウィンドウのtopから下に欄を描く。namesはつながっているパッド、pressedはいま押している入力、
         progは読み込んであるプログラムの題名(なければNone)、prog_padはそのプログラムに
         # pad: があるか、dirtyは保存していない変更があるか"""
         width = dst.get_width()
@@ -222,11 +218,11 @@ class PadPanel:
         self.hits = []
         x0 = pad
         y = top + pad
-        dst.blit(font.render(tr("ゲームパッドの割り当て"), True, WHITE), (x0, y))
+        dst.blit(font.render(tr("pad.gamepad_mapping"), True, WHITE), (x0, y))
         if names:
-            who = tr("、").join(names)
+            who = tr("common.ideographic_comma").join(names)
         else:
-            who = tr("パッドがつながっていません(つなぐとここに出ます)")
+            who = tr("pad.no_gamepad_connected_appears")
         img = small.render(who, True, GREY)
         if img.get_width() <= w // 2:
             dst.blit(img, (x0 + w - img.get_width(), y + 4))
@@ -270,16 +266,16 @@ class PadPanel:
                 x = r.right + 6
             y += ROW_H
         if prog is None:
-            target = tr("対象: (プログラムを読み込んでいません)")
+            target = tr("pad.target_no_program_loaded")
         else:
-            target = tr("対象: {name}", name=prog)
-        state = tr("いまの割り当て: {source}", source=pad_map.source)
+            target = tr("pad.target", name=prog)
+        state = tr("pad.current_mapping", source=pad_map.source)
         if dirty:
-            state += tr("(変更あり、保存していません)")
+            state += tr("pad.edited_not_saved")
         dst.blit(small.render(f"{target}   {state}", True, GREY), (x0, y))
 
     def _chip(self, dst, font, small, name, pad_map, pressed, x: int, y: int, cw: int) -> None:
-        """入力1つの割り当て(入力の札「↑」と、キーの名前「8」)。選んでいれば枠、押していれば緑"""
+        """入力1つの割り当て(入力のラベル「↑」と、キーの名前「8」)。選んでいれば枠、押していれば緑"""
         key = pad_map.get(name)
         tag = badge(small, LABELS[name], on=name in pressed)
         img = font.render(key_label(key), True, WHITE if key is not None else NONE_INK)
@@ -309,8 +305,8 @@ def draw_badges(
     selected: str | None,
     pressed: set[str],
 ) -> None:
-    """本体の絵のキーに、割り当ててある入力の札を右下に出す(キーの字を隠さないように)。
-    key_rectsは絵の中のキーの範囲で、scaleとmarginで窓の座標に直す"""
+    """本体の絵のキーに、割り当ててある入力のラベルを右下に出す(キーの字を隠さないように)。
+    key_rectsは絵の中のキーの範囲で、scaleとmarginでウィンドウの座標に直す"""
     by_key: dict[str, list[str]] = {}
     for name in ORDER:
         key = pad_map.get(name)

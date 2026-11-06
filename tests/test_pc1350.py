@@ -274,3 +274,14 @@ def test_store_basic_matches_typing():
         shown = typ(m2, t2, "RUN 5\n", wait=1)
         assert "OK" in [s.strip() for s in shown], shown
         app.close()
+
+
+def test_hex_zero():
+    """&0・&00は0として読む。POKEの値に書いても、続きの値まで書く"""
+    m, t = boot()
+    assert typ(m, t, "&00+5\n")[2].strip() == "5."
+    m, t = boot()
+    typ(m, t, "10 POKE &6800,1,2,&00,3,4\n", mode="PRO")
+    shown = typ(m, t, "RUN\n", mode="RUN", wait=1)
+    assert not any("ERROR" in s for s in shown), shown
+    assert bytes(m.mem[0x6800:0x6805]) == bytes([1, 2, 0, 3, 4])

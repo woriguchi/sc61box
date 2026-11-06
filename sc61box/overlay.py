@@ -1,4 +1,4 @@
-"""窓の上に重ねる表示(プログラムの一覧、メニュー、キーの説明、知らせ)と、本体の下の
+"""ウィンドウの上に重ねる表示(プログラムの一覧、メニュー、キーの説明、メッセージ)と、本体の下の
 操作欄と紙"""
 
 import os
@@ -104,7 +104,7 @@ def shrink(box: pygame.Surface, height: int) -> pygame.Surface:
 
 
 def draw_help(dst: pygame.Surface, font: pygame.font.Font, lines: list[str]) -> None:
-    """キーの説明を窓のまんなかに出す。窓が狭ければ折り返し、低ければ縮める"""
+    """キーの説明をウィンドウのまんなかに出す。ウィンドウが狭ければ折り返し、低ければ縮める"""
     w = dst.get_width() - 40
     rows = [r for line in lines for r in wrap(font, line, w - 28)]
     box = _panel(w, LINE_H * len(rows) + 16)
@@ -116,7 +116,7 @@ def draw_help(dst: pygame.Surface, font: pygame.font.Font, lines: list[str]) -> 
 
 
 def draw_status(dst: pygame.Surface, font: pygame.font.Font, text: str) -> None:
-    """窓の下に知らせを出す。改行があれば行を重ね、窓に入らない行は折り返す"""
+    """ウィンドウの下にメッセージを出す。改行があれば行を重ね、ウィンドウに入らない行は折り返す"""
     room = dst.get_width() - 48
     rows = [r for line in text.split("\n") for r in wrap(font, line, room)]
     imgs = [font.render(line, True, WHITE) for line in rows]
@@ -128,39 +128,57 @@ def draw_status(dst: pygame.Surface, font: pygame.font.Font, text: str) -> None:
     dst.blit(box, (x, dst.get_height() - box.get_height() - 12))
 
 
-def _badge(dst: pygame.Surface, font: pygame.font.Font, text: str, icon: str, right: bool) -> None:
-    """窓の上の隅(rightなら右)に、絵つきの短い知らせを出す。iconは_iconの種類で、
-    "rec"なら赤い丸を点滅させる"""
+def _badge(
+    dst: pygame.Surface,
+    font: pygame.font.Font,
+    text: str,
+    icon: str,
+    right: bool,
+    close: bool = False,
+) -> pygame.Rect:
+    """ウィンドウの上の隅(rightなら右)に、絵つきの短いメッセージを出し、その範囲を返す。iconは
+    _iconの種類で、"rec"なら赤い丸を点滅させる。closeなら右端に閉じる×を描く"""
     label = font.render(text, True, WHITE)
-    w, h = label.get_width() + 34, label.get_height() + 10
+    mark = font.render("×", True, GREY) if close else None
+    w = label.get_width() + 34 + (mark.get_width() + 12 if mark is not None else 0)
+    h = label.get_height() + 10
     x, y = (dst.get_width() - w - 10 if right else 10), 10
     dst.blit(_panel(w, h, 200), (x, y))
     if icon != "rec" or time.monotonic() % 1 < 0.6:
         _icon(dst, icon, x + 9, y + h // 2)
     dst.blit(label, (x + 26, y + 5))
+    if mark is not None:
+        dst.blit(mark, (x + w - mark.get_width() - 8, y + (h - mark.get_height()) // 2))
+    return pygame.Rect(x, y, w, h)
 
 
 def draw_recording(
     dst: pygame.Surface, font: pygame.font.Font, seconds: float, paused: bool = False
 ) -> None:
-    """録画中であることを窓の右上に出す(録画には入らない)。一時停止中はそう出す"""
+    """録画中であることをウィンドウの右上に出す(録画には入らない)。一時停止中は一時停止中と出す"""
     sec = int(seconds)
     clock = f"{sec // 60}:{sec % 60:02d}"
     if paused:
-        _badge(dst, font, tr("録画を一時停止中 {clock}", clock=clock), "pause", right=True)
+        _badge(dst, font, tr("common.rec_paused", clock=clock), "pause", right=True)
     else:
-        _badge(dst, font, tr("録画中 {clock}", clock=clock), "rec", right=True)
+        _badge(dst, font, tr("common.recording", clock=clock), "rec", right=True)
+
+
+def draw_warning(dst: pygame.Surface, font: pygame.font.Font, text: str) -> pygame.Rect:
+    """注意(ROMなしにないROMのルーチンを呼んだなど)を、ウィンドウの左上に出し、その範囲を返す
+    (クリックで閉じられるように、右端に×を描く)"""
+    return _badge(dst, font, text, "warn", right=False, close=True)
 
 
 def draw_halted(dst: pygame.Surface, font: pygame.font.Font, text: str) -> None:
-    """実行を一時停止していることを窓の左上に出す(録画には入らない)"""
+    """実行を一時停止していることをウィンドウの左上に出す(録画には入らない)"""
     _badge(dst, font, text, "pause", right=False)
 
 
 class ProgramMenu:
     """プログラムの一覧。itemsはprograms.Programの列"""
 
-    ROWS = 12  # 見える行の数(窓が低ければ減らす)
+    ROWS = 12  # 見える行の数(ウィンドウが低ければ減らす)
 
     def __init__(self, items: list) -> None:
         self.all = items
@@ -169,7 +187,7 @@ class ProgramMenu:
         self.sel = 0
         self.top = 0
         self.visible = self.ROWS  # いま見えている行の数(drawで決める)
-        self.rows: list[tuple[int, pygame.Rect]] = []  # 描いた行の(番号, 窓の中の範囲)
+        self.rows: list[tuple[int, pygame.Rect]] = []  # 描いた行の(番号, ウィンドウの中の範囲)
         self.search_rect = pygame.Rect(0, 0, 0, 0)
         self.box = pygame.Rect(0, 0, 0, 0)  # 一覧の枠全体(外を押すと閉じる)
         self.button_rects: list[tuple[str, pygame.Rect]] = []
@@ -208,20 +226,21 @@ class ProgramMenu:
         return next((i for i, r in self.rows if r.collidepoint(pos)), -1)
 
     # ボタン: (表示, 短い表示, 動作の名前)。動作はApp.menu_actionが受ける。上の右には一覧
-    # そのものの操作、下には選んだプログラムの操作を置く。下の2つは窓が狭くても名前を略さない
+    # そのものの操作、下には選んだプログラムの操作を置く。下の2つはウィンドウが狭くても名前を
+    # 略さない
     @staticmethod
     def top_buttons() -> tuple[tuple[str, str, str], ...]:
         return (
-            (tr("フォルダを開く(O)"), tr("フォルダ"), "folder"),
-            (tr("読み直す(R)"), tr("読み直す"), "reload"),
-            (tr("閉じる(Esc)"), tr("閉じる"), "close"),
+            (tr("overlay.open_folder_o"), tr("overlay.folder"), "folder"),
+            (tr("overlay.reload_r"), tr("overlay.reload"), "reload"),
+            (tr("common.close_esc"), tr("overlay.close"), "close"),
         )
 
     @staticmethod
     def bottom_buttons() -> tuple[tuple[str, str, str], ...]:
         return (
-            (tr("読み込むだけ(Shift+Enter)"), tr("読み込むだけ"), "load"),
-            (tr("読み込んで実行(Enter)"), tr("読み込んで実行"), "run"),
+            (tr("overlay.load_only_shift_enter"), tr("overlay.load_only"), "load"),
+            (tr("overlay.load_run_enter"), tr("overlay.load_run"), "run"),
         )
 
     def button_at(self, pos) -> str:
@@ -255,7 +274,7 @@ class ProgramMenu:
         return text
 
     def draw(self, dst: pygame.Surface, font: pygame.font.Font, model: str, folder: str) -> None:
-        """modelは一覧を開いた機種、folderは置き場所。窓が低ければ行を減らす。上に名前で探す
+        """modelは一覧を開いた機種、folderはプログラムのフォルダ。ウィンドウが低ければ行を減らす。上に名前で探す
         欄と一覧の操作、下に選んでいるものの説明(2行)と、読み込むボタンを出す"""
         items, lh = self.items, LINE_H
         w = min(dst.get_width() - 40, 900)
@@ -268,7 +287,7 @@ class ProgramMenu:
         y0 = max(10, (dst.get_height() - h) // 2)
         box = _panel(w, h, 255)
         self.box = pygame.Rect(x0, y0, w, h)
-        title = font.render(tr("プログラム"), True, WHITE)
+        title = font.render(tr("common.programs"), True, WHITE)
         # 右上の一覧の操作(幅が足りなければ短い表示にし、左の見出しを省いて探す欄を広く取る)
         top_specs = self.top_buttons()
         full = sum(font.size(b[0])[0] + 24 for b in top_specs)
@@ -282,29 +301,29 @@ class ProgramMenu:
         search = pygame.Rect(sx, 6, max(60, min(320, tops[0][1].x - sx - 12)), lh - 4)
         pygame.draw.rect(box, (44, 47, 54), search, border_radius=4)
         if self.query is None:
-            text, color = tr("名前で探す( / )"), GREY
+            text, color = tr("overlay.search_name"), GREY
         else:
             text, color = self.query + "▏", WHITE
         img = font.render(self._fit(font, text, search.width - 12), True, color)
         box.blit(img, (search.x + 8, search.centery - img.get_height() // 2))
         self.search_rect = search.move(x0, y0)
         if not items:
-            text = tr("まだ何もありません。.basか.hexを置いてください")
+            text = tr("overlay.nothing_here_yet_put")
             if self.query is not None:
-                text = tr("合うものがありません(Escで探すのをやめる)")
+                text = tr("overlay.no_match_esc_ends")
             box.blit(font.render(text, True, GREY), (14, 8 + lh))
         above, below = self.top, max(0, len(items) - self.top - rows)
-        bar = 12 if above or below else 0  # 入りきらないときは右に位置のバーを出す
+        bar = 12 if above or below else 0  # 入りきらないときは右にスクロールバーを出す
         where = []
         if above:
-            where.append(tr("▲ 上にあと{n}本", n=above))
+            where.append(tr("overlay.more_above", n=above))
         if below:
-            where.append(tr("▼ 下にあと{n}本", n=below))
+            where.append(tr("overlay.more_below", n=below))
         if where:
-            img = font.render(tr("{where}(↑↓かホイールで)", where="   ".join(where)), True, GREY)
+            img = font.render(tr("overlay.wheel", where="   ".join(where)), True, GREY)
             box.blit(img, (w - img.get_width() - 14 - bar, 8 + lh * (rows + 1)))
         if self.query is not None and items:
-            img = font.render(tr("Escで探すのをやめる"), True, GREY)
+            img = font.render(tr("overlay.esc_ends_search"), True, GREY)
             box.blit(img, (14, 8 + lh * (rows + 1)))
         if bar:
             ty, th = 8 + lh, lh * rows - 2
@@ -320,7 +339,7 @@ class ProgramMenu:
                 pygame.draw.rect(box, SELECTED, (6, y - 2, w - 12 - bar, lh))
             info = prog.kinds + (f" {prog.size}B" if prog.size else "")
             if prog.errors:
-                info += " " + tr("読めない行あり")
+                info += " " + tr("overlay.unreadable_lines")
             img = font.render(info, True, GREY)
             box.blit(img, (w - img.get_width() - 14 - bar, y))
             label = self._fit(font, prog.label(model), w - img.get_width() - 40 - bar)
@@ -334,9 +353,12 @@ class ProgramMenu:
             name = os.path.basename(prog.paths[0]) if prog.paths else prog.name
             models = prog.models
             if models is None:
-                runs = tr("どの機種でも")
+                runs = tr("overlay.any_model")
             else:
-                runs = tr("{models}用", models=tr("・").join(f"PC-{m}" for m in models))
+                runs = tr(
+                    "overlay.models",
+                    models=tr("common.katakana_middle_dot").join(f"PC-{m}" for m in models),
+                )
             meta = self._fit(font, f"{name}   {runs}", w - 28)
             box.blit(font.render(meta, True, GREY), (14, y))
             note = prog.errors[0] if prog.errors else "  ".join(prog.help.split("\n"))
@@ -376,12 +398,12 @@ SEPARATOR = MenuItem("")
 
 class BarButton(NamedTuple):
     """操作欄のボタン。menuは押すと出すメニューの種類(App.popup_items)で、メニューを出す
-    ボタンでなければ空。optionalなら、窓が狭いときに省いてよい"""
+    ボタンでなければ空。optionalなら、ウィンドウが狭いときに省いてよい"""
 
     label: str
     action: Callable[[], object]
     icon: str = ""  # _iconの種類
-    short: str = ""  # 窓が狭いときの表示
+    short: str = ""  # ウィンドウが狭いときの表示
     tip: str = ""  # マウスを載せたときの説明
     optional: bool = False
     menu: str = ""
@@ -411,7 +433,7 @@ class Popup:
         return next((i for i, r in self.rows if r.collidepoint(pos)), -1)
 
     def draw(self, dst: pygame.Surface, font: pygame.font.Font, items: list, mark: str) -> None:
-        """markと同じ表示の項目に●をつける。1列で、字の大きさは変えない(窓に入らないときだけ
+        """markと同じ表示の項目に●をつける。1列で、字の大きさは変えない(ウィンドウに入らないときだけ
         縮める)。背景は透かさない"""
         if self.small is None:
             self.small = load_help_font(13)
@@ -474,7 +496,7 @@ BUTTON_ON = (84, 90, 104)
 
 
 def _icon(dst: pygame.Surface, kind: str, x: int, cy: int) -> int:
-    """ボタンの絵(録画の赤い丸、停止の四角、一時停止の2本の棒、録画の一時停止、再開の三角)を
+    """ボタンの絵(録画の赤い丸、停止の四角、一時停止の2本の棒、録画の一時停止、再開の三角、注意)を
     描き、幅を返す"""
     if kind == "rec":
         pygame.draw.circle(dst, (225, 50, 45), (x + 6, cy), 6)
@@ -489,19 +511,24 @@ def _icon(dst: pygame.Surface, kind: str, x: int, cy: int) -> int:
         pygame.draw.rect(dst, WHITE, (x + 7, cy - 4, 2, 8))
     elif kind == "play":
         pygame.draw.polygon(dst, WHITE, [(x + 1, cy - 6), (x + 1, cy + 6), (x + 11, cy)])
+    elif kind == "warn":  # 注意。黄色の三角に「!」
+        tri = [(x + 6, cy - 7), (x - 1, cy + 6), (x + 13, cy + 6)]
+        pygame.draw.polygon(dst, (240, 190, 40), tri)
+        pygame.draw.rect(dst, (30, 30, 30), (x + 5, cy - 3, 2, 5))
+        pygame.draw.rect(dst, (30, 30, 30), (x + 5, cy + 3, 2, 2))
     else:
         return 0
     return 18
 
 
 class Bar:
-    """本体の下の操作欄。左にボタン(BarButtonの列)、右にいまの設定を出す。窓の幅が足りなければ
+    """本体の下の操作欄。左にボタン(BarButtonの列)、右にいまの設定を出す。ウィンドウの幅が足りなければ
     短い表示にし、それでも入らなければoptionalのボタンを省く。マウスを載せたボタンの説明
     (ショートカットなど)は、ボタンの上に出す"""
 
     def __init__(self, buttons: list[BarButton]) -> None:
         self.buttons = buttons
-        self.rects: list[pygame.Rect] = []  # 描いたボタンの窓の中の範囲
+        self.rects: list[pygame.Rect] = []  # 描いたボタンのウィンドウの中の範囲
         self.hover = -1
 
     def hit(self, pos) -> int:
@@ -514,7 +541,7 @@ class Bar:
 
     @classmethod
     def min_width(cls, font: pygame.font.Font, buttons: list[BarButton]) -> int:
-        """省けないボタンを短い表示で並べたときの幅(窓の幅の下限に使う)"""
+        """省けないボタンを短い表示で並べたときの幅(ウィンドウの幅の下限に使う)"""
         return 16 + sum(cls._width(font, b, True) for b in buttons if not b.optional)
 
     def draw(self, dst: pygame.Surface, font: pygame.font.Font, top: int, info: str) -> None:
@@ -560,7 +587,7 @@ class Bar:
 
     @staticmethod
     def _tip(dst: pygame.Surface, font: pygame.font.Font, text: str, at: pygame.Rect) -> None:
-        """ボタンatの上に説明を出す。窓からはみ出さないように左右をずらす"""
+        """ボタンatの上に説明を出す。ウィンドウからはみ出さないように左右をずらす"""
         img = font.render(text, True, WHITE)
         r = pygame.Rect(0, 0, img.get_width() + 16, img.get_height() + 8)
         r.bottomleft = (at.x, at.y - 6)
@@ -571,7 +598,7 @@ class Bar:
 
 
 class Paper:
-    """プリンタの感熱紙。字は1字5×7の点で、点を少しずつ濃さを変えて打つ。新しい行が
+    """プリンタの感熱紙。字は1字5×7の点で、点ごとに濃さを少し変えて打つ。新しい行が
     出ると紙が送られて上へずれる。fontはプリンタの字の形{コード: 5列}(printer.load_font)"""
 
     ROWS = 5  # 見せる行の数
@@ -602,7 +629,7 @@ class Paper:
 
     @property
     def moving(self) -> bool:
-        """紙送りが残っている"""
+        """紙送りが残っているか"""
         return self.feed > 0.5
 
     def tick(self) -> None:
@@ -654,7 +681,7 @@ class Paper:
         """印字したすべての行を、紙の絵にする(画像に保存する用)"""
         d, m = self.DOT, self.MARGIN
         h = d * self.LINE * max(1, len(rows)) - 3 * d + 2 * m  # 最後の行の下の3点は数えない
-        # 窓の形式にならうと、アルファの成分があるのに字の上で透明になることがある(macOS)
+        # ウィンドウの形式にならうと、アルファの成分があるのに字の上で透明になることがある(macOS)
         # ので、アルファのない24ビットで作る
         img = pygame.Surface((self.width, h), 0, 24)
         self._sheet(img, img.get_rect())
@@ -696,7 +723,7 @@ class Paper:
                     y += img.get_height() + 2
                 bw = max(i.get_width() for i in imgs)
                 self.where_rect = pygame.Rect(x0 - 10 - bw, top + 8, bw, y - top - 8)
-        # 紙をしまう印
+        # 紙をしまう×のボタン
         self.close_rect = pygame.Rect(x0 + pw + 8, top + 6, 22, 22)
         pygame.draw.rect(dst, (58, 61, 68), self.close_rect, border_radius=4)
         c = self.close_rect.center

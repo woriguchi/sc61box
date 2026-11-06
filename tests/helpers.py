@@ -12,10 +12,13 @@ from sc61box.autotype import Typer  # noqa: E402
 from sc61box.lcdtext import lcd_text  # noqa: E402
 from sc61box.machine import CLOCK, new_machine  # noqa: E402
 
+# 機種を書かずに作る本体の機種(ROMなしのBASICの差分試験が、機種ごとに切り替える)
+MODEL = "1251"
 
-def boot(model="1251", card=0, **kw):
+
+def boot(model=None, card=0, **kw):
     """本体を作って1秒動かす。(本体, Typer)を返す"""
-    m = new_machine(model, card, **kw)
+    m = new_machine(model or MODEL, card, **kw)
     m.run(CLOCK)
     return m, Typer(m)
 

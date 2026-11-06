@@ -6,7 +6,7 @@ uv run sc61box --model 1261  # PC-1261として起動する(1260、1262も選べ
 uv run sc61box --model 1350 --card 16  # PC-1350として、16KBのRAMカードを差して起動する
 uv run sc61box --type prog.bas # 起動後にファイルの中身をキー入力する
 uv run sc61box --load dump.txt # 16進ダンプをRAMへ書き込む
-uv run sc61box primes --run  # 置き場所のprimes.basを読み込んで実行する
+uv run sc61box primes --run  # プログラムのフォルダのprimes.basを読み込んで実行する
 """
 
 import json
@@ -19,7 +19,7 @@ import time
 import wave
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from functools import partial
 
 import pygame
 import typer
@@ -32,13 +32,18 @@ from . import (
     gamepad,
     i18n,
     keytype,
+    loading,
     padmenu,
     paths,
     programs,
     recorder,
+    routinecheck,
+    routines,
     tape,
     workbench,
 )
+from . import basic as norom_basic
+from . import norom as norom_hle
 from .audio import (
     PRINT_CATCH_UP,
     PRINT_GAP,
@@ -50,8 +55,9 @@ from .audio import (
     speed_adjust,
 )
 from .autotype import Typer
-from .i18n import tr
+from .i18n import Text, tr
 from .keytype import keys_for, keys_for_program
+from .lcdtext import lcd_text
 from .machine import CLOCK, MODELS, RomNotFound, new_machine
 from .overlay import (
     BAR_H,
@@ -66,6 +72,7 @@ from .overlay import (
     draw_help,
     draw_recording,
     draw_status,
+    draw_warning,
     load_help_font,
 )
 from .printer import load_font
@@ -87,6 +94,7 @@ class Options:
     card: int = 0
     overseas: bool = False
     norom: bool = False
+    basic: bool = True  # ROMなしで、ROMなしのBASICを付ける(付けなければ作業欄だけで動かす)
     scale: float = 1.0
     persist: float = 1.0
     fresh: bool = False
@@ -103,8 +111,28 @@ class Options:
     moved_data: str = ""  # 起動のときに移した前のデータのフォルダ(~/.pc1251など。paths.migrate)
 
 
+def shows_prompt(m) -> bool:
+    """液晶に>だけが出ているか"""
+    if m.model.name in norom_hle.MODELS:  # PC-1251・PC-1245は、ROMの字の形の表で>(32h)を見る
+        a = norom_hle.font_addr(0x32)
+        cols = m.columns()
+        return bytes(cols[:5]) == bytes(m.mem[a : a + 5]) and not any(cols[5:])
+    return lcd_text(m).strip() == ">"
+
+
+def pc1261_basic(m) -> bool:
+    """PC-1261系かPC-1350か(BASICが同じ系列)。ROMなしでもプログラムの形を決めるのに使う"""
+    return m.model.lines == 2 or m.model.family == "1350"
+
+
+def basic_keywords(m) -> dict[int, str] | None:
+    """ROMなしのBASICの命令の表(その機種のもの)。ROMで動いていればNone(ROMの表を読む)"""
+    basic = getattr(m, "basic", None)
+    return dict(basic.keywords) if basic is not None else None
+
+
 def undo_hint() -> str:
-    return tr("メニューの「読み込む前に戻す」で元に戻せます")
+    return tr("app.undo_program_load_menu")
 
 
 def ram_file(model: str = "1251", card: int = 0, norom: bool = False) -> str:
@@ -118,8 +146,26 @@ def ram_file(model: str = "1251", card: int = 0, norom: bool = False) -> str:
     return os.path.join(STATE_DIR, name)
 
 
+def open_machine(
+    model: str, card: int = 0, overseas: bool = False, norom: bool = False, basic: bool = True
+):
+    """起動のときと同じに本体を作る。ROMがないか、noromならROMなしで作り、basicならROMなしの
+    BASICを付ける。(本体, ROMなしか)を返す"""
+    if not norom:
+        try:
+            return new_machine(model, card, overseas), False
+        except RomNotFound:
+            pass
+    m = new_machine(model, card, overseas, rom=False)
+    norom_hle.fill_data(m)
+    if basic and m.model.name in norom_basic.MODELS:  # ROMなしのBASIC
+        norom_hle.install(m)
+        norom_basic.attach(m)
+    return m, True
+
+
 def bench_file(ram: str) -> str:
-    """終了したときに、RAMと一緒に作業欄の情報(開始番地、止める所、書いた範囲)を保存する
+    """終了したときに、RAMと一緒に作業欄の情報(開始番地、ブレークポイント、書いた範囲)を保存する
     ファイル"""
     return os.path.splitext(ram)[0] + "-bench.json"
 
@@ -189,6 +235,15 @@ PAD_EVENTS = (
 MAC = sys.platform == "darwin"
 CMD = "⌘" if MAC else "Ctrl+"  # 画面に出すショートカットの修飾キー
 SHIFT = "⇧" if MAC else "Shift+"
+MIN_SCALE = 0.35  # 拡大率のいちばん小さい値(画面に合わせて縮めるときも、これより縮めない)
+# 録画の形(recorder.SHAPES)の名前
+REC_SHAPE_NAMES = {
+    "both": Text("app.rec_lcd_and_body"),
+    "body": Text("app.rec_body_only"),
+    "lcd": Text("app.rec_lcd_only"),
+}
+# 割り当ての出どころのID(状態のファイルに書く。gamepad.PadMap.origin)
+PAD_SOURCES = ("app.saved", "app.saved_default", "app.factory_mapping", "app.pad")
 
 
 def speed_label(speed: float) -> str:
@@ -197,19 +252,14 @@ def speed_label(speed: float) -> str:
 
 def switch_label(name: str) -> str:
     """メニューのスイッチの項目(●をつける項目を、この名前で見分ける)"""
-    return tr("スイッチ {name}", name=name)
+    return tr("app.switch", name=name)
 
 
 def break_message(addr: int, on: bool) -> str:
-    """止める所を置いた(on)か外したときの知らせ"""
+    """ブレークポイントを設定した(on)か解除したときのメッセージ"""
     if on:
-        return tr("{addr:04X}番地の止める所を置きました", addr=addr)
-    return tr("{addr:04X}番地の止める所を外しました", addr=addr)
-
-
-def outside_message(name: str, addr: int) -> str:
-    """プログラムがRAMの外の番地addrに書くので読み込まないときの知らせ"""
-    return tr("{name}を読み込みません。{addr:04X}番地はRAMの外です", name=name, addr=addr)
+        return tr("app.breakpoint_set", addr=addr)
+    return tr("app.breakpoint_removed", addr=addr)
 
 
 # 表示・入力のメニューの、言語を切り替える項目の名前(切り替えた先の言語で書く)
@@ -223,43 +273,37 @@ def help_lines(norom: bool = False, is1350: bool = False) -> list[str]:
     c, s = CMD, SHIFT
     if norom:
         return [
-            tr("ROMなしの作業欄(右)"),
-            tr("0〜9・A〜F: ダンプを書く   Enter: 次の行   Space: 番地からバイトへ   "
-               "Tab: 番地を打って飛ぶ"),
-            tr("{c}G: 実行・続ける   {s}{c}G: カーソルから実行   {c}.: 一時停止   Esc: 編集に戻る",
+            tr("app.workbench_without_rom_right"),
+            tr("app.0_9_f_write"),
+            tr("app.g_run_continue_g",
                c=c, s=s),
-            tr("{c}J: 次の1命令だけ実行   {s}{c}J: CALLの呼び先を戻るまで実行   {c}B: 止める所",
+            tr("app.j_step_j_step", c=c, s=s),
+            tr("app.v_paste_dump_listing",
                c=c, s=s),
-            tr("{c}V: 本のダンプリストや.hexを貼り付け   {c}Z: 取り消す   {s}{c}Z: やり直す",
+            tr("app.pageup_pagedown_one_screen", c=c),
+            tr("app.e_export_hex_e",
                c=c, s=s),
-            tr("PageUp・PageDown: 1画面   Home・End({c}←→): 行の頭・終わり   "
-               "{c}↑↓: 開始番地・終わり", c=c),
-            tr("{c}E: .hexに書き出す   {s}{c}E: ダンプリストの形(8バイト:チェックサム)で書き出す",
-               c=c, s=s),
-            tr("範囲の行をクリック: 書き出す範囲を打つ   "
-               "{c}O: プログラムの一覧(.hexのマシン語だけを使う)", c=c),
-            tr("実行中のキーは本体へ(Tab: SHIFT  Option: DEF  Delete: CL  Esc: BRK)"),
+            tr("app.click_range_line_type", c=c),
+            tr("app.while_running_keys_go"),
         ]  # fmt: skip
-    head = tr("パソコンのキーとポケコンのキーで違うもの(ほかのキーはそのまま打てます)")
-    arrows = tr("{c}K: 矢印キーを数字キーの8・2・4・6にする・戻す(テンキーの代わり)", c=c)
-    menus = tr("エミュレータの操作は下の操作欄のメニューから(ショートカットはメニューに出ます)")
+    head = tr("app.keys_differ_pocket_computer")
+    arrows = tr("app.k_arrow_keys_press", c=c)
+    menus = tr("app.emulator_commands_menus_bar")
     if is1350:
         return [
             head,
-            tr("Tab: SHIFT   Option(WindowsはAlt): DEF   F8: カナ   "
-               "Esc: BRK(電源が切れていればON)"),
-            tr("Delete: DEL   Insert: INS   Home: CLS   "
-               "Backspace: 1字消す(◀とDELを押す)   \\: ¥"),
-            tr("F1・F2: MODEキーでRUN・PROにする   F3・F4・{c}↑↓: 電源スイッチ   F5・{c}R: RESET",
+            tr("app.tab_shift_option_alt"),
+            tr("app.delete_del_insert_ins"),
+            tr("app.f1_f2_run_pro",
                c=c),
             arrows,
             menus,
         ]  # fmt: skip
     return [
         head,
-        tr("Tab: SHIFT   Option(WindowsはAlt): DEF   Delete: CL   Esc: BRK(電源が切れていればON)"),
-        tr("Backspace: 1字消す(◀とSHIFT+◀を押す)   \\(バックスラッシュ): ¥"),
-        tr("F1〜F4・{c}↑↓: モードスイッチ   F5・{c}R: 裏のRESETボタン", c=c),
+        tr("app.tab_shift_option_alt_windows"),
+        tr("app.backspace_delete_character_shift"),
+        tr("app.f1_f4_mode_switch", c=c),
         arrows,
         menus,
     ]
@@ -272,26 +316,18 @@ def export_program(m, folder: str, prog: "programs.Program | None" = None) -> st
     書き写す(RAMのマシン語は書き出さない)。機種のフォルダにあったものなら、folderの中の
     同じ名前のフォルダに書く。
     """
-    body = basictext.program_text(m.mem, start=m.program_start())
+    body = basictext.program_text(
+        m.mem, basic_keywords(m), start=m.program_start(), pc1261=pc1261_basic(m)
+    )
     if not body:
         return None
     name = prog.name if prog else "program"
     stamp = time.strftime("%Y%m%d-%H%M%S")
     when = time.strftime("%Y-%m-%d %H:%M")
     title = prog.title if prog else "BASIC"
-    head = ["# title: " + tr("{title}({when}の書き出し)", title=title, when=when)]
+    head = ["# title: " + tr("app.exported", title=title, when=when)]
     if prog:
-        if prog.model:
-            head.append(f"# model: {prog.model}")
-        head += [f"# {link}" for link in prog.links]
-        for key in ("setup", "run", "help"):
-            head += [f"# {key}: {line}" for line in getattr(prog, key).split("\n") if line]
-        if prog.mode:
-            head.append(f"# mode: {prog.mode}")
-        if prog.pad is not None:
-            head.append(f"# pad: {prog.pad}".rstrip())
-        if prog.ram is not None:
-            head.append(f"# ram: {prog.ram[0]:04X}-{prog.ram[1] - 1:04X}")
+        head += programs.header_lines(prog)
     where = programs.folder_model(prog.paths[0]) if prog and prog.paths else ""
     if where:
         folder = os.path.join(folder, programs.model_dir(where))
@@ -302,13 +338,28 @@ def export_program(m, folder: str, prog: "programs.Program | None" = None) -> st
     return path
 
 
+class DumpError(ValueError):
+    """--loadのダンプが読めない(エラーのある行がある)。メッセージはその行の説明"""
+
+
 def parse_hexdump(path: str) -> list[tuple[int, bytes]]:
-    """16進ダンプのファイルを読む(形はprograms.parse_hexと同じ)"""
-    return programs.parse_hex(open(path, encoding="utf-8").read())[0]
+    """16進ダンプのファイルを読む(形はprograms.parse_hexと同じ)。ファイルがなければ
+    FileNotFoundError。エラーのある行が1つでもあればDumpErrorで、何も書かない(一覧から
+    読み込むときと同じに、全体を断る)"""
+    if not os.path.isfile(path):
+        raise FileNotFoundError(tr("app.not_found", name=path))
+    try:
+        text = open(path, encoding="utf-8").read()
+    except (OSError, UnicodeDecodeError) as e:
+        raise DumpError(f"{path}: {e}") from e
+    blocks, errors = programs.parse_hex(text, os.path.basename(path) + " ")
+    if errors:
+        raise DumpError("\n".join(errors))
+    return blocks
 
 
 def opaque(surf: pygame.Surface) -> pygame.Surface:
-    """アルファのない24ビットのコピー。窓と同じ形式の絵は、アルファの成分が意味のない値の
+    """アルファのない24ビットのコピー。ウィンドウと同じ形式の絵は、アルファの成分が意味のない値の
     ことがあり、そのままPNGにすると透けてしまう"""
     out = pygame.Surface(surf.get_size(), 0, 24)
     out.blit(surf, (0, 0))
@@ -337,35 +388,38 @@ class App:
         i18n.set_language(i18n.choose(args.lang, self._view_pref("lang")))
         model = args.model
         card = args.card if MODELS[model].family == "1350" else 0
-        # ROMがなければROMなしで動かし、マシン語の作業欄を出す(PC-1350はROMなしでは
-        # 動かせないので、ここで止まる)
-        norom = args.norom
-        if not norom:
-            try:
-                self.m = new_machine(model, card, args.overseas)
-            except RomNotFound:
-                if MODELS[model].family == "1350":
-                    raise
-                norom = True
-        if norom:
-            self.m = new_machine(model, rom=False)
+        # ROMがなければROMなしで動かし、マシン語の作業欄を出す
+        self.m, norom = open_machine(model, card, args.overseas, args.norom, args.basic)
         self.is1350 = self.m.model.family == "1350"
         self.norom = norom
+        # ROMもROMなしのBASICもない本体(作業欄だけでマシン語を動かす)
+        self.bench_only = norom and self.m.basic is None
         # マシン語の作業欄。ROMなしではいつも右に出し、ROMがあればメニューで出し入れする
         self.bench = workbench.Bench(self.m)
         pygame.init()
         self.bench_view = benchview.BenchView(self.bench, load_help_font(15), CMD, SHIFT)
-        self.pane_open = norom or self._view_pref("show_pane") is True
+        # 作業欄は、ROMなしで作業欄だけのときはいつも出し、ほかは前に出していたときだけ出す
+        self.pane_open = self.bench_only or self._view_pref("show_pane") is True
         self.bench_at = 0  # 作業欄の右クリックのメニューで扱う番地
-        pygame.display.set_caption(f"SHARP {self.m.model.title}")
-        try:  # 窓とDockのアイコン(assets/icon.png)
+        # ウィンドウの名前に、ROMのBASICか、ROMなしのBASICか、ROMなしで作業欄だけかを出す
+        # (画面の言語によらず英語で書く)
+        if not norom:
+            how = "ROM BASIC"
+        elif self.bench_only:
+            how = "no ROM, workbench only"
+        else:
+            how = "ROM-less BASIC"
+        pygame.display.set_caption(f"{self.m.model.title} ({how})")
+        try:  # ウィンドウとDockのアイコン(assets/icon.png)
             pygame.display.set_icon(pygame.image.load(os.path.join(display.ASSETS, "icon.png")))
         except (pygame.error, FileNotFoundError):
             pass
         self.out_w, self.out_h = display.out_size(model)
         pane = benchview.PANE_W if self.pane_open else 0
-        self.want_scale = args.scale  # 指定された拡大率(画面に入らなければ、これより縮める)
-        self.scale = self._fit(args.scale, self.out_w, self.out_h, pane, BAR_H)
+        # 指定された拡大率(画面に入らなければ、これより縮める)。0や負の数、NaNなら、画面に
+        # 合わせて縮めるときのいちばん小さい率にする(ウィンドウが作れずに落ちないように)
+        self.want_scale = args.scale if args.scale >= MIN_SCALE else MIN_SCALE
+        self.scale = self._fit(self.want_scale, self.out_w, self.out_h, pane, BAR_H)
         self.body_size = (int(self.out_w * self.scale), int(self.out_h * self.scale))
         self.font: pygame.font.Font | None = None
         self.small_font: pygame.font.Font | None = None
@@ -384,7 +438,7 @@ class App:
         self.pads = gamepad.Pads()
         self.pad_map = self.pad_map_for(None)
         self.pad_dirty = False  # 割り当てに保存していない変更があるか
-        self.pad_note = ""  # 読み込んだプログラムの# pad: の読めない語の知らせ
+        self.pad_note = ""  # 読み込んだプログラムの# pad: の読めない語のメッセージ
         self.pad_down: dict[str, str] = {}  # パッドの入力(pad1:aなど)ごとに、押したときのキー
         self.pad_panel: padmenu.PadPanel | None = None  # 出していればゲームパッドの割り当ての画面
         # 割り当ての対象のプログラム。last_progと違い、.hexだけのプログラムでも替わる
@@ -395,14 +449,20 @@ class App:
         self.rec_paused = False
         self.panel = display.Panel(model)
         self.panel.set_fps(FPS, args.persist)
+        self.panel.set_packed(self._view_pref("packed_lcd") is True)
         self.scaled_body: pygame.Surface | None = None  # 拡大・縮小の結果を置く独立した面
         self.lcd_only = False  # 本体の絵を隠して、液晶だけを見せているか
         self.pane_before_lcd = False  # 液晶だけにする前に作業欄を出していたか
-        self.free_size: tuple[int, int] | None = None  # 液晶だけのとき、利用者が変えた窓の大きさ
-        self.origin = (0, 0)  # 窓の中で中身を描く位置(窓が中身より大きいとき、まんなかに)
-        self.win_flags = 0  # 窓を作ったときのフラグ(液晶だけのときはRESIZABLE)
-        self.window_stale = False  # 窓の大きさが外から変わったので、表示面を作り直すか
-        self.laid_out = (0, 0)  # 最後に中身を置いたときの窓の大きさ(利用者が変えたか見る)
+        self.free_size: tuple[int, int] | None = (
+            None  # 液晶だけのとき、利用者が変えたウィンドウの大きさ
+        )
+        self.origin = (
+            0,
+            0,
+        )  # ウィンドウの中で中身を描く位置(ウィンドウが中身より大きいとき、まんなかに)
+        self.win_flags = 0  # ウィンドウを作ったときのフラグ(液晶だけのときはRESIZABLE)
+        self.window_stale = False  # ウィンドウの大きさが外から変わったので、表示面を作り直すか
+        self.laid_out = (0, 0)  # 最後に中身を置いたときのウィンドウの大きさ(利用者が変えたか見る)
         self.laid_content = (0, 0)  # そのときの中身の大きさ
         self.sw_stops = self.panel.switch_stops  # スイッチの段(上から)と、その中心のy
         self.ram_file = ram_file(model, card, norom)
@@ -411,9 +471,13 @@ class App:
         self.typer.on_write = self.write_dump
         self.fast = False  # 読み込み中は時計に合わせず全速で動かす
         self.menu: ProgramMenu | None = None
-        self.status = ""  # 画面の下に出す知らせ
+        self.status = ""  # 画面の下に出すメッセージ
         self.status_until = 0.0
-        self.tape_out = tape.TapeOut()  # CSAVEの音を見張ってwavに書き出す
+        # ウィンドウの左上に、次にキーを押すか、クリックするまで出す注意。IDと値で持ち、出すときに
+        # 訳す(warning)
+        self._warning: str | Text = ""
+        self.warning_rect = pygame.Rect(0, 0, 0, 0)  # 注意を描いた範囲(中身の中の位置)
+        self.tape_out = tape.TapeOut()  # CSAVEの音を監視してwavに書き出す
         self.loading = ""
         self.load_help = ""  # 読み込み終わりに出す説明(# help:)
         self.undo_state: dict | None = None  # 最後にプログラムを読み込む直前の状態
@@ -432,11 +496,13 @@ class App:
         self.rec_buzzer = Buzzer()  # 録画の音は鳴らす音とは別に作る
         self.rec_print_sound = PrinterSound()
         self.overshoot = 0  # 前のフレームで進みすぎたサイクル
-        self.closing = False  # 窓を閉じる操作があった(run)
+        self.closing = False  # ウィンドウを閉じる操作があった(run)
         self.rush_spans: list[tuple[int, int]] = []  # このフレームで速く回したサイクルの範囲
         # このフレームのあいだに中身が変わった液晶の列と、その列の各ドットが点いていた時間の
         # 割合(_lcd_duty)。列の番号は、その列の液晶RAMの番地から引く
         self.lcd_duty: dict[int, list[float]] = {}
+        self.lcd_was_on = False  # フレームの初めに液晶を点けていたか
+        self.lcd_any_on = False  # このフレームのあいだに液晶を点けていたことがあるか
         self.lcd_cols: dict[int, list[int]] = {}
         for i, a in enumerate(self.m.column_addrs()):
             self.lcd_cols.setdefault(a, []).append(i)
@@ -446,18 +512,23 @@ class App:
         self.mouse_key: str | None = None
         self.brk_by: set[str] = set()  # BRKキーを押している入力元(EscキーとマウスでBRK)
         self.help = 0  # キーの説明を出しておく残りのフレーム
-        if self.norom:
-            self.say(tr("ROMがないので、ROMなしでマシン語だけを動かします(右の作業欄)"), 8)
+        if self.bench_only:
+            self.say(tr("app.no_rom_found_so"), 8)
+        elif norom:
+            self.say(tr("app.no_rom_so_running"), 8)
         else:
-            self.say(tr("操作は下の操作欄のボタンから。キーの説明は{c}/", c=CMD), 8)
+            self.say(tr("app.use_buttons_bar_below", c=CMD), 8)
         if args.moved_data:
             self.say(
                 tr(
-                    "データの置き場所を~/.sc61boxに移しました({old}はそこへのリンク)",
+                    "app.moved_data_folder_sc61box",
                     old=args.moved_data,
                 ),
                 10,
             )
+        notices = routines.notices()
+        if notices and self.m.norom:
+            self.say(tr("app.rom_routine_stand_ins", text=notices[0]), 10)
         self.save_ram = not args.fresh
         info = saved_info(self.ram_file) if self.save_ram else None
         apply_ram_top(self.m, info)
@@ -465,9 +536,10 @@ class App:
             self.m.cpu.reset()
             self.bench.prev_regs = bytes(self.m.cpu.ram)
             self._load_bench_info(info)
-        self.load = args.load
         self.boot_frames = FPS  # 起動してから貼り付けを始めるまで
         if args.type:
+            if not os.path.isfile(args.type):
+                raise FileNotFoundError(tr("app.not_found", name=args.type))
             self.typer.add_text(open(args.type, encoding="utf-8").read())
         self.pending: tuple[programs.Program, bool] | None = None
         self.last_prog: programs.Program | None = None  # 書き出しと録画の題名に使う
@@ -478,8 +550,10 @@ class App:
         if args.program:
             prog = programs.find(args.program, self.m.model.name)
             if prog is None:
-                raise FileNotFoundError(tr("{name}が見つかりません", name=args.program))
+                raise FileNotFoundError(tr("app.not_found", name=args.program))
             self.pending = (prog, args.run)
+        # --loadのダンプは起動の待ちのあとで書くが、読めるかは先に調べる
+        self.load_blocks = parse_hexdump(args.load) if args.load else None
         if args.lcd:
             self.toggle_lcd(True)
         pygame.key.set_repeat()  # リピートは作業欄だけで、自分で数える(_key_repeat)
@@ -502,13 +576,13 @@ class App:
         except (pygame.error, IndexError):
             return scale
         room = min((dw - 80 - pane) / out_w, (dh - 120 - below) / out_h)
-        return min(scale, max(0.35, room))
+        return min(scale, max(MIN_SCALE, room))
 
     LCD_MARGIN = 26  # 液晶だけのとき、液晶の枠のまわりに見せる本体の絵(拡大前の画素)
 
     def view_box(self) -> pygame.Rect:
-        """本体の絵のうち窓に出す範囲。液晶だけのときは、録画で拡大するのと同じ液晶の枠に、
-        まわりの本体の絵を少し足したもの(窓の縁に液晶がくっつかないように)"""
+        """本体の絵のうちウィンドウに出す範囲。液晶だけのときは、録画で拡大するのと同じ液晶の枠に、
+        まわりの本体の絵を少し足したもの(ウィンドウの縁に液晶がくっつかないように)"""
         if not self.lcd_only:
             return pygame.Rect(0, 0, self.out_w, self.out_h)
         x0, y0, x1, y1 = self.panel.lcd_box()
@@ -518,11 +592,11 @@ class App:
 
     def _refit(self) -> None:
         """本体の下に足すもの(プリンタの紙、割り当ての欄、操作欄)と右の作業欄も合わせて画面に
-        入るように、本体の拡大率を決め直して窓を作り直す(すべてしまえば、指定された拡大率まで
+        入るように、本体の拡大率を決め直してウィンドウを作り直す(すべてしまえば、指定された拡大率まで
         戻る)。割り当ての欄の高さは本体の幅で増えも減りもするので、決めた幅で測った高さが
         見込みを超えるあいだ、見込みを増やして決め直す。液晶だけのときは、本体を出すときと
-        同じ幅に液晶を広げる。利用者が窓の大きさを変えていれば(free_size)、その中に
-        入る大きさにして窓はそのままにする"""
+        同じ幅に液晶を広げる。利用者がウィンドウの大きさを変えていれば(free_size)、その中に
+        入る大きさにしてウィンドウはそのままにする"""
         pane = benchview.PANE_W if self.pane_open else 0
         vw, vh = self.view_box().size
         want = self.want_scale * self.out_w / vw
@@ -534,7 +608,7 @@ class App:
                 below += self.paper.height
             if free is not None:
                 # 利用者が決めた大きさに入れる。ただし操作欄のボタンが入る幅と液晶の最低の
-                # 高さは保ち、紙や割り当ての欄を出して入らなくなれば、そのぶん窓を広げる
+                # 高さは保ち、紙や割り当ての欄を出して入らなくなれば、そのぶんウィンドウを広げる
                 fw, fh = free
                 mw, mh = self._min_size(below)
                 scale = min((fw - pane) / vw, (fh - below) / vh)
@@ -550,11 +624,11 @@ class App:
             panel_h = measured
         self._open_window()
 
-    MENU_ROOM = 420  # 液晶だけの細い窓で一覧やメニューを開くあいだ、窓を広げる高さ
+    MENU_ROOM = 420  # 液晶だけの細いウィンドウで一覧やメニューを開くあいだ、ウィンドウを広げる高さ
 
     def _open_window(self, room: bool | None = None) -> None:
-        """窓を中身の大きさ(利用者が変えていればその大きさ)で作り直す。液晶だけのときは
-        大きさを変えられる窓にし、一覧やメニューを開いているあいだ(room)は、入るだけの高さに
+        """ウィンドウを中身の大きさ(利用者が変えていればその大きさ)で作り直す。液晶だけのときは
+        大きさを変えられるウィンドウにし、一覧やメニューを開いているあいだ(room)は、入るだけの高さに
         広げる。中身より大きければ、中身はまんなかに描く"""
         content = self._window_size()
         size = self.free_size if self.free_size is not None else content
@@ -573,7 +647,7 @@ class App:
         self.origin = (max(0, (size[0] - content[0]) // 2), max(0, (size[1] - content[1]) // 2))
 
     def _min_size(self, below: int | None = None) -> tuple[int, int]:
-        """窓の大きさの下限(操作欄のボタン、作業欄、本体の下に足したものが入る大きさ)。
+        """ウィンドウの大きさの下限(操作欄のボタン、作業欄、本体の下に足したものが入る大きさ)。
         belowは本体の下に足すものの高さ(なければ測る)"""
         pane = benchview.PANE_W if self.pane_open else 0
         if below is None:
@@ -590,7 +664,7 @@ class App:
             return
         self.release_all()
         if on:
-            # 液晶だけのあいだは作業欄を出さない(細い窓に合わない)。戻るときに元に戻す
+            # 液晶だけのあいだは作業欄を出さない(細いウィンドウに合わない)。戻るときに元に戻す
             self.pane_before_lcd = self.pane_open
             self.pane_open = False
         else:
@@ -608,7 +682,7 @@ class App:
             self.window = win
 
     def resized(self, w: int, h: int) -> None:
-        """窓の大きさが外から変わった(利用者の操作、最大化、全画面の出入り)。液晶だけのときは
+        """ウィンドウの大きさが外から変わった(利用者の操作、最大化、全画面の出入り)。液晶だけのときは
         その大きさに合わせて置き直す。どの場合も表示面は作り直す(_open_window)"""
         self._track_window()
         self.window_stale = True
@@ -620,7 +694,7 @@ class App:
             self._open_window()
 
     def _make_room(self) -> tuple[int, int]:
-        """一覧やメニューを出す前に窓を広げ、中身の位置のずれを返す(出す位置を直すため)"""
+        """一覧やメニューを出す前にウィンドウを広げ、中身の位置のずれを返す(出す位置を直すため)"""
         bx, by = self.origin
         self._open_window(room=True)
         return self.origin[0] - bx, self.origin[1] - by
@@ -629,6 +703,7 @@ class App:
     def key_down(self, ev) -> None:
         m = self.m
         mods = ev.mod
+        self.warning = ""  # 注意は、次にキーを押すと消す
         if self.menu is not None:
             self.menu_key(ev)
             return
@@ -668,7 +743,8 @@ class App:
             self.press_brk("key")
             return
         if ev.key == pygame.K_F5:
-            m.reset_key = True
+            self.press_reset()
+            self.reset_frames = 0  # F5は離したときに離す
             return
         fkeys = {pygame.K_F1: "RUN", pygame.K_F2: "PRO", pygame.K_F3: "RSV", pygame.K_F4: "OFF"}
         if ev.key in fkeys:
@@ -747,7 +823,7 @@ class App:
     @staticmethod
     def pad_file(prog: "programs.Program | None") -> str:
         """保存した割り当てのファイル。progがNoneなら既定(pads/default.json)。プログラム用は
-        pads/programs/の中に、置き場所と同じく機種のフォルダで分けて置く"""
+        pads/programs/の中に、プログラムのフォルダと同じく機種のフォルダで分けて置く"""
         pads = os.path.join(programs.user_dir(), "pads")
         if prog is None:
             return os.path.join(pads, "default.json")
@@ -759,15 +835,15 @@ class App:
         """プログラムprogを読み込んだときの割り当て。自分でそのプログラム用に保存したもの、
         プログラムの# pad:、自分で保存した既定、初期設定の順"""
         if prog is not None:
-            saved = gamepad.PadMap.load(
-                self.pad_file(prog), tr("{name}用に保存したもの", name=prog.name)
-            )
+            saved = gamepad.PadMap.load(self.pad_file(prog), Text("app.saved", name=prog.name))
             if saved is not None:
                 return saved
             if prog.pad is not None:
                 return self.pad_map_of(prog)
-        default = gamepad.PadMap.load(self.pad_file(None), tr("保存した既定"))
-        return default if default is not None else gamepad.PadMap(source=tr("初期設定"))
+        default = gamepad.PadMap.load(self.pad_file(None), Text("app.saved_default"))
+        return (
+            default if default is not None else gamepad.PadMap(source=Text("app.factory_mapping"))
+        )
 
     def pad_key_names(self) -> frozenset[str]:
         """この機種で割り当てられるキーの名前"""
@@ -775,9 +851,9 @@ class App:
 
     def pad_map_of(self, prog: programs.Program) -> gamepad.PadMap:
         """プログラムの# pad: の割り当て。読めない語(この機種にないキーも)があれば知らせる"""
-        source = tr("{name}の# pad:", name=prog.title or prog.name)
+        source = Text("app.pad", name=prog.title or prog.name)
         found, bad = gamepad.PadMap.parse(prog.pad or "", source, self.pad_key_names())
-        self.pad_note = tr("# pad: の{text}が読めません", text=" ".join(bad)) if bad else ""
+        self.pad_note = tr("app.cannot_read_pad", text=" ".join(bad)) if bad else ""
         if bad:
             self.say(self.pad_note, 6)
         return found
@@ -829,7 +905,7 @@ class App:
             self.pad_press(name, iid, False)
 
     def toggle_pad_panel(self, on: bool | None = None) -> None:
-        """割り当ての画面を本体の下に出す・しまう(窓の高さが変わる)"""
+        """割り当ての画面を本体の下に出す・しまう(ウィンドウの高さが変わる)"""
         on = self.pad_panel is None if on is None else on
         if on == (self.pad_panel is not None):
             return
@@ -838,7 +914,7 @@ class App:
         self._refit()
 
     def _pad_fit(self) -> None:
-        """割り当ての欄の中身が変わったあと、欄の高さが変わっていれば窓を作り直す"""
+        """割り当ての欄の中身が変わったあと、欄の高さが変わっていればウィンドウを作り直す"""
         if self.pad_panel is not None and self.laid_content != self._window_size():
             self._refit()
 
@@ -861,7 +937,7 @@ class App:
         return prog.title or prog.name, prog.pad is not None
 
     def pad_assign(self, key: str | None) -> None:
-        """選んである入力にキーを割り当てる(Noneなら外す)。割り当てたら選びを解く"""
+        """選んである入力にキーを割り当てる(Noneなら外す)。割り当てたら入力の選択を解除する"""
         panel = self.pad_panel
         if panel is None or panel.selected is None:
             return
@@ -899,13 +975,13 @@ class App:
         if act == "close":
             self.toggle_pad_panel(False)
         elif act == "reset":
-            self.set_pad_map(gamepad.PadMap(source=tr("初期設定")))
+            self.set_pad_map(gamepad.PadMap(source=Text("app.factory_mapping")))
         elif act == "from_prog":
             if prog is not None and prog.pad is not None:
                 self.set_pad_map(self.pad_map_of(prog))
         elif act == "copy":
             self.set_clipboard(f"# pad: {self.pad_map.text()}".rstrip() + "\n")
-            self.say(tr("# pad: の行をクリップボードにコピーしました"), 4)
+            self.say(tr("app.copied_pad_line_clipboard"), 4)
         elif act in ("save_prog", "save_default"):
             if act == "save_prog" and prog is None:
                 return
@@ -913,14 +989,14 @@ class App:
             try:
                 self.pad_map.save(path)
             except OSError as e:
-                self.say(tr("割り当てを保存できません: {error}", error=e), 5)
+                self.say(tr("app.cannot_save_mapping", error=e), 5)
                 return
             if act == "save_default":
-                self.pad_map.source = tr("保存した既定")
+                self.pad_map.source = Text("app.saved_default")
             elif prog is not None:
-                self.pad_map.source = tr("{name}用に保存したもの", name=prog.name)
+                self.pad_map.source = Text("app.saved", name=prog.name)
             self.pad_dirty = False
-            self.say(tr("割り当てを{path}に保存しました", path=_short(path)), 5)
+            self.say(tr("app.saved_mapping", path=_short(path)), 5)
         self._pad_fit()
 
     def pad_click(self, pos) -> bool:
@@ -968,7 +1044,7 @@ class App:
     # Fキーはほかのアプリに取られることがあるので、同じ操作を⌘(Windows・LinuxはCtrl)との
     # 組み合わせと右クリックのメニューにも置く
     def shortcut(self, key: int, mods: int = 0) -> bool:
-        if (self.norom or self.pane_keys()) and self.bench_shortcut(key, mods):
+        if (self.bench_only or self.pane_keys()) and self.bench_shortcut(key, mods):
             return True
         actions = {
             pygame.K_o: self.open_menu,
@@ -981,7 +1057,7 @@ class App:
             pygame.K_v: self.paste,
             pygame.K_SLASH: self.toggle_help,
             pygame.K_k: self.toggle_arrows,
-            pygame.K_d: None if self.norom else self.toggle_pane,
+            pygame.K_d: None if self.bench_only else self.toggle_pane,
             pygame.K_UP: lambda: self.move_switch(-1),
             pygame.K_DOWN: lambda: self.move_switch(1),
         }
@@ -996,7 +1072,7 @@ class App:
         """作業欄の⌘(Ctrl)のショートカット。扱ったらTrue"""
         shift = bool(mods & pygame.KMOD_SHIFT)
         b, v = self.bench, self.bench_view
-        if b.state != "run" or b.rom:
+        if b.state != "run" or b.live:
             # ⌘↑↓(Ctrl+Home・End)で開始番地と書いた所の終わりへ、⌘←→で行の頭と終わりへ
             moves = {
                 pygame.K_UP: lambda: b.go(b.start, v.rows),
@@ -1016,7 +1092,7 @@ class App:
                 if b.start_buf is not None:
                     self.bench_said(b.paste_start(self.clipboard()))
                 else:
-                    self.bench_span_said(b.paste_span(self.clipboard()))
+                    self.bench_said(b.paste_span(self.clipboard()))
                 return True
             if key == pygame.K_z:
                 if b.start_buf is not None:
@@ -1048,8 +1124,11 @@ class App:
         b, v = self.bench, self.bench_view
         if what == "go":
             what = "resume" if b.state == "pause" else "run"
-        if what in ("run", "runcursor") and (b.state == "run" or b.rom):
-            return  # ROMのある本体では、マシン語はBASICのCALLで呼ぶ
+        if what in ("run", "runcursor") and b.live:
+            self.bench_call(what == "runcursor")
+            return
+        if what in ("run", "runcursor") and b.state == "run":
+            return
         self.release_all()
         if what == "run":
             b.run()
@@ -1078,40 +1157,62 @@ class App:
             on = b.toggle_break(a)
             if on is None:
                 v.say(
-                    tr("{addr:04X}番地はROMなしでは使えないので、止める所を置けません", addr=a), 3
+                    tr(
+                        "app.not_usable_without_rom",
+                        addr=a,
+                    ),
+                    3,
                 )
             else:
                 v.say(break_message(a, on), 2)
         self.overshoot = 0
 
+    def bench_call(self, at_cursor: bool = False) -> None:
+        """BASICのある本体の実行のボタン: BASICが次の行を打つキーを待っていれば、
+        「CALL &開始番地」を打ってENTERを押したのと同じにする(at_cursorなら、カーソルの
+        命令を開始番地にしてから)"""
+        b, v, m = self.bench, self.bench_view, self.m
+        if b.state == "pause":
+            v.say(tr("app.paused_continue_first_then"), 3)
+            return
+        if at_cursor:
+            said = b.set_start_at(b.ins_at(b.cursor))
+            if not said.ok:
+                v.say(said.text, 3)
+                return
+        if m.basic is not None:
+            ok = m.basic.request_call(b.start)
+        else:
+            # ROMのBASICが行を打つのを待っているときだけ打つ。キーを待ってHALTしているのは、
+            # PRINTやINPUTの待ちでも同じなので、液晶に>だけが出ていることも見る(PRINTの
+            # 待ちでCLを打つと、プログラムを止めてしまう)
+            ok = m.halted and m.mode in ("RUN", "PRO") and not self.typer.busy and shows_prompt(m)
+            if ok:
+                self.typer.add_text(f"CALL &{b.start:04X}\n")
+        if ok:
+            v.say(tr("app.typed_call", addr=b.start), 2, ok=True)
+        elif m.basic is None:
+            v.say(tr("app.press_cl_so_only"), 3)
+        else:
+            v.say(tr("app.press_while_basic_waiting"), 3)
+
     def bench_start_at(self, addr: int) -> None:
         """番地addrを開始番地に決める"""
-        b, v = self.bench, self.bench_view
-        msg = b.set_start_at(addr)
-        v.say(msg, 3, ok=b.start == addr & 0xFFFF)
+        self.bench_said(self.bench.set_start_at(addr))
 
-    def bench_said(self, msg: str) -> None:
-        """開始番地を決める操作の知らせを出す(決められたなら緑、理由なら赤)"""
-        b, v = self.bench, self.bench_view
-        v.say(msg, 3, ok=msg == tr("開始番地を{addr:04X}にしました", addr=b.start))
+    def bench_said(self, said: workbench.Said) -> None:
+        """開始番地か書き出す範囲を決める操作のメッセージを出す(決められたなら緑、理由なら赤)"""
+        self.bench_view.say(said.text, 3, ok=said.ok)
 
     def bench_field_skip(self, ch: str) -> bool:
         """開始番地か範囲の欄に打っているあいだの、16進表記でない字。欄に打ったままにし
         (やめてダンプのキーにすると、続けて打った字がダンプを書き換える)、区切りの字
-        (空白、-、~、,、&)でなければ知らせを出す。字でないキー(矢印など)ならFalse"""
+        (空白、-、~、,、&)でなければメッセージを出す。字でないキー(矢印など)ならFalse"""
         if len(ch) != 1 or not ch.isprintable():
             return False
         if ch not in " -~,&〜":
-            self.bench_view.say(tr("番地は16進表記(0〜9、A〜F)で打ちます"), 3)
+            self.bench_view.say(tr("app.type_addresses_hex_0"), 3)
         return True
-
-    def bench_span_said(self, msg: str) -> None:
-        """書き出す範囲を決める操作の知らせを出す(決められたなら緑、理由なら赤)"""
-        b, v = self.bench, self.bench_view
-        ok = b.span is not None and msg == tr(
-            "書き出す範囲を{where}にしました", where=workbench.span_text(*b.span)
-        )
-        v.say(msg, 3, ok=ok)
 
     def bench_span_key(self, ev) -> None:
         """範囲の欄に打っているあいだのキー。始めと終わりの番地を16進表記で8桁打てば決まる。
@@ -1121,9 +1222,9 @@ class App:
         k = ev.key
         ch = (ev.unicode or "").upper()
         if len(ch) == 1 and ch in "0123456789ABCDEF":
-            msg = b.type_span(int(ch, 16))
-            if msg:
-                self.bench_span_said(msg)
+            said = b.type_span(int(ch, 16))
+            if said.text:
+                self.bench_said(said)
             return
         if k == pygame.K_BACKSPACE and b.span_buf:
             b.span_buf = b.span_buf[:-1]
@@ -1145,9 +1246,9 @@ class App:
         k = ev.key
         ch = (ev.unicode or "").upper()
         if len(ch) == 1 and ch in "0123456789ABCDEF":
-            msg = b.type_start(int(ch, 16))
-            if msg:
-                self.bench_said(msg)
+            said = b.type_start(int(ch, 16))
+            if said.text:
+                self.bench_said(said)
             return
         if k == pygame.K_BACKSPACE and b.start_buf:
             b.start_buf = b.start_buf[:-1]
@@ -1169,7 +1270,7 @@ class App:
             return
         k = ev.key
         if k == pygame.K_ESCAPE:
-            if b.rom:  # キーを本体へ戻す
+            if b.live:  # キーを本体へ戻す
                 v.focus = False
             elif b.state == "pause":
                 b.abandon()
@@ -1238,9 +1339,9 @@ class App:
         elif kind == "clearlcd":
             b.clear_lcd = not b.clear_lcd
         elif kind == "start":
-            if b.state == "run" and not b.rom:
+            if b.state == "run" and not b.live:
                 v.say(
-                    tr("実行中は打てません。{c}Aか右クリックで、カーソルの所を開始番地にできます",
+                    tr("app.cannot_type_while_running",
                        c=CMD), 4
                 )  # fmt: skip
             else:
@@ -1252,8 +1353,8 @@ class App:
         elif kind == "spanauto":
             v.say(b.clear_span(), 3, ok=True)
         elif kind == "span":
-            if b.state == "run" and not b.rom:
-                v.say(tr("実行中は範囲を打てません"), 3)
+            if b.state == "run" and not b.live:
+                v.say(tr("app.cannot_type_range_while"), 3)
             else:
                 b.span_buf = "" if b.span_buf is None else None
         elif kind == "iram":
@@ -1263,9 +1364,13 @@ class App:
         elif kind == "break":
             if b.toggle_break(a) is None:
                 v.say(
-                    tr("{addr:04X}番地はROMなしでは使えないので、止める所を置けません", addr=a), 3
+                    tr(
+                        "app.not_usable_without_rom",
+                        addr=a,
+                    ),
+                    3,
                 )
-        elif kind in ("addr", "byte", "goto", "why") and (b.state != "run" or b.rom):
+        elif kind in ("addr", "byte", "goto", "why") and (b.state != "run" or b.live):
             first = (b.row - 8 * b.top_rows) & 0xFFFF
             off = (a - first) & 0xFFFF
             if kind == "addr":
@@ -1279,25 +1384,11 @@ class App:
         番地を開始番地にする(CALLがなければ最初のダンプの番地)"""
         b, m = self.bench, self.m
         name = prog.title or prog.name
-        if prog.errors:
-            self.say(tr("{name}を読み込みません。{why}", name=name, why=prog.errors[0]), 8)
+        problem = loading.bench_problem(prog, m)
+        if problem is not None:
+            self.say(*problem)
             return
-        pokes, start = workbench.basic_hints(f"{prog.basic}\n{prog.run}")
-        blocks = prog.blocks + pokes + prog.after
-        if not prog.norom_ok:
-            if prog.blocks:
-                why = tr("{name}はBASICとROMのルーチンを使うプログラムなので、"
-                         "ROMなしでは使えません", name=name)  # fmt: skip
-            else:
-                why = tr("{name}はBASICのプログラムなので、ROMなしでは使えません", name=name)
-            self.say(why, 6)
-            return
-        if not self._ram_fits(prog):
-            return
-        outside = self._outside(blocks, prog.ram_top)
-        if outside:
-            self.say(outside_message(name, outside[0]), 8)
-            return
+        blocks, start = loading.bench_blocks(prog)
         self.undo_bench = b.save()  # 実行中・一時停止中なら、その状態のまま覚える
         if b.state != "edit":
             b.abandon()
@@ -1311,7 +1402,7 @@ class App:
         self.set_pad_map(self.pad_map_for(prog))
         self.last_prog = prog
         self.loading, self.load_help = prog.title, prog.norom
-        done = tr("{name}を読み込みました({n}バイト、開始番地{addr:04X})。{c}Gで実行",
+        done = tr("app.loaded_bytes_start_address",
                   name=name, n=n, addr=b.start, c=CMD)  # fmt: skip
         self.say_loaded(f"{done}\n{prog.norom}" if prog.norom else done, 12 if prog.norom else 6)
         if run:
@@ -1323,45 +1414,47 @@ class App:
         b, v = self.bench, self.bench_view
         done = b.can_redo() if redo else b.can_undo()
         v.say(b.redo() if redo else b.undo(), 3, ok=done)
-        if done and b.rom:
+        if done and b.live:
             v.focus = True
 
     def bench_paste(self) -> None:
         """クリップボードのダンプ(本のダンプリストか.hexの行)を書く"""
         b, v = self.bench, self.bench_view
-        if b.state == "run" and not b.rom:
+        if b.state == "run" and not b.live:
             return
         start = b.start
         res = b.paste(self.clipboard())
         if not res.written:
-            v.say(tr("貼り付けた文字にダンプの行がありません"), 4)
+            v.say(tr("app.no_dump_lines_pasted"), 4)
             return
-        parts = [tr("{n}バイトを書きました", n=res.written)]
+        parts = [tr("app.wrote_bytes", n=res.written)]
         if res.bad_sums:
-            where = tr("、").join(f"{a:04X}" for a in res.bad_sums[:4])
-            parts.append(tr("チェックサムが合わない行: {where}", where=where))
+            where = tr("common.ideographic_comma").join(f"{a:04X}" for a in res.bad_sums[:4])
+            parts.append(tr("app.checksum_mismatch", where=where))
         if res.outside:
-            parts.append(tr("RAMの外の{n}バイトは書けません", n=res.outside))
+            parts.append(tr("app.bytes_outside_ram_not", n=res.outside))
         if b.start != start:
-            parts.append(tr("開始番地は{addr:04X}", addr=b.start))
-        v.say(tr("。").join(parts), 8)
+            parts.append(tr("app.start_address", addr=b.start))
+        v.say(tr("app.ideographic_full_stop").join(parts), 8)
 
     def bench_export(self, listing: bool = False) -> None:
-        """書き出す範囲のマシン語を、置き場所に.hexで書き出す。逆アセンブルつきか、listingなら
+        """書き出す範囲のマシン語を、プログラムのフォルダに.hexで書き出す。逆アセンブルつきか、listingなら
         本のダンプリストの形(8バイト:チェックサム)。どちらも読み込める"""
         b, v = self.bench, self.bench_view
         ranges = b.export_ranges()
         if not ranges:
-            v.say(tr("書き出すダンプがありません"), 4)
+            v.say(tr("app.no_dump_export"), 4)
             return
-        where = tr("、").join(workbench.span_text(lo, hi) for lo, hi in ranges)
+        where = tr("common.ideographic_comma").join(
+            workbench.span_text(lo, hi) for lo, hi in ranges
+        )
         try:
             folder = os.path.join(programs.user_dir(), programs.model_dir(self.m.model.name))
             os.makedirs(folder, exist_ok=True)
             stem = "dumplist" if listing else "dump"
             path = paths.unused_file(folder, f"{stem}-{time.strftime('%Y%m%d-%H%M%S')}", ".hex")
             # 開始番地は# run:に書く(読み込むと、ROMなしではここから、ROMがあればこのCALLで動く)
-            note = tr("{where}(マシン語の作業欄から書き出し)", where=where)
+            note = tr("app.exported_machine_code_workbench", where=where)
             # 自分で決めたデータの範囲は# data: に書く(読み込むと同じ指定になる)
             head = f"; {note}\n# run: CALL &{b.start:04X}\n" + programs.data_line(b.data_spans())
             head += self._ram_line()  # 広げたRAMにあるダンプを、読み込み直せるように
@@ -1370,12 +1463,12 @@ class App:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(head + body)
         except OSError as e:
-            v.say(tr("書き出せません: {error}", error=e), 5)
+            v.say(tr("app.cannot_export", error=e), 5)
             return
         size = sum(hi - lo for lo, hi in ranges)
         name = os.path.basename(path)
         v.say(
-            tr("{name}を書き出しました({n}バイト)。置き場所: {folder}",
+            tr("app.exported_bytes_folder",
                name=name, n=size, folder=_short(folder)), 8
         )  # fmt: skip
 
@@ -1402,21 +1495,30 @@ class App:
         """速さを1段上げる(step=1)か下げる(step=-1)。両端ではそのまま"""
         i = self.SPEEDS.index(self.turbo) + step
         self.turbo = self.SPEEDS[min(max(i, 0), len(self.SPEEDS) - 1)]
-        self.say(tr("速さ {speed}", speed=speed_label(self.turbo)), 1.5)
+        self.say(tr("app.speed", speed=speed_label(self.turbo)), 1.5)
 
     def toggle_arrows(self) -> None:
         self.numpad_arrows = not self.numpad_arrows
         if self.numpad_arrows:
-            self.say(tr("矢印キー → 数字キーの8・2・4・6"), 2.5)
+            self.say(tr("app.arrow_keys_number_keys"), 2.5)
         else:
-            self.say(tr("矢印キー → ↑↓◀▶"), 2.5)
+            self.say(tr("app.arrow_keys"), 2.5)
+
+    def toggle_packed(self) -> None:
+        """液晶の桁と行のあいだのすきまをなくすか、実機と同じにする(次に起動したときも同じ)"""
+        self.panel.set_packed(not self.panel.packed)
+        self._save_view()
+        if self.panel.packed:
+            self.say(tr("app.gaps_between_lcd_characters"), 2.5)
+        else:
+            self.say(tr("app.gaps_between_lcd_characters_restored"), 2.5)
 
     def toggle_help(self) -> None:
         self.help = 0 if self.help else FPS * 10
 
     # ---- 操作欄とプリンタ ----
     def _window_size(self) -> tuple[int, int]:
-        """窓の大きさ。本体の下に、プリンタの紙(印字したとき)と操作欄を足す"""
+        """ウィンドウの大きさ。本体の下に、プリンタの紙(印字したとき)と操作欄を足す"""
         w, h = self.body_size
         if self.paper_open:
             h += self.paper.height
@@ -1427,85 +1529,88 @@ class App:
 
     def bar_buttons(self) -> list[BarButton]:
         """操作欄のボタン。左に目的ごとのメニュー、続けて実行の一時停止と速さ、右端に録画。
-        録画しているあいだは、録画のボタンが録画中の印と経過時間になり、押すと止めるか
+        録画しているあいだは、録画のボタンが録画中のマークと経過時間になり、押すと止めるか
         一時停止するかのメニューが出る"""
 
         def menu(kind: str):
             return lambda: self.open_bar_popup(kind)
 
         c, s = CMD, SHIFT
-        view_tip = tr(
-            "キーの説明({c}/)、矢印キー・ゲームパッドの割り当て、液晶だけ、画面の画像、印字", c=c
-        )
+        view_tip = tr("app.key_help_arrow_keys", c=c)
         buttons = [
-            BarButton(tr("プログラム"), menu("program"), short=tr("プログラム"), menu="program",
-                      tip=tr("一覧、書き出し、貼り付け(一覧は{c}O)", c=c)),
-            BarButton(tr("本体"), menu("machine"), short=tr("本体"), menu="machine",
-                      tip=tr("状態の保存と復元、スイッチ、RESET")),
-            BarButton(tr("表示・入力"), menu("view"), short=tr("表示"), menu="view",
+            BarButton(tr("common.programs"), menu("program"), short=tr("common.programs"),
+                      menu="program", tip=tr("app.list_export_paste_list", c=c)),
+            BarButton(tr("app.machine"), menu("machine"), short=tr("app.machine"), menu="machine",
+                      tip=tr("app.save_load_state_switch")),
+            BarButton(tr("app.view_input"), menu("view"), short=tr("app.view"), menu="view",
                       tip=view_tip),
         ]  # fmt: skip
         if self.halted:
-            tip = tr("止めている実行を続ける({c}P)", c=c)
-            buttons.append(BarButton(tr("実行を再開"), self.toggle_halt, "play", tr("再開"), tip))
-        elif not self.norom:  # ROMなしでは、実行と一時停止は作業欄のボタンで行う
-            tip = tr("CPUの実行を止める({c}P)。録画は止まりません", c=c)
+            tip = tr("app.resume_execution_p", c=c)
             buttons.append(
-                BarButton(tr("実行を一時停止"), self.toggle_halt, "pause", tr("一時停止"), tip)
+                BarButton(tr("app.resume"), self.toggle_halt, "play", tr("app.resume_short"), tip)
             )
-        if not self.norom and not self.lcd_only:
+        elif not self.bench_only:  # ROMなしでは、実行と一時停止は作業欄のボタンで行う
+            tip = tr("app.pause_cpu_p_recording", c=c)
+            buttons.append(
+                BarButton(tr("app.pause"), self.toggle_halt, "pause", tr("app.pause_short"), tip)
+            )
+        if not self.bench_only and not self.lcd_only:
             # 作業欄の出し入れ。矢印は作業欄が動く向き(右へ出す・左へしまう)
             if self.pane_open:
-                label, tip = tr("◀ 作業欄"), tr("マシン語の作業欄をしまう({c}D)", c=c)
+                label, tip = tr("app.workbench_hide"), tr("app.hide_machine_code_workbench", c=c)
             else:
-                label, tip = tr("作業欄 ▶"), tr("マシン語の作業欄を出す({c}D)", c=c)
+                label, tip = tr("app.workbench_show"), tr("app.show_machine_code_workbench", c=c)
             buttons.append(BarButton(label, self.toggle_pane, "", label, tip, True))
         if self.lcd_only:  # 液晶だけのあいだは、メニューを開かずに本体へ戻れるように
-            tip = tr("本体の絵を出す(窓の大きさは固定に戻ります)")
-            buttons.append(BarButton(tr("本体を出す"), self.toggle_lcd, "", tr("本体を出す"), tip))
+            tip = tr("app.show_calculator_window_size")
+            buttons.append(
+                BarButton(tr("app.calculator"), self.toggle_lcd, "", tr("app.calculator"), tip)
+            )
         speed = speed_label(self.turbo)
-        tip = tr("実行の速さを選ぶ({c}Tで速く、{s}{c}Tで遅く)", c=c, s=s)
-        label = tr("速さ {speed}", speed=speed)
+        tip = tr("app.choose_speed_t_faster", c=c, s=s)
+        label = tr("app.speed", speed=speed)
         buttons.append(BarButton(label, menu("speed"), "", speed, tip, True, "speed"))
         rec = self.recorder
         if rec is None:
-            tip = tr("録画を始める({s}{c}R)", c=c, s=s)
-            buttons.append(BarButton(tr("録画"), self.toggle_recording, "rec", tr("録画"), tip))
+            tip = tr("app.start_recording_r", c=c, s=s)
+            buttons.append(BarButton(tr("app.record"), menu("recstart"), "rec", tr("app.record"),
+                                     tip, menu="recstart"))  # fmt: skip
         else:
             sec = int(rec.seconds)
             clock = f"{sec // 60}:{sec % 60:02d}"
-            tip = tr("録画を止める({s}{c}R)か、一時停止する({s}{c}P)", c=c, s=s)
+            tip = tr("app.stop_r_pause_p", c=c, s=s)
             if self.rec_paused:
-                label, icon = tr("録画を一時停止中 {clock}", clock=clock), "recpause"
+                label, icon = tr("common.rec_paused", clock=clock), "recpause"
             else:
-                label, icon = tr("録画中 {clock}", clock=clock), "rec"
+                label, icon = tr("common.recording", clock=clock), "rec"
             buttons.append(BarButton(label, menu("rec"), icon, clock, tip, menu="rec"))
         return buttons
 
     def bar_info(self) -> str:
         """操作欄の右に出す、いまの設定(速さと一時停止はボタンに出る)"""
         m = self.m
-        parts = [m.model.title + (" " + tr("{n}KBカード", n=m.card) if m.card else "")]
+        parts = [m.model.title + (" " + tr("app.kb_card", n=m.card) if m.card else "")]
         if self.last_prog is not None:
             parts.append(self.last_prog.title or self.last_prog.name)
         if self.numpad_arrows:
-            parts.append(tr("矢印→8246"))
+            parts.append(tr("app.arrows_8246"))
         if m.tape is not None:
-            parts.append(tr("テープ"))
+            parts.append(tr("app.tape"))
         return "   ".join(parts)
 
     def cancel_loading(self) -> None:
         """読み込みの打ち込みをやめる。打ち込んだところまではRAMに残る"""
         self.typer.clear()
         self.fast = False
-        self.say(tr("読み込みをやめました(途中まで入っています)。{hint}", hint=undo_hint()), 6)
+        self.say(tr("app.loading_stopped_partly_loaded", hint=undo_hint()), 6)
 
     @property
     def paper_open(self) -> bool:
         return self.printout is not None
 
     def close_paper(self) -> None:
-        """プリンタの紙をしまう(窓の高さが変わる)"""
+        """プリンタの紙をしまう(ウィンドウの高さが変わる)"""
         if self.printout is None:
             return
         self._finish_paper()
@@ -1580,7 +1685,7 @@ class App:
         if self.printout is None:  # 新しい紙
             self.printout = Printout(printer, self.print_cut, programs.user_dir())
             if self.printout.error is not None:  # 紙は出すが、印字の絵は保存しない
-                self.say(tr("印字を保存できません: {error}", error=self.printout.error), 5)
+                self.say(tr("app.cannot_save_printout", error=self.printout.error), 5)
             self._refit()
             self.save_printout()  # 名前を取っておくため、すぐに1度保存する
         self.printout.touched()
@@ -1594,11 +1699,11 @@ class App:
         try:
             saved = out.save(self.paper)
         except (OSError, pygame.error) as e:
-            self.say(tr("印字を保存できません: {error}", error=e), 5)
+            self.say(tr("app.cannot_save_printout", error=e), 5)
             out.file = None
             return
         if saved and out.file is not None:
-            self.say(tr("印字を{path}に保存しました", path=_short(out.file)), 5)
+            self.say(tr("app.printout_saved", path=_short(out.file)), 5)
 
     def reveal_printout(self) -> None:
         """印字を保存したフォルダを開く"""
@@ -1618,11 +1723,11 @@ class App:
         self.paper_back = min(max(self.paper_back + step, 0), max(0, rows - 1))
 
     def press_reset(self) -> None:
-        """裏のRESETボタンを0.3秒押す。ROMなしでは、実行をやめて作業欄に戻る"""
-        if self.norom:
+        """裏のRESETボタンを0.3秒押す。作業欄だけで動かしているときは、実行をやめて作業欄に戻る"""
+        if self.bench_only:
             self.bench_do("abandon")
             return
-        self.m.reset_key = True
+        self.m.press_reset()
         self.reset_frames = max(1, FPS * 3 // 10)
 
     def move_switch(self, step: int) -> None:
@@ -1638,81 +1743,88 @@ class App:
         sep, item = SEPARATOR, MenuItem
         c, s = CMD, SHIFT
         stopped = self.bench.state == "pause"
-        pause = item(tr("実行を再開する") if stopped else tr("実行を一時停止する"), f"{c}P",
+        pause = item(tr("app.resume_execution") if stopped else tr("app.pause_execution"), f"{c}P",
                      self.toggle_halt)  # fmt: skip
         if kind == "program":
             # ROMなしでは、⌘E・⌘Vと同じく作業欄のダンプを書き出す・貼り付ける
-            if self.norom:
-                export = item(tr("ダンプをファイル(.hex)に書き出す"), f"{c}E", self.bench_export,
+            if self.bench_only:
+                export = item(tr("app.export_dump_file_hex"), f"{c}E", self.bench_export,
                               self.bench.export_summary())  # fmt: skip
-                listing = item(tr("ダンプリストの形で書き出す"), f"{s}{c}E",
+                listing = item(tr("app.export_dump_list"), f"{s}{c}E",
                                lambda: self.bench_export(listing=True),
-                               tr("8バイト:チェックサムの行"))  # fmt: skip
-                paste = item(tr("クリップボードからダンプを貼り付ける"), f"{c}V", self.bench_paste)
+                               tr("app.lines_8_bytes_checksum"))  # fmt: skip
+                paste = item(tr("app.paste_dump_clipboard"), f"{c}V", self.bench_paste)
             else:
-                export = item(tr("プログラムをファイルに書き出す"), f"{c}E", self.export_program)
+                export = item(tr("app.export_program_file"), f"{c}E", self.export_program)
                 listing = None
-                paste = item(tr("クリップボードから打ち込む"), f"{c}V", self.paste)
+                paste = item(tr("app.type_clipboard"), f"{c}V", self.paste)
             items = [
-                item(tr("プログラムの一覧…"), f"{c}O", self.open_menu),
+                item(tr("app.program_list"), f"{c}O", self.open_menu),
                 export,
                 *([listing] if listing else []),
                 paste,
-                item(tr("置き場所のフォルダを開く"), "", lambda: self.reveal(programs.user_dir())),
+                item(tr("app.open_program_folder"), "", lambda: self.reveal(programs.user_dir())),
             ]
-            if self.norom or self.pane_open:
+            if self.bench_only or self.pane_open:
                 # 作業欄の書き込みの取り消しとやり直し。下に、何を取り消すか(できなければ理由)
                 note, on = self.bench.undo_note()
                 rnote, ron = self.bench.undo_note(redo=True)
                 items += [
                     sep,
-                    item(tr("ダンプの書き込みを取り消す"), f"{c}Z", self.bench_undo, note,
+                    item(tr("app.undo_dump_edit"), f"{c}Z", self.bench_undo, note,
                          enabled=on),
-                    item(tr("ダンプの書き込みをやり直す"), f"{s}{c}Z",
+                    item(tr("app.redo_dump_edit"), f"{s}{c}Z",
                          lambda: self.bench_undo(redo=True), rnote, enabled=ron),
                 ]  # fmt: skip
             if self.load_help:
                 show = lambda: self.say(self.load_help, 20)  # noqa: E731
-                items += [sep, item(tr("読み込んだプログラムの説明"), "", show, self.loading)]
+                items += [sep, item(tr("app.help_loaded_program"), "", show, self.loading)]
             return items
         if kind == "machine":
             items = [
-                item(tr("いまの状態を保存(どこでもセーブ)"), f"{s}{c}S", self.save_state),
-                item(tr("保存した状態に戻す"), f"{s}{c}L", self.load_state, self.saved_when()),
+                item(tr("app.save_state"), f"{s}{c}S", self.save_state),
+                item(tr("app.load_state"), f"{s}{c}L", self.load_state, self.saved_when()),
             ]
             if self.undo_state is not None:
-                note = tr("{title}を読み込む前", title=self.undo_title)
-                items.append(item(tr("プログラムを読み込む前に戻す"), "", self.undo_loading, note))
+                note = tr("app.before_loading", title=self.undo_title)
+                items.append(item(tr("app.undo_program_load"), "", self.undo_loading, note))
             items.append(sep)
             for name, _y in self.sw_stops:
                 key = f"{c}↑↓" if self.m.mode == name else ""
                 items.append(item(switch_label(name), key, lambda n=name: self.set_mode(n)))
-            return items + [sep, item(tr("RESETボタンを押す"), f"{c}R", self.press_reset)]
+            return items + [sep, item(tr("app.press_reset_button"), f"{c}R", self.press_reset)]
         if kind == "view":
             if self.numpad_arrows:
-                arrows = tr("矢印キーを↑↓◀▶に戻す")
+                arrows = tr("app.arrow_keys_back")
             else:
-                arrows = tr("矢印キーを8・2・4・6にする")
+                arrows = tr("app.arrow_keys_8_2")
             pads = self.pads.names()
             if pads:
-                note = tr("{names}がつながっています", names=tr("、").join(pads))
+                note = tr("app.connected", names=tr("common.ideographic_comma").join(pads))
             else:
-                note = tr("パッドはつながっていません")
-            lcd = tr("本体の絵を出す") if self.lcd_only else tr("液晶だけにする(窓を広げられる)")
+                note = tr("app.no_gamepad_connected")
+            lcd = tr("app.show_calculator") if self.lcd_only else tr("app.lcd_only_window_can")
             items = [
-                item(tr("キーの説明"), f"{c}/", self.toggle_help),
+                item(tr("app.key_help"), f"{c}/", self.toggle_help),
                 item(arrows, f"{c}K", self.toggle_arrows),
-                item(tr("ゲームパッドの割り当て…"), "", self.toggle_pad_panel, note),
+                item(tr("app.gamepad_mapping"), "", self.toggle_pad_panel, note),
                 sep,
                 item(lcd, "", self.toggle_lcd),
-                item(tr("画面を画像で保存"), f"{c}S", self.screenshot),
+                item(tr("app.save_screenshot"), f"{c}S", self.screenshot),
             ]
-            if not self.norom:
-                if self.pane_open:
-                    pane = tr("マシン語の作業欄をしまう")
+            if self.panel.can_pack:
+                if self.panel.packed:
+                    gap = item(tr("app.restore_gaps_between_lcd"), "", self.toggle_packed)
                 else:
-                    pane = tr("マシン語の作業欄を出す")
-                note = tr("液晶だけのあいだは出せません") if self.lcd_only else ""
+                    gap = item(tr("app.remove_gaps_between_lcd"), "", self.toggle_packed,
+                               tr("app.dots_evenly_spaced_not"))  # fmt: skip
+                items.insert(5, gap)
+            if not self.bench_only:
+                if self.pane_open:
+                    pane = tr("app.hide_workbench")
+                else:
+                    pane = tr("app.show_workbench")
+                note = tr("app.not_available_while_showing") if self.lcd_only else ""
                 items[3:3] = [item(pane, f"{c}D", self.toggle_pane, note, enabled=not note)]
             # 言語の切り替え。項目の名前は、切り替えた先の言語で書く
             other = "en" if i18n.language() == "ja" else "ja"
@@ -1722,14 +1834,26 @@ class App:
             return items + ([sep, *paper] if paper else [])
         if kind == "rec":
             if self.rec_paused:
-                pause = item(tr("録画を再開する"), f"{s}{c}P", self.toggle_pause, icon="rec")
+                pause = item(tr("app.resume_recording"), f"{s}{c}P", self.toggle_pause, icon="rec")
             else:
-                pause = item(tr("録画を一時停止する"), f"{s}{c}P", self.toggle_pause,
+                pause = item(tr("app.pause_recording"), f"{s}{c}P", self.toggle_pause,
                              icon="recpause")  # fmt: skip
-            stop = item(tr("録画を止めて保存"), f"{s}{c}R", self.toggle_recording, icon="stop")
+            stop = item(
+                tr("app.stop_save_recording"), f"{s}{c}R", self.toggle_recording, icon="stop"
+            )
             return [stop, pause]
+        if kind == "recstart":  # 録画の形を選んで始める
+            return [
+                item(
+                    str(REC_SHAPE_NAMES[shape]),
+                    "",
+                    partial(self.start_recording, shape),
+                    icon="rec",
+                )
+                for shape in recorder.SHAPES
+            ]
         if kind == "speed":
-            return [item(tr("速さ {speed}", speed=speed_label(v)), "",
+            return [item(tr("app.speed", speed=speed_label(v)), "",
                          lambda v=v: self.set_speed(v))
                     for v in self.SPEEDS]  # fmt: skip
         if kind == "bench":
@@ -1738,43 +1862,45 @@ class App:
             out = self.printout
             if out is None:
                 return []
-            items = [item(tr("プリンタの紙をしまう"), "", self.close_paper)]
+            items = [item(tr("app.put_paper_away"), "", self.close_paper)]
             if out.file:
-                items.insert(0, item(tr("印字の保存先を開く"), "", self.reveal_printout))
+                items.insert(0, item(tr("app.open_printout_folder"), "", self.reveal_printout))
             return items
         return [  # 右クリック(場所によらない、よく使うものだけ)
             pause,
-            item(tr("プログラムの一覧…"), f"{c}O", self.open_menu),
-            item(tr("画面を画像で保存"), f"{c}S", self.screenshot),
-            item(tr("キーの説明"), f"{c}/", self.toggle_help),
+            item(tr("app.program_list"), f"{c}O", self.open_menu),
+            item(tr("app.save_screenshot"), f"{c}S", self.screenshot),
+            item(tr("app.key_help"), f"{c}/", self.toggle_help),
         ]
 
     def popup_mark(self) -> str:
         """いま出しているメニューで●をつける項目(スイッチの位置か、いまの速さ)"""
         kind = self.popup.kind if self.popup is not None else ""
         if kind == "speed":
-            return tr("速さ {speed}", speed=speed_label(self.turbo))
+            return tr("app.speed", speed=speed_label(self.turbo))
+        if kind == "recstart":  # 前に選んだ形(⇧⌘Rで始める形)
+            return str(REC_SHAPE_NAMES[self.rec_shape])
         return switch_label(self.m.mode)
 
     def set_speed(self, speed: float) -> None:
         self.turbo = speed
-        self.say(tr("速さ {speed}", speed=speed_label(speed)), 1.5)
+        self.say(tr("app.speed", speed=speed_label(speed)), 1.5)
 
     def set_language(self, lang: str) -> None:
         """画面の言語を切り替えて、次に起動したときのために覚えておく"""
         i18n.set_language(lang)
         self.bench_view.flash = ""
         self._save_view(lang)
-        self.say(tr("表示を日本語にしました"), 3)
+        self.say(tr("app.language_english"), 3)
 
     def saved_when(self) -> str:
-        """保存した状態の日時(「10/22 15:30に保存」)。保存していなければそう書く"""
+        """保存した状態の日時(「10/22 15:30に保存」)。保存していなければ「まだ保存していません」"""
         try:
             t = os.path.getmtime(self.state_file)
         except OSError:
-            return tr("まだ保存していません")
+            return tr("app.not_saved_yet")
         when = time.strftime("%m/%d %H:%M", time.localtime(t)).lstrip("0")
-        return tr("{when}に保存", when=when)
+        return tr("app.saved_when", when=when)
 
     def toggle_halt(self) -> None:
         """実行を一時停止する。止めているあいだはCPUも時計も進まない(録画の一時停止とは別)。
@@ -1782,26 +1908,33 @@ class App:
         state = self.bench.state
         if state == "run":
             self.bench_do("pause")
-            if not self.norom:
-                self.say(
-                    tr("実行を一時停止しました。{c}Pか操作欄の「実行を再開」で続けます", c=CMD), 4
-                )
+            if not self.bench_only:
+                self.say(tr("app.paused_p_resume_bar", c=CMD), 4)
         elif state == "pause":
             self.bench_do("resume")
-            if not self.norom and self.bench.state == "run":
-                self.say(tr("実行を再開しました"), 1.5)
+            if not self.bench_only and self.bench.state == "run":
+                self.say(tr("app.resumed"), 1.5)
         else:
-            self.say(tr("実行していません。{c}Gで開始番地から実行します", c=CMD), 3)
+            self.say(tr("app.not_running_g_runs", c=CMD), 3)
+
+    @property
+    def warning(self) -> str:
+        """ウィンドウの左上に出す注意(いまの言語の文。なければ空)"""
+        return str(self._warning)
+
+    @warning.setter
+    def warning(self, text: str | Text) -> None:
+        self._warning = text
 
     @property
     def halted(self) -> bool:
         """ROMのある本体で、実行を一時停止しているか(作業欄の一時停止と同じ状態)。ROMなしの
         本体の実行と一時停止は作業欄が扱うので、いつもFalse"""
-        return not self.norom and self.bench.state == "pause"
+        return not self.bench_only and self.bench.state == "pause"
 
     @halted.setter
     def halted(self, on: bool) -> None:
-        if not self.norom and on != self.halted:
+        if not self.bench_only and on != self.halted:
             self.toggle_halt()
 
     def _prog_undo(self) -> tuple:
@@ -1819,13 +1952,13 @@ class App:
         try:
             self.m.restore(state)
         except ValueError as e:
-            self.say(tr("読み込む前に戻せません: {error}", error=e), 5)
+            self.say(tr("app.cannot_undo_load", error=e), 5)
             return
         # 書き出しや説明に使う、読み込んだプログラムの情報も読み込む前のものに戻す
         self.last_prog, self.loading, self.load_help, self.pad_prog, pad_map, dirty = self.undo_prog
         self.set_pad_map(pad_map)
         self.pad_dirty = dirty
-        done = tr("{title}を読み込む前に戻しました", title=title)
+        done = tr("app.back_before_loading", title=title)
         self.bench.restore(self.undo_bench, done)
         self.undo_state = None
         self._restored(done)
@@ -1850,9 +1983,9 @@ class App:
             self.open_bar_popup(self.bar.buttons[i].menu)
 
     def open_popup(self, win) -> None:
-        """右クリックのメニュー(winは窓の中の位置)。作業欄の上ならクリックした番地の操作、
-        プリンタの紙の上なら紙の操作、ほかはよく使う操作だけ。メニューは窓全体に描くので、
-        窓を広げたぶん位置をずらす"""
+        """右クリックのメニュー(winはウィンドウの中の位置)。作業欄の上ならクリックした番地の操作、
+        プリンタの紙の上なら紙の操作、ほかはよく使う操作だけ。メニューはウィンドウ全体に描くので、
+        ウィンドウを広げたぶん位置をずらす"""
         pos = self._in_content(win)
         dx, dy = self._make_room()
         win = (win[0] + dx, win[1] + dy)
@@ -1866,11 +1999,12 @@ class App:
             self.popup = Popup(win, "context")
 
     def _in_content(self, win) -> tuple[int, int]:
-        """窓の中の位置を中身の中の位置に直す(窓が中身より大きいとき、中身はまんなかにある)"""
+        """ウィンドウの中の位置を中身の中の位置に直す(ウィンドウが中身より大きいとき、"
+        "中身はまんなかにある)"""
         return win[0] - self.origin[0], win[1] - self.origin[1]
 
     def bench_menu(self, pos, win=None) -> None:
-        """作業欄の右クリック(posは中身の中の位置、winは窓の中の位置)。ダンプのバイトか
+        """作業欄の右クリック(posは中身の中の位置、winはウィンドウの中の位置)。ダンプのバイトか
         逆アセンブルの行なら、その番地にカーソルを置き(ROMなしで実行中は置かない)、その番地の
         操作のメニューを出す。ほかの所ならカーソルの番地の操作"""
         b, v = self.bench, self.bench_view
@@ -1879,7 +2013,7 @@ class App:
         hit = v.hit(pos)
         kind, a = hit if hit is not None else ("", 0)
         if kind in ("byte", "goto", "break", "addr", "why"):
-            if b.state != "run" or b.rom:
+            if b.state != "run" or b.live:
                 b.place(a, v.rows)
             self.bench_at = a
         else:
@@ -1893,36 +2027,36 @@ class App:
         here = a == b.cursor  # ショートカットは、カーソルの所に効く
         why = b.start_refusal(a)
         if a == b.start:
-            why = tr("いまの開始番地です")
+            why = tr("app.is_start_address")
         items = [
-            item(tr("{addr:04X}番地を開始番地にする", addr=a), f"{CMD}A" if here else "",
+            item(tr("app.set_start_address", addr=a), f"{CMD}A" if here else "",
                  lambda: self.bench_start_at(a), why, enabled=not why),
         ]  # fmt: skip
-        if not b.rom:
-            why = b.start_refusal(a) or (tr("実行中です") if b.state == "run" else "")
+        if not b.live:
+            why = b.start_refusal(a) or (tr("app.running") if b.state == "run" else "")
             items.append(
-                item(tr("{addr:04X}番地から実行する", addr=a), f"{SHIFT}{CMD}G" if here else "",
+                item(tr("app.run", addr=a), f"{SHIFT}{CMD}G" if here else "",
                      lambda: self.bench_run_at(a), why, enabled=not why)
             )  # fmt: skip
         ins = b.ins_at(a)
         on = ins in b.breaks
-        why = "" if on or not b.blocked(ins) else tr("ROMなしでは使えない番地です")
+        why = "" if on or not b.blocked(ins) else tr("app.address_not_usable_without_rom")
         if on:
-            label = tr("{addr:04X}番地の止める所を外す", addr=ins)
+            label = tr("app.remove_breakpoint", addr=ins)
         else:
-            label = tr("{addr:04X}番地の止める所を置く", addr=ins)
+            label = tr("app.set_breakpoint", addr=ins)
         items.append(
             item(label, f"{CMD}B" if here and ins == b.ins_at(b.cursor) else "",
                  lambda: self.bench_break_at(ins), why, enabled=not why)
         )  # fmt: skip
-        # 逆アセンブルで、その番地からをデータか命令に決める(決めなければ推し量る)
+        # 逆アセンブルで、その番地からをデータか命令に決める(決めなければ推定する)
         items.append(SEPARATOR)
         marks = (
-            ("data", tr("{addr:04X}番地からデータにする", addr=a),
-             tr("次の指定か、実行済みの命令の手前までデータ")),
-            ("code", tr("{addr:04X}番地から命令にする", addr=a),
-             tr("ここから静的解析する")),
-            (None, tr("{addr:04X}番地の指定を消す", addr=a), tr("推定に戻す")),
+            ("data", tr("app.mark_data", addr=a),
+             tr("app.data_up_next_mark")),
+            ("code", tr("app.mark_code", addr=a),
+             tr("app.analyse_code_here")),
+            (None, tr("app.clear_mark", addr=a), tr("app.back_guessing")),
         )  # fmt: skip
         for what, label, note in marks:
             why = b.mark_refusal(a, what)
@@ -1941,7 +2075,7 @@ class App:
     def bench_run_at(self, addr: int) -> None:
         """番地addrを開始番地にして実行する"""
         b = self.bench
-        if b.set_start_at(addr) and b.start == addr:
+        if b.set_start_at(addr).ok:
             self.bench_do("run")
 
     def bench_break_at(self, addr: int) -> None:
@@ -1973,11 +2107,14 @@ class App:
 
     # ---- マウス ----
     def mouse_down(self, win) -> None:
-        """クリック(winは窓の中の位置)。窓全体に描く一覧とメニューは窓の位置で、本体・紙・
-        割り当ての欄・操作欄・作業欄は中身の中の位置で当たりを見る"""
+        """クリック(winはウィンドウの中の位置)。ウィンドウ全体に描く一覧とメニューはウィンドウの位置で、本体・紙・
+        割り当ての欄・操作欄・作業欄は中身の中の位置で当たり判定をする"""
         pos = self._in_content(win)
         if self.menu is not None:
             self.menu_click(win)
+            return
+        if self.warning and self.warning_rect.collidepoint(pos):
+            self.warning = ""  # 注意をクリックすると閉じる
             return
         if self.pad_panel is not None and self.popup is None and self.pad_click(pos):
             return
@@ -2067,93 +2204,29 @@ class App:
         m.mode = new
 
     # ---- プログラムの読み込み ----
-    def _ram_fits(self, prog: programs.Program) -> bool:
-        """プログラムの# ram: の範囲にRAMを広げられるか。広げられなければ知らせる"""
-        if prog.ram is None or self.m.ram_top_ok(prog.ram_top):
-            return True
-        lo, hi = prog.ram
-        self.say(
-            tr("{name}を読み込みません。# ram: の{lo:04X}-{hi:04X}はROMか液晶RAMにかかります",
-               name=prog.title or prog.name, lo=lo, hi=hi - 1), 8
-        )  # fmt: skip
-        return False
-
     def _ram_line(self) -> str:
         """いまRAMを広げていれば、その範囲の# ram: の行(なければ空)"""
         base, top = self.m.ram_top(None), self.m.model.ram[1]
         return f"# ram: {base:04X}-{top - 1:04X}\n" if top > base else ""
 
-    def _outside(self, blocks: list[tuple[int, bytes]], top: int | None) -> list[int]:
-        """RAMの終わりをtopに動かしたときに、blocksのうちRAMの外になる番地(いま広げている
-        所を狭めるときは、そこも外になる)"""
-        m, now = self.m, self.m.model.ram[1]
-        new = m.ram_top(top)
-
-        def ok(a: int) -> bool:
-            if now <= a < new:  # 広げる所
-                return True
-            if new <= a < now:  # 狭めて外す所
-                return False
-            return m.writable(a)
-
-        return [a for at, data in blocks for a in range(at, at + len(data)) if not ok(a)]
-
     def open_program(self, prog: programs.Program, run: bool = False) -> None:
-        """ダンプをRAMに書き、BASICはPROモードでNEWしてから入れる。runなら実行の命令も打つ。
+        """BASICがあればPROモードでNEWしてからダンプを書いてBASICを入れ、なければダンプを
+        すぐ書く。runなら実行の命令も打つ。
         読めない行があるときや、RAMの外に書くダンプがあるときは、何もせずに知らせる"""
-        if self.norom:
+        if self.bench_only:
             self.bench_open(prog, run)
             return
         m = self.m
-        name = prog.title or prog.name
-        if not prog.runs_on(m.model.name) and not prog.fits(m.writable):
-            self.say(
-                tr("{program}なので、{model}では読み込みません",
-                   program=prog.label(m.model.name), model=m.model.title), 5
-            )  # fmt: skip
-            return
-        if prog.errors:
-            self.say(tr("{name}を読み込みません。{why}", name=name, why=prog.errors[0]), 8)
-            return
-        if not self._ram_fits(prog):
-            return
-        outside = self._outside(prog.blocks + prog.after, prog.ram_top)
-        if outside:
-            self.say(outside_message(name, outside[0]), 8)
-            return
-        long = keytype.too_long(prog.basic, m.model.name) if prog.basic else None
-        if long is not None:
-            hit = re.match(r"\s*(\d+)", long)
-            if hit:
-                msg = tr(
-                    "{name}を読み込みません。{line}行が長すぎて、打ち込むと欠けます"
-                    "(行番号と中身で79字まで)",
-                    name=name,
-                    line=hit[1],
-                )
-            else:
-                msg = tr(
-                    "{name}を読み込みません。「{text}」の行が長すぎて、打ち込むと欠けます"
-                    "(行番号と中身で79字まで)",
-                    name=name,
-                    text=long.strip()[:16],
-                )
-            self.say(msg, 8)
-            return
-        data = self._encoded(prog.basic) if prog.basic and not prog.setup else None
-        if data is not None and len(data) > m.program_room():
-            self.say(
-                tr("{name}を読み込みません。BASICが{size}バイトで、RAMに入りません"
-                   "(使えるのは{room}バイト)", name=name, size=len(data), room=m.program_room()),
-                8,
-            )  # fmt: skip
-            return
-        if not prog.blocks and not prog.basic and not prog.after:
-            self.say(tr("{name}: 中身がありません", name=prog.name), 4)
+        problem = loading.open_problem(prog, m, self._encoded)
+        if problem is not None:
+            self.say(*problem)
             return
         self.undo_state, self.undo_title = m.snapshot(), prog.title or prog.name
         self.undo_prog = self._prog_undo()
         self.undo_bench = self.bench.save()
+        # BASICから呼んだマシン語が動いていれば、先に止める(止めないと、書いたダンプの上で動き
+        # 続け、打つCALLも届かないので、何も起きないように見える)
+        stopped = self._stop_running_code()
         m.set_ram_top(prog.ram_top)
         # 読み込みを始めたら、前の書き込みは取り消せなくする(読み込みは「読み込む前に戻す」で)。
         # 前のプログラムのために決めた書き出す範囲も消す
@@ -2170,32 +2243,14 @@ class App:
             self.set_mode("ON")
         elif not m.power:
             self.set_mode(m.mode if m.mode != "OFF" else "RUN")
-        if not prog.setup:
+        if not loading.needs_new(prog):
             self.write_dump(prog.blocks)
-        back = m.mode if m.mode in ("RUN", "PRO") else "RUN"
-        if self.is1350:
-            back = "PRO" if "PRO" in m.symbols() else "RUN"
-        if prog.basic or prog.setup:
-            self.typer.add_mode("PRO")
-            self.typer.add_text("NEW\n")
-        if prog.setup:
-            # BASICの置き場所を動かす命令などを打ってから、空いたところにダンプを書く
-            self.typer.add_text(prog.setup + "\n")
-            self.typer.add_write(prog.blocks)
-        if prog.basic:
-            # 打ち込むかわりに、ROMが作るのと同じ中間コードをRAMに置く
-            text, title = prog.basic, prog.title or prog.name
-            self.typer.add_call(lambda: self.store_basic(text, title))
-        if run and prog.run_command:
-            self.typer.add_mode(prog.mode.upper() or "RUN")
-            for i, line in enumerate(prog.run_command.split("\n")):
-                if i:
-                    self.typer.add_idle()  # 前の命令が終わって入力待ちに戻るのを待つ
-                self.typer.add_text(line + "\n")
-        elif prog.basic and not prog.after:
-            self.typer.add_mode(back)
-        if prog.after:
-            self.typer.add_write(prog.after)
+        if stopped and m.basic is None:
+            self.typer.add_idle()  # ROMが始め直して入力待ちになるのを待ってから打つ
+        for step in loading.open_steps(prog, run, loading.back_mode(m)):
+            self._add_step(step)
+        if stopped:
+            self.warning = Text("app.stopped_running_code")
         if prog.basic:
             self.last_prog = prog
         self.fast = self.typer.busy
@@ -2207,9 +2262,40 @@ class App:
             if prog.help:
                 self.say_loaded(prog.help, 20)
             else:
-                self.say_loaded(
-                    tr("{name}を読み込みました({n}バイト)", name=prog.title, n=prog.size)
-                )
+                self.say_loaded(tr("app.loaded_bytes", name=prog.title, n=prog.size))
+
+    def _stop_running_code(self) -> bool:
+        """BASICから呼んで動いているマシン語を止め、BASICの入力待ちに戻す(プログラムと変数は
+        残す)。止めたらTrue。ROMなしのBASICではCALLの最中かで、ROM使用時はマシン語を実行して
+        いるか(マシン語から呼んだROMのルーチンの中も。Machine.running_ram_code)で見る。
+        一時停止していれば、止めるかどうかによらず続ける状態に戻す(読み込みの打鍵が進むように)"""
+        m = self.m
+        if self.bench.state == "pause":
+            self.bench_do("resume")
+        b = m.basic
+        if b is not None:
+            if b.where not in ("call-run", "call-direct"):
+                return False
+            b.restart()
+            return True
+        if m.norom or not m.power or not m.running_ram_code():
+            return False
+        m.press_reset()  # 裏のRESETと同じに、0番地から始め直す
+        m.reset_key = False
+        return True
+
+    def _add_step(self, step: loading.Step) -> None:
+        t = self.typer
+        if step.kind == "mode":
+            t.add_mode(step.text)
+        elif step.kind == "text":
+            t.add_text(step.text)
+        elif step.kind == "idle":
+            t.add_idle()
+        elif step.kind == "write":
+            t.add_write(step.blocks)
+        elif step.kind == "basic":
+            t.add_call(lambda: self.store_basic(step.text, step.title))
 
     def write_dump(self, blocks: list[tuple[int, bytes]]) -> None:
         """ダンプをRAMに書き、作業欄の書いた範囲(書き出しに使う)にも0のバイトを含めて入れる。
@@ -2224,7 +2310,10 @@ class App:
         model = self.m.model.name
         if not keytype.typeable(text, model):
             return None
-        return basictext.encode_program(keytype.typed_text(text, model), self.m.mem)
+        typed = keytype.typed_text(text, model)
+        return basictext.encode_program(
+            typed, self.m.mem, pc1261_basic(self.m), basic_keywords(self.m)
+        )
 
     def store_basic(self, text: str, title: str = "") -> None:
         """BASICのプログラムを、打ち込んだときにROMが作るのと同じ中間コードでRAMに置く。
@@ -2252,18 +2341,16 @@ class App:
                 want.add(int(hit[1]))
             elif hit:  # 行番号だけの行は、その行を消す
                 want.discard(int(hit[1]))
-        have = {n for n, _ in basictext.program_lines(m.mem, m.program_start())}
+        have = {n for n, _ in basictext.program_lines(m.mem, m.program_start(), pc1261_basic(m))}
         missing = sorted(want - have)
         if missing:
-            why = tr("{name}はRAMに入りきりませんでした({line}行から{n}行が入っていません)。"
-                     "実行と、そのあとの書き込みはやめました。{hint}",
+            why = tr("app.did_not_fit_ram",
                      name=title, line=missing[0], n=len(missing), hint=undo_hint())  # fmt: skip
         else:
             bad = self._differs(text)
             if bad is None:
                 return
-            why = tr("{name}の{line}行が、思ったとおりに入りませんでした。実行と、そのあとの"
-                     "書き込みはやめました。{hint}",
+            why = tr("app.line_could_not_typed",
                      name=title, line=bad, hint=undo_hint())  # fmt: skip
         self.typer.clear()
         self.fast = False
@@ -2273,7 +2360,9 @@ class App:
         """RAMのプログラムが、textを中間コードにしたものと違えば、最初に違う行の番号。
         中間コードにできないとき(行番号がおかしいなど)は比べずにNone"""
         m = self.m
-        data = basictext.encode_program(keytype.typed_text(text, m.model.name), m.mem)
+        pc1261 = pc1261_basic(m)
+        typed = keytype.typed_text(text, m.model.name)
+        data = basictext.encode_program(typed, m.mem, pc1261, basic_keywords(m))
         if data is None:
             return None
         start = m.program_start()
@@ -2282,8 +2371,8 @@ class App:
         want = bytearray(m.mem)
         want[start + 1 : start + 1 + len(data)] = data
         want[start + 1 + len(data)] = 0xFF
-        got = basictext.program_lines(m.mem, start)
-        exp = basictext.program_lines(want, start)
+        got = basictext.program_lines(m.mem, start, pc1261)
+        exp = basictext.program_lines(want, start, pc1261)
         for (n, body), (en, ebody) in zip(got, exp, strict=False):
             if (n, body) != (en, ebody):
                 return min(n, en)
@@ -2296,10 +2385,10 @@ class App:
         try:
             self.m.tape = tape.TapeIn(path)
         except (OSError, EOFError, wave.Error) as e:
-            self.say(tr("{name}を読めません({error})", name=os.path.basename(path), error=e), 5)
+            self.say(tr("app.cannot_read", name=os.path.basename(path), error=e), 5)
             return
         self.say(
-            tr("テープ {name} をセットしました。CLOADかCLOAD Mで読み込みます",
+            tr("app.tape_inserted_load_cload",
                name=os.path.basename(path)), 6
         )  # fmt: skip
 
@@ -2312,21 +2401,19 @@ class App:
             return
         name = os.path.basename(path)
         if path.lower().endswith(".bin"):  # 置く番地がわからない
-            self.say(
-                tr("{name}は、.basに「# bin: 名前.bin &C300」と書いて読み込みます", name=name), 6
-            )
+            self.say(tr("app.load_write_bin_name", name=name), 6)
             return
         try:
             self.typer.add_text(open(path, encoding="utf-8").read())
         except (OSError, UnicodeDecodeError):
-            self.say(tr("{name}を読めません", name=name), 4)
+            self.say(tr("app.cannot_read_name", name=name), 4)
 
     def say(self, text: str, seconds: float = 3.0) -> None:
         self.status = text
         self.status_until = time.monotonic() + seconds
 
     def say_loaded(self, text: str, seconds: float = 3.0) -> None:
-        """読み込み終わりの知らせ。# pad: に読めない語があれば、その知らせも続けて出す"""
+        """読み込み終わりのメッセージ。# pad: に読めない語があれば、そのメッセージも続けて出す"""
         if self.pad_note:
             text, seconds = f"{text}\n{self.pad_note}", max(seconds, 8)
             self.pad_note = ""
@@ -2335,8 +2422,8 @@ class App:
     def open_menu(self) -> None:
         """プログラムの一覧を開く"""
         items = programs.scan()
-        if self.norom:  # ROMなしでは、ROMなしで使えるものだけ
-            items = [p for p in items if p.norom_ok]
+        if self.norom:  # ROMなしでは、ROMなしのBASICか作業欄だけで動かせるもの(読み込みと同じ)
+            items = [p for p in items if p.without_rom(basic=not self.bench_only)]
         self.menu = ProgramMenu(programs.for_model(items, self.m.model.name, self.m.writable))
         self._make_room()
 
@@ -2396,7 +2483,7 @@ class App:
 
     @staticmethod
     def reveal(path: str) -> None:
-        """置き場所をFinder(など)で開く"""
+        """プログラムのフォルダをFinder(など)で開く"""
         cmd = {"darwin": ["open"], "win32": ["explorer"]}.get(sys.platform, ["xdg-open"])
         try:
             subprocess.Popen(cmd + [path])
@@ -2407,30 +2494,30 @@ class App:
         self.typer.add_text(self.clipboard())
 
     def export_program(self) -> None:
-        """RAMにあるBASICのプログラムを、置き場所に.basのファイルとして書き出す"""
+        """RAMにあるBASICのプログラムを、プログラムのフォルダに.basのファイルとして書き出す"""
         if self.typer.scripted:
-            self.say(tr("打ち込みが終わってから書き出してください"))
+            self.say(tr("app.export_after_typing_has"))
             return
         prog = self.last_prog
         try:
             path = export_program(self.m, programs.user_dir(), prog)
         except OSError as e:
-            self.say(tr("書き出せません: {error}", error=e), 5)
+            self.say(tr("app.cannot_export", error=e), 5)
             return
         if path is None:
-            self.say(tr("書き出すプログラムがありません"))
+            self.say(tr("app.no_program_export"))
         else:
-            self.say(tr("{path}に書き出しました", path=_short(path)), 5)
+            self.say(tr("app.exported_path", path=_short(path)), 5)
 
     def save_tape(self, samples) -> None:
-        """CSAVEの音を、置き場所に「tape-日時.wav」として書き出す"""
+        """CSAVEの音を、プログラムのフォルダに「tape-日時.wav」として書き出す"""
         try:
             path = os.path.join(programs.user_dir(), f"tape-{time.strftime('%Y%m%d-%H%M%S')}.wav")
             tape.write_wav(path, samples)
         except OSError as e:
-            self.say(tr("テープの音を書き出せません: {error}", error=e), 5)
+            self.say(tr("app.cannot_write_tape_audio", error=e), 5)
             return
-        self.say(tr("テープの音を{path}に書き出しました", path=_short(path)), 6)
+        self.say(tr("app.tape_audio_written", path=_short(path)), 6)
 
     def save_state(self) -> None:
         """いまの状態(RAM、CPU、ポート、タイマ)を保存する"""
@@ -2438,34 +2525,26 @@ class App:
             os.makedirs(STATE_DIR, exist_ok=True)
             self.m.save_state(self.state_file, self._prog_info())
         except OSError as e:
-            self.say(tr("状態を保存できません: {error}", error=e), 5)
+            self.say(tr("app.cannot_save_state", error=e), 5)
             return
-        self.say(tr("状態を保存しました。{s}{c}Lで戻せます", c=CMD, s=SHIFT))
+        self.say(tr("app.state_saved_l_loads", c=CMD, s=SHIFT))
 
     def load_state(self, path: str | None = None) -> None:
         """保存した状態に戻す。pathがなければsave_stateの保存先から"""
         try:
             extra = self.m.load_state(path or self.state_file)
         except FileNotFoundError:
-            self.say(tr("保存した状態がありません"))
+            self.say(tr("app.no_saved_state"))
             return
         except (OSError, ValueError) as e:
-            self.say(tr("状態を読み込めません: {error}", error=e), 5)
+            self.say(tr("app.cannot_load_state", error=e), 5)
             return
         self._set_prog_info(extra)
-        self._restored(tr("保存した状態に戻しました"))
-
-    # 状態のファイルに書く、読み込んだプログラムの情報(書き出しと説明に使う)。元のファイルは
-    # 保存したあとで書き換えられるかもしれないので、場所ではなく中身を書いておく
-    PROG_TEXT = ("name", "title", "run", "mode", "setup", "help", "model")
-    PROG_LISTS = ("paths", "links")
+        self._restored(tr("common.state_loaded"))
 
     def _prog_fields(self, prog: programs.Program | None) -> dict | None:
-        if prog is None:
-            return None
-        fields = {k: getattr(prog, k) for k in (*self.PROG_TEXT, *self.PROG_LISTS, "pad")}
-        fields["ram"] = list(prog.ram) if prog.ram else None
-        return fields
+        """状態のファイルに書く、読み込んだプログラムの情報(programs.to_state)"""
+        return None if prog is None else programs.to_state(prog)
 
     def _prog_info(self) -> dict:
         info = {
@@ -2475,36 +2554,18 @@ class App:
         }
         info["bench"] = self.bench.save()
         # 使っている割り当て(保存していない変更も)と、その対象のプログラム
+        origin = self.pad_map.origin
         info["pad"] = {
-            "keys": self.pad_map.keys, "source": self.pad_map.source, "dirty": self.pad_dirty,
+            "keys": self.pad_map.keys, "dirty": self.pad_dirty,
+            # 出どころは、訳した文ではなくIDと値で書く(戻したときの言語で出す)
+            "source": origin.to_state() if isinstance(origin, Text) else origin,
             "program": self._prog_fields(self.pad_prog),
         }  # fmt: skip
         return info
 
     def _saved_prog(self, saved) -> programs.Program | None:
         """_prog_fieldsで書いたプログラムの情報を読む。おかしければNone"""
-        if not isinstance(saved, dict):
-            return None
-        text = {k: saved.get(k, "") for k in self.PROG_TEXT}
-        pad = saved.get("pad")  # 前の版の状態にはない
-        ram = saved.get("ram")  # 同じく
-        lists = {k: saved.get(k) for k in self.PROG_LISTS}
-        ram_ok = ram is None or (
-            isinstance(ram, list) and len(ram) == 2 and all(type(x) is int for x in ram)
-        )
-        if (
-            all(isinstance(v, str) for v in text.values())
-            and all(
-                isinstance(v, list) and all(isinstance(x, str) for x in v) for v in lists.values()
-            )
-            and (pad is None or isinstance(pad, str))
-            and ram_ok
-        ):
-            fields: dict[str, Any] = {**text, **lists, "pad": pad}
-            if ram is not None:
-                fields["ram"] = (ram[0], ram[1])
-            return programs.Program(**fields)
-        return None
+        return programs.from_state(saved)
 
     def _set_prog_info(self, info: dict | None) -> None:
         """_prog_infoで書いた情報に戻す。なければ、おかしければ、前に読み込んだプログラムの
@@ -2535,7 +2596,9 @@ class App:
                 if n in gamepad.ORDER and isinstance(k, str) and k in gamepad.KEY_NAMES
             }  # fmt: skip
             source = saved.get("source")
-            pad_map = gamepad.PadMap(keys, source if isinstance(source, str) else "")
+            # 前の版の状態は、訳した文で書いてある
+            origin = source if isinstance(source, str) else Text.from_state(source, PAD_SOURCES)
+            pad_map = gamepad.PadMap(keys, origin or "")
             return pad_map, saved.get("dirty") is True
         return self.pad_map_for(prog), False
 
@@ -2561,41 +2624,55 @@ class App:
                 shot = shot.subsurface(self.view_box())
             pygame.image.save(opaque(shot), path)
         except (OSError, pygame.error) as e:
-            self.say(tr("画面の画像を保存できません: {error}", error=e), 5)
+            self.say(tr("app.cannot_save_screenshot", error=e), 5)
             return
-        self.say(tr("{path}に保存しました", path=_short(path)))
+        self.say(tr("app.saved_path", path=_short(path)))
 
     # ---- 録画 ----
     def toggle_recording(self) -> None:
-        """録画を始める。録画中なら止めて、置き場所に「rec-日時.mp4」として保存する"""
+        """録画を始める(前に選んだ形で)。録画中なら止めて、プログラムのフォルダに
+        「rec-日時.mp4」として保存する"""
         if self.recorder is None:
-            prog = self.last_prog
-            title = prog.title if prog else f"SHARP {self.m.model.title}"
-            sub = f"SHARP {self.m.model.title} / sc61box {_version()}"
-            path = os.path.join(programs.user_dir(), f"rec-{time.strftime('%Y%m%d-%H%M%S')}.mp4")
-            try:
-                size = (self.panel.out_w, self.panel.out_h)
-                self.recorder = recorder.Recorder(path, title, sub, size, self.panel.lcd_box())
-            except (OSError, ImportError) as e:
-                self.say(tr("録画を始められません: {error}", error=e), 6)
-                return
-            self.rec_buzzer = Buzzer()
-            self.rec_print_sound = PrinterSound()
-            self.say(
-                tr("録画を始めました。止めて保存するときは、もう一度{s}{c}Rを押します",
-                   c=CMD, s=SHIFT), 4
-            )  # fmt: skip
+            self.start_recording(self.rec_shape)
             return
         rec, self.recorder = self.recorder, None
         self.rec_paused = False
-        self.say(tr("録画を保存しています…"), 2)
+        self.say(tr("app.saving_recording"), 2)
         try:
             path = rec.close()
         except OSError as e:
-            self.say(tr("録画を保存できません: {error}", error=e), 6)
+            self.say(tr("app.cannot_save_recording", error=e), 6)
             return
         secs = round(rec.seconds)
-        self.say(tr("録画を{path}に保存しました({n}秒)", path=_short(path), n=secs), 6)
+        self.say(tr("app.recording_saved_seconds", path=_short(path), n=secs), 6)
+
+    @property
+    def rec_shape(self) -> str:
+        """録画の形(recorder.SHAPES)。前に選んだもの(なければ液晶の拡大と本体)"""
+        shape = self._view_pref("rec_shape")
+        return shape if isinstance(shape, str) and shape in recorder.SHAPES else "both"
+
+    def start_recording(self, shape: str) -> None:
+        """形shape(recorder.SHAPES)で録画を始め、次に⇧⌘Rで始めるときのために形を覚える"""
+        if self.recorder is not None:
+            return
+        prog = self.last_prog
+        title = prog.title if prog else self.m.model.title
+        sub = f"{self.m.model.title} / sc61box {_version()}"
+        path = os.path.join(programs.user_dir(), f"rec-{time.strftime('%Y%m%d-%H%M%S')}.mp4")
+        try:
+            size = (self.panel.out_w, self.panel.out_h)
+            self.recorder = recorder.Recorder(path, title, sub, size, self.panel.lcd_box(), shape)
+        except (OSError, ImportError) as e:
+            self.say(tr("app.cannot_start_recording", error=e), 6)
+            return
+        self._save_view(rec_shape=shape)
+        self.rec_buzzer = Buzzer()
+        self.rec_print_sound = PrinterSound()
+        self.say(
+            tr("app.recording_press_r_again",
+               c=CMD, s=SHIFT), 4
+        )  # fmt: skip
 
     def toggle_pause(self) -> None:
         """録画を一時停止する。一時停止中なら続きを録る(止めているあいだは動画に入らない)"""
@@ -2604,7 +2681,7 @@ class App:
         self.rec_paused = not self.rec_paused
         if not self.rec_paused:
             self.rec_buzzer.hold(self.m.pc_out >> 4)
-        self.say(tr("録画を一時停止しました") if self.rec_paused else tr("録画を続けます"), 2)
+        self.say(tr("app.recording_paused") if self.rec_paused else tr("app.recording_resumed"), 2)
 
     def record_frame(self, surf, c0: int, live: bool) -> None:
         """1フレームぶんの絵と音を録画に足す。liveでないとき(読み込み中、電源が切れている
@@ -2622,7 +2699,7 @@ class App:
         if rec.error:
             self.recorder = None
             rec.abort()
-            self.say(tr("録画を止めました: {error}", error=rec.error), 6)
+            self.say(tr("app.recording_stopped", error=rec.error), 6)
 
     def _font(self) -> pygame.font.Font:
         if self.font is None:
@@ -2717,7 +2794,7 @@ class App:
         speed = self.turbo * (8 if typing else 1)
         c0 = m.cpu.cycles
         m.sound_events.clear()
-        if self.halted or (self.norom and self.bench.state != "run"):
+        if self.halted or (self.bench_only and self.bench.state != "run"):
             speed = 0
         elif self.fast and self.typer.busy and not self.boot_frames:
             # 読み込み中は時計に合わせず、1フレームの時間いっぱいまで回す
@@ -2725,7 +2802,7 @@ class App:
             end = time.perf_counter() + 0.8 / FPS
             while time.perf_counter() < end and self.typer.busy:
                 self.typer.step()
-                # 打ったCALLでマシン語が動き出せば、止める所で止まる(読み込みの途中でも)
+                # 打ったCALLでマシン語が動き出せば、ブレークポイントで止まる(読み込みの途中でも)
                 if self._run_cpu(CLOCK // 200):
                     break
         elif self.fast:
@@ -2733,7 +2810,23 @@ class App:
             if self.load_help:
                 self.say_loaded(self.load_help, 20)
             else:
-                self.say_loaded(tr("{name}を読み込みました", name=self.loading))
+                self.say_loaded(tr("app.loaded", name=self.loading))
+        basic = m.basic
+        if basic is not None and basic.notice is not None:
+            self.say(
+                tr("app.rom_less_basic_has",
+                   addr=basic.notice), 8,
+            )  # fmt: skip
+            self.warning = Text("app.routine_rom_address_not", addr=basic.notice)
+            basic.notice = None
+        if basic is not None and basic.stalled is not None:
+            r = basic.stalled
+            self.say(
+                tr("app.stopped_stand_kept_waiting", name=r.name, addr=r.addr,
+                   file=os.path.basename(r.source) if r.source else tr("common.builtin")), 8,
+            )  # fmt: skip
+            self.warning = routines.Stalled(r).text
+            basic.stalled = None
         speaker = self.speaker if bool(speed) and not typing else None  # 鳴らすときだけ
         adjust = speed_adjust(speaker.level()) if speaker is not None else 1
         self.paper.tick()
@@ -2757,10 +2850,11 @@ class App:
             self.speaker.clear()
         if m.tape is not None and m.tape.done(m.cpu.cycles):
             m.tape = None
-            self.say(tr("テープが終わりました"))
+            self.say(tr("app.end_tape"))
         pressed = set(m.held) | ({"BRK"} if m.brk else set())
         surf = self.panel.draw(
-            m.columns(), m.symbols(), m.display_on(), m.mode, pressed, powered=m.power,
+            m.columns(), m.symbols(), m.display_on() or self.lcd_any_on, m.mode, pressed,
+            powered=m.power,
             duty=self.lcd_duty,
         )  # fmt: skip
         if self.recorder is not None and not self.rec_paused:
@@ -2772,8 +2866,8 @@ class App:
         m = self.m
         if self.boot_frames:
             self.boot_frames -= 1
-            if self.boot_frames == 0 and self.load:
-                blocks = parse_hexdump(self.load)
+            if self.boot_frames == 0 and self.load_blocks is not None:
+                blocks, self.load_blocks = self.load_blocks, None
                 self.write_dump(blocks)
                 self.bench.set_start(blocks)
             if self.boot_frames == 0 and self.pending:
@@ -2809,6 +2903,7 @@ class App:
         self.rush_spans = []
         # このフレームのあいだに液晶RAMに書いたものを記録する(_lcd_duty)
         start = m.cpu.cycles
+        self.lcd_was_on = m.display_on()
         m.lcd_trace = []
         parts = SUBSTEPS if poll is not None else 1
         done, restored = True, False
@@ -2843,8 +2938,8 @@ class App:
                 mark = m.cpu.cycles
                 poll()
                 # 合間の操作で、一時停止、状態の復元(サイクルが変わる)、作業欄の実行の中止、
-                # 窓を閉じる操作があれば、復元前の目標では動かさない
-                stopped = self.norom and self.bench.state != "run"
+                # ウィンドウを閉じる操作があれば、復元前の目標では動かさない
+                stopped = self.bench_only and self.bench.state != "run"
                 restored = m.cpu.cycles != mark
                 if self.closing or self.halted or stopped or restored:
                     done = False
@@ -2860,16 +2955,48 @@ class App:
     ) -> dict[int, list[float]]:
         """液晶RAMに書いた記録から、このフレーム(サイクルstart〜いま)のあいだに中身が
         変わった列の、各ドット(ビット0〜7)が点いていた時間の割合を求める。書き換えの
-        途中の短い中身は、その短さの分だけ薄く出る"""
-        end = self.m.cpu.cycles
+        途中の短い中身は、その短さの分だけ薄く出る。液晶を消していたあいだ(Cポートの
+        ビット0。ROMはそのあいだ液晶RAMを作業に使う)は点いていないとみる。液晶を点けたり
+        消したりしたフレームでは、すべての列を求める"""
+        m = self.m
+        end = m.cpu.cycles
         total = end - start
+        self.lcd_any_on = m.display_on()
         if not trace or total <= 0:
             return {}
         cols = self.lcd_cols
+        # 液晶を点けていたあいだ
+        spans: list[tuple[int, int]] = []
+        on_since = start if self.lcd_was_on else None
+        toggled = False
+        for c, a, _old, new in trace:
+            if a != -1:
+                continue
+            toggled = True
+            if new and on_since is None:
+                on_since = c
+            elif not new and on_since is not None:
+                spans.append((on_since, c))
+                on_since = None
+        if on_since is not None:
+            spans.append((on_since, end))
+        self.lcd_any_on = bool(spans) and m.power
+
+        def shown(c0: int, c1: int) -> int:
+            return sum(max(0, min(c1, b) - max(c0, a)) for a, b in spans)
+
         cur: dict[int, tuple[int, int]] = {}  # 番地: (いまの値, その値になったサイクル)
+        if toggled:
+            mem = m.mem
+            for _c, a, old, _new in reversed(trace):  # フレームの初めの値
+                if a in cols:
+                    cur[a] = (old, start)
+            for a in cols:
+                cur.setdefault(a, (mem[a], start))
         lit: dict[int, list[int]] = {}
 
-        def add(a: int, v: int, n: int) -> None:
+        def add(a: int, v: int, c0: int, c1: int) -> None:
+            n = shown(c0, c1)
             if v and n > 0:
                 acc = lit.setdefault(a, [0] * 8)
                 for b in range(8):
@@ -2880,19 +3007,19 @@ class App:
             if a not in cols:
                 continue
             v, since = cur.get(a, (old, start))
-            add(a, v, c - since)
+            add(a, v, since, c)
             cur[a] = (new, c)
         duty: dict[int, list[float]] = {}
         for a, (v, since) in cur.items():
-            add(a, v, end - since)
+            add(a, v, since, end)
             share = [n / total for n in lit.get(a, [0] * 8)]
             for i in cols[a]:
                 duty[i] = share
         return duty
 
     def _run_cpu(self, cycles: int) -> bool:
-        """CPUを最大cyclesサイクル動かす。作業欄の止める所、呼び出しの戻り先、ROMなしでは
-        RAMの外とROMのルーチンの代わりも、ここで調べる(本体を動かすところは、すべてここを
+        """CPUを最大cyclesサイクル動かす。作業欄のブレークポイント、呼び出しの戻り先、ROMなしでは
+        RAMの外と代替ROMルーチンも、ここで調べる(本体を動かすところは、すべてここを
         通す)。作業欄の実行が止まったらTrue"""
         m, bench = self.m, self.bench
         if bench.state == "run" and bench.pass_pc is not None:
@@ -2902,24 +3029,24 @@ class App:
             stopped = bench.state != "run"
         else:
             guard = bench.guard() if bench.state == "run" and bench.needs_guard() else None
-            # 作業欄を出しているあいだは、実行した番地を覚える(逆アセンブルの命令の印)。
-            # しまっていれば覚えない(ROMのBASICを、印をつけずに速く動かす)
+            # 作業欄を出しているあいだは、実行した番地を覚える(逆アセンブルの命令のマーク)。
+            # しまっていれば覚えない(ROMのBASICを、マークをつけずに速く動かす)
             seen = bench.executed if self.pane_open else None
-            # 止まっても、ROMのルーチンの代わりを済ませただけなら(trapped)続ける
+            # 止まっても、代替ROMルーチンを済ませただけなら(trapped)続ける
             stopped = m.run(cycles, guard, seen) and not bench.trapped()
         if stopped:
-            self._bench_stopped()  # 終わったか、止める所かRAMの外で一時停止した
+            self._bench_stopped()  # 終わったか、ブレークポイントかRAMの外で一時停止した
         return stopped
 
     def _bench_stopped(self) -> None:
-        """作業欄の実行が止まった(終わったか、止める所などで一時停止した)。押しているキーを
+        """作業欄の実行が止まった(終わったか、ブレークポイントなどで一時停止した)。押しているキーを
         離す。ROMのある本体で作業欄をしまっていれば、止まった所を見せるために出す"""
         self.release_all()
-        if not self.norom and self.bench.state == "pause":
+        if not self.bench_only and self.bench.state == "pause":
             self.toggle_pane(True)
 
     def _show(self, surf: pygame.Surface) -> None:
-        """本体の絵を窓に貼り、一覧や知らせを重ねる"""
+        """本体の絵をウィンドウに貼り、一覧やメッセージを重ねる"""
         self.check_printer()
         self._track_window()
         font = self._font()
@@ -2930,11 +3057,11 @@ class App:
         ):
             # 再開・録画・言語の切り替えなどでボタンが広がったときも、全部入る幅にする。
             self._refit()
-        self._open_window()  # 一覧やメニューの開け閉めで、液晶だけの細い窓の高さが変わる
+        self._open_window()  # 一覧やメニューの開け閉めで、液晶だけの細いウィンドウの高さが変わる
         win = out = self.window
         content = self._window_size()
-        copy = False  # 中身を別の面に描いて窓にコピーするか(窓が中身より小さいとき)
-        if win.get_size() != content:  # 利用者が変えた窓。中身はまんなかに、まわりは暗く
+        copy = False  # 中身を別の面に描いてウィンドウにコピーするか(ウィンドウが中身より小さいとき)
+        if win.get_size() != content:  # 利用者が変えたウィンドウ。中身はまんなかに、まわりは暗く
             win.fill((20, 21, 24))
             ox, oy = self.origin
             copy = content[0] + ox > win.get_width() or content[1] + oy > win.get_height()
@@ -2947,7 +3074,7 @@ class App:
             body.blit(surf, (0, 0))
         else:
             # pygame 2.6.1のGENERICの縦拡大は、描画先の行の余白(pitch)を飛ばさない。
-            # 窓の一部へ直接書くと絵が斜めに流れるので、独立した面に拡大してから貼る。
+            # ウィンドウの一部へ直接書くと絵が斜めに流れるので、独立した面に拡大してから貼る。
             if self.scaled_body is None or self.scaled_body.get_size() != (w, h):
                 self.scaled_body = pygame.transform.smoothscale(surf, (w, h))
                 # 本体の絵は不透明。Cocoaの未使用alpha=0をsmoothscaleが透明として
@@ -2962,7 +3089,7 @@ class App:
             where = []
             if self.printout.file:
                 folder, name = os.path.split(_short(self.printout.file))
-                where = [tr("保存先(クリックで開く)"), folder + os.sep, name]
+                where = [tr("app.saved_click_open"), folder + os.sep, name]
             self.paper.draw(out, top, rows[: len(rows) - self.paper_back], where)
             top += self.paper.height
         self.bar.buttons = self.bar_buttons()
@@ -2981,9 +3108,9 @@ class App:
             )  # fmt: skip
             top += self.pad_panel.height
         self.bar.draw(left, font, top, self.bar_info())
-        notice = body  # 知らせを出す場所
+        notice = body  # メッセージを出す場所
         if self.pane_open:
-            # 作業欄は右に置き、本体と操作欄の下のあいたところに知らせを出す
+            # 作業欄は右に置き、本体と操作欄の下のあいたところにメッセージを出す
             below = top + BAR_H
             if below < out.get_height():
                 out.fill((20, 21, 24), (0, below, w, out.get_height() - below))
@@ -2993,22 +3120,26 @@ class App:
         if self.fast:
             done = int(100 * min(1.0, max(0.0, 1 - len(self.typer.queue) / self.load_total)))
             if self.load_typing:
-                text = tr("{name}を打ち込み中… {pct}%(Escでやめる)", name=self.loading, pct=done)
+                text = tr("app.typing_esc_stops", name=self.loading, pct=done)
             else:
-                text = tr("{name}を読み込み中… {pct}%(Escでやめる)", name=self.loading, pct=done)
+                text = tr("app.loading_esc_stops", name=self.loading, pct=done)
             draw_status(notice, font, text)
         elif self.status and time.monotonic() < self.status_until:
             draw_status(notice, font, self.status)
         if self.recorder is not None:
             draw_recording(out, font, self.recorder.seconds, self.rec_paused)
+        self.warning_rect = pygame.Rect(0, 0, 0, 0)
         if self.halted and not self.pane_open:  # 作業欄を出していれば、作業欄に出る
-            draw_halted(out, font, tr("実行を一時停止中({c}Pで再開)", c=CMD))
+            draw_halted(out, font, tr("app.paused_p_resumes", c=CMD))
+        elif self.warning:
+            self.warning_rect = draw_warning(out, font, self.warning)
         if copy:
             win.blit(out, self.origin)
-        # キーの説明、一覧、メニューは窓全体に描く(液晶だけの窓では、中身より広い所を使う)
+        # キーの説明、一覧、メニューはウィンドウ全体に描く(液晶だけのウィンドウでは、中身より広い
+        # 所を使う)
         if self.help:
             self.help -= 1
-            draw_help(win, font, help_lines(self.norom, self.is1350))
+            draw_help(win, font, help_lines(self.bench_only, self.is1350))
         if self.menu is not None:
             self.menu.draw(win, font, self.m.model.name, _short(programs.user_dir()))
         if self.popup is not None:
@@ -3040,16 +3171,20 @@ class App:
             return True
         return self.bench_view.min_height(True) <= dh - 120
 
-    def _save_view(self, lang: str | None = None) -> None:
+    def _save_view(self, lang: str | None = None, rec_shape: str | None = None) -> None:
         """作業欄の内部RAMを開いたか閉じたか、ROMのある本体で作業欄を出したかを覚えておく
-        (次に起動したときも同じにする)。langはメニューで選んだ画面の言語"""
+        (次に起動したときも同じにする)。langはメニューで選んだ画面の言語、rec_shapeは録画の形"""
         prefs = self._view_prefs()
         prefs["show_iram"] = self.bench_view.show_iram
-        if not self.norom:
+        if self.panel.can_pack:  # PC-1350は詰めるすきまがないので、ほかの機種の設定を残す
+            prefs["packed_lcd"] = self.panel.packed
+        if not self.bench_only:
             # 液晶だけのあいだは作業欄を隠しているだけなので、隠す前のほうを覚える
             prefs["show_pane"] = self.pane_before_lcd if self.lcd_only else self.pane_open
         if lang:
             prefs["lang"] = lang
+        if rec_shape:
+            prefs["rec_shape"] = rec_shape
         try:
             os.makedirs(STATE_DIR, exist_ok=True)
             with open(view_file(), "w", encoding="utf-8") as f:
@@ -3063,14 +3198,14 @@ class App:
         b = self.bench
         if self.lcd_only:
             return False
-        if self.norom:
+        if self.bench_only:
             return b.state != "run"
         return self.pane_open and (self.bench_view.focus or b.state == "pause")
 
     def toggle_pane(self, on: bool | None = None) -> None:
-        """ROMのある本体で、マシン語の作業欄を出すかしまう(窓の幅が変わる)。液晶だけの
+        """ROMのある本体で、マシン語の作業欄を出すかしまう(ウィンドウの幅が変わる)。液晶だけの
         あいだは出せない"""
-        if self.norom:
+        if self.bench_only:
             return
         on = not self.pane_open if on is None else on
         if on == self.pane_open or (on and self.lcd_only):
@@ -3088,7 +3223,7 @@ class App:
         if isinstance(info, dict):
             info["state"] = "edit"  # CPUは起動し直しているので、続きからは動かせない
             b.restore(info, "")
-        elif self.norom:  # ROMのある本体のRAMにはBASICなども入っているので、推し量らない
+        elif self.bench_only:  # ROMのある本体のRAMにはBASICなども入っているので、推定しない
             b.mark_nonzero()
 
     def close(self) -> None:
@@ -3096,8 +3231,11 @@ class App:
         if self.save_ram:
             if self.m.power and not self.norom:
                 self.m.power_off()
-            # 作業欄の開始番地、止める所、書いた範囲も、RAMと一緒に覚えておく。保存できなくても
-            # (置き場所に同じ名前のファイルがあるなど)、録画の保存と後始末は続ける
+            elif self.m.basic is not None:
+                self.m.basic.mark_off()  # ROMのある本体でも、このRAMを読めるように
+            # 作業欄の開始番地、ブレークポイント、書いた範囲も、RAMと一緒に覚えておく。保存
+            # できなくても(プログラムのフォルダに同じ名前のファイルがあるなど)、録画の保存と
+            # 後始末は続ける
             try:
                 os.makedirs(STATE_DIR, exist_ok=True)
                 self.m.save_ram(self.ram_file)
@@ -3105,7 +3243,7 @@ class App:
                     info = {**self.bench.save(), "state": "edit", "ram_top": self.m.model.ram[1]}
                     json.dump(info, f)
             except OSError as e:
-                print(tr("RAMを保存できません: {error}", error=e), file=sys.stderr)
+                print(tr("app.cannot_save_ram", error=e), file=sys.stderr)
         if self.recorder is not None:
             self.toggle_recording()  # 録画中に閉じたら、そこまでを保存する
         if self.speaker is not None:
@@ -3125,14 +3263,14 @@ class App:
                 self._pump()
                 self.frame(poll)
                 clock.tick(FPS * SUBSTEPS)
-        finally:  # 思わぬ誤りで止まっても、RAMと印字は保存する
+        finally:  # 予期しない例外で止まっても、RAMと印字は保存する
             self.close()
 
     def _pump(self) -> None:
         """たまっているイベントを本体に届ける。閉じる操作があればclosingにする"""
         try:
             events = pygame.event.get()
-        except (KeyError, SystemError):  # パッドを外したときのpygameの誤り(Pads.sync)
+        except (KeyError, SystemError):  # パッドを外したときのpygameの例外(Pads.sync)
             events = []
             self.pad_sync()
         for ev in events:
@@ -3149,62 +3287,75 @@ def _show_version(value: bool) -> None:
 def make_cli() -> typer.Typer:
     """コマンドラインの入口。オプションの説明は、作ったときの言語で書く(cliは、--langと
     SC61BOX_LANGなどで言語を決めてから作る)"""
-    app = typer.Typer(
-        add_completion=False, help=tr("SHARP PC-1251/PC-1245/PC-1261/PC-1350エミュレータ")
-    )
+    app = typer.Typer(add_completion=False, help=tr("app.sharp_pc_1251_pc"))
 
     @app.command()
     def main(
-        program: str | None = typer.Argument(
-            None, help=tr("読み込むプログラム(.bas/.hexのパスか、置き場所にある名前)")
-        ),
-        run: bool = typer.Option(False, "--run", help=tr("読み込んだあと実行する")),
-        scale: float = typer.Option(1.0, help=tr("拡大率")),
-        type_: str | None = typer.Option(
-            None, "--type", help=tr("起動後にこのファイルの中身をキー入力する")
-        ),
-        load: str | None = typer.Option(None, help=tr("16進ダンプ(番地 データ)をRAMに書き込む")),
-        fresh: bool = typer.Option(False, help=tr("保存したRAMを読まず、終了時にも保存しない")),
-        mute: bool = typer.Option(False, help=tr("音を出さない")),
-        persist: float = typer.Option(1.0, help=tr("液晶の残像の強さ(0で残像なし)")),
+        program: str | None = typer.Argument(None, help=tr("app.program_load_path_bas")),
+        run: bool = typer.Option(False, "--run", help=tr("app.run_after_loading")),
+        scale: float = typer.Option(1.0, help=tr("app.window_scale")),
+        type_: str | None = typer.Option(None, "--type", help=tr("app.type_contents_file_after")),
+        load: str | None = typer.Option(None, help=tr("app.write_hex_dump_address")),
+        fresh: bool = typer.Option(False, help=tr("app.do_not_load_saved")),
+        mute: bool = typer.Option(False, help=tr("app.no_sound")),
+        persist: float = typer.Option(1.0, help=tr("app.strength_lcd_afterglow_0")),
         export: str | None = typer.Option(
             None,
-            help=tr("保存したRAMのBASICのプログラムを、このフォルダに.basで書き出して終わる"),
+            help=tr("app.export_basic_program_saved"),
         ),
         model: str = typer.Option(
             "1251",
-            help=tr(
-                "機種(1250、1251、1255、1245、1260、1261、1262、1350)。ROMはcpu-機種.romと"
-                "bas-機種.rom(1250と1255は1251の、1260〜1262はどれも1260のROMを使う)"
-            ),
+            help=tr("app.model_1250_1251_1255"),
         ),
-        card: int = typer.Option(0, help=tr("PC-1350に差すRAMカードの大きさ(KB)。0、8、16")),
+        card: int = typer.Option(0, help=tr("app.size_pc_1350_ram")),
         overseas: bool = typer.Option(
             False,
-            help=tr("PC-1350を輸出向けの配線で動かす(カナの代わりに英小文字、¥の代わりに\\)"),
+            help=tr("app.run_pc_1350_wired"),
         ),
-        numpad: bool = typer.Option(
-            False, help=tr("矢印キーを数字キーの8・2・4・6として押す(⌘K/Ctrl+Kで切り替え)")
-        ),
+        numpad: bool = typer.Option(False, help=tr("app.arrow_keys_press_number")),
         lcd: bool = typer.Option(
-            False, "--lcd", help=tr("本体の絵を出さず、液晶だけを見せる(窓の大きさを変えられる)")
+            False,
+            "--lcd",
+            help=tr("app.show_only_lcd_without"),
         ),
-        tape_: str | None = typer.Option(
-            None, "--tape", help=tr("カセットの音(wav)をセットする。CLOAD・CLOAD Mで読み込める")
-        ),
-        state: str | None = typer.Option(None, help=tr("保存した状態(⇧⌘Sで書いたもの)から始める")),
+        tape_: str | None = typer.Option(None, "--tape", help=tr("app.insert_cassette_audio_wav")),
+        state: str | None = typer.Option(None, help=tr("app.start_saved_state_written")),
         norom: bool = typer.Option(
             False,
             "--norom",
-            help=tr("ROMを使わず、マシン語の作業欄で動かす(ROMがなければ自動でこうなる)"),
+            help=tr("app.run_without_rom_rom"),
+        ),
+        no_basic: bool = typer.Option(
+            False,
+            "--no-basic",
+            help=tr("app.without_rom_run_only"),
         ),
         lang: str | None = typer.Option(
             None,
             "--lang",
-            help=tr("画面の言語(jaかen)。なければSC61BOX_LANG、メニューで選んだもの、ロケールの順"),
+            help=tr("app.display_language_ja_en"),
+        ),
+        check_routines: str | None = typer.Option(
+            None,
+            "--check-routines",
+            help=tr("app.compare_rom_routine_stand"),
+        ),
+        list_routines: bool = typer.Option(
+            False,
+            "--list-routines",
+            help=tr("app.list_rom_routine_stand"),
+        ),
+        new_routine: str | None = typer.Option(
+            None,
+            "--new-routine",
+            help=tr("app.create_file_start_rom"),
         ),
         version_: bool = typer.Option(
-            False, "--version", callback=_show_version, is_eager=True, help=tr("版を出して終わる")
+            False,
+            "--version",
+            callback=_show_version,
+            is_eager=True,
+            help=tr("app.print_version_exit"),
         ),
     ) -> None:
         args = Options(
@@ -3212,6 +3363,7 @@ def make_cli() -> typer.Typer:
             card=card,
             overseas=overseas,
             norom=norom,
+            basic=not no_basic,
             scale=scale,
             persist=persist,
             fresh=fresh,
@@ -3226,13 +3378,20 @@ def make_cli() -> typer.Typer:
             tape=tape_,
             state=state,
         )
-        start(args, export)
+        start(args, export, check_routines, new_routine, list_routines)
 
     return app
 
 
-def start(args: Options, export: str | None = None) -> None:
+def start(
+    args: Options,
+    export: str | None = None,
+    check_routines: str | None = None,
+    new_routine: str | None = None,
+    list_routines: bool = False,
+) -> None:
     """オプションを確かめて起動する。exportがあれば、保存したRAMのBASICを書き出して終わる。
+    check_routinesとnew_routineは、代替ROMルーチンを比べるか書き始めて終わる(_routine_tool)。
     前の名前のデータのフォルダ(~/.pc1251)があれば、新しい名前(~/.sc61box)に移す"""
     global STATE_DIR
     old = paths.old_data_dir()
@@ -3240,36 +3399,95 @@ def start(args: Options, export: str | None = None) -> None:
         args.moved_data = "~/" + os.path.basename(old)
     STATE_DIR = paths.data_dir()
     if args.lang is not None and args.lang not in i18n.LANGUAGES:
-        typer.echo(tr("言語はjaかenです"), err=True)
+        typer.echo(tr("app.language_must_ja_en"), err=True)
         raise typer.Exit(2)
     i18n.set_language(i18n.choose(args.lang, App._view_prefs().get("lang")))
     model, card = args.model, args.card
     if model not in MODELS:
-        typer.echo(tr("機種は{models}のどれかです", models=tr("、").join(sorted(MODELS))), err=True)
+        typer.echo(
+            tr("app.model_must_one", models=tr("common.ideographic_comma").join(sorted(MODELS))),
+            err=True,
+        )
         raise typer.Exit(2)
     if card not in (0, 8, 16):
-        typer.echo(tr("RAMカードの大きさは0、8、16のどれかです"), err=True)
+        typer.echo(tr("app.ram_card_size_must"), err=True)
         raise typer.Exit(2)
     if MODELS[model].family != "1350":
         args.card = card = 0
+    for line in routines.load_user():
+        typer.echo(line, err=True)
+    if check_routines is not None or new_routine is not None or list_routines:
+        _routine_tool(model, check_routines, new_routine, list_routines)
+        return
     if export is not None:
-        try:
-            m = new_machine(model, card)
-        except RomNotFound as e:
-            typer.echo(str(e), err=True)
-            raise typer.Exit(1) from e
-        apply_ram_top(m, saved_info(ram_file(model, card)))
-        if not m.load_ram(ram_file(model, card)):
-            typer.echo(tr("{path}がありません", path=ram_file(model, card)), err=True)
+        # 起動のときと同じにROMを使うかを決め、そのときに保存するRAMのファイルを読む
+        m, norom = open_machine(model, card, args.overseas, args.norom, args.basic)
+        saved = ram_file(model, card, norom)
+        apply_ram_top(m, saved_info(saved))
+        if not m.load_ram(saved):
+            typer.echo(tr("app.does_not_exist", path=saved), err=True)
             raise typer.Exit(1)
         path = export_program(m, export)
-        typer.echo(path or tr("書き出すプログラムがありません"))
+        typer.echo(path or tr("app.no_program_export"))
         return
     try:
         App(args).run()
-    except (RomNotFound, FileNotFoundError) as e:
+    except (RomNotFound, FileNotFoundError, DumpError) as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(1) from e
+
+
+def _routine_tool(model: str, check: str | None, new: str | None, show: bool = False) -> None:
+    """--list-routinesで一覧を出すか、--new-routineでファイルを作るか、--check-routinesでROMの
+    ある本体と比べる"""
+    if routines.family_of(model) is None:
+        typer.echo(tr("common.model_has_no_rom", model=model), err=True)
+        raise typer.Exit(2)
+    if show:
+        typer.echo(routine_list_text(model))
+        return
+    if new is not None:
+        at, _, name = new.partition(":")
+        try:
+            addr = int(at.strip().removeprefix("&").removeprefix("0x"), 16)
+            path = routines.write_template(model, addr, name.strip())
+        except FileExistsError as e:
+            typer.echo(tr("app.already_exists", path=e.filename), err=True)
+            raise typer.Exit(1) from e
+        except ValueError as e:
+            typer.echo(tr("app.write_address_hex_name", text=new), err=True)
+            raise typer.Exit(2) from e
+        typer.echo(path)
+        return
+    assert check is not None
+    try:
+        reports = routinecheck.check(model, check)
+    except ValueError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(2) from e
+    except RomNotFound as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1) from e
+    if not reports:
+        typer.echo(tr("app.no_stand_ins_compare", folder=routines.user_folder()))
+        return
+    typer.echo(routinecheck.report_text(reports))
+    if not all(r.ok for r in reports):
+        raise typer.Exit(1)
+
+
+def routine_list_text(model: str) -> str:
+    """--list-routinesの一覧(番地、名前、使うか、書いたファイル、使わない理由)"""
+    lines = []
+    for r, why in routines.listing(model):
+        where = tr("common.builtin") if r.builtin else r.source
+        mode = f" {r.mode}" if r.mode else ""
+        if why:
+            lines.append(tr("app.addr_name_mode_where", addr=r.addr, name=r.name,
+                            mode=mode, where=where, why=why))  # fmt: skip
+        else:
+            lines.append(f"OK  {r.addr:04X} {r.name}{mode} {where}")
+    return "\n".join(lines)
 
 
 def _asked_language(argv: list[str]) -> str | None:

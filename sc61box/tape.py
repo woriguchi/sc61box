@@ -185,7 +185,7 @@ def tape_name(name: str) -> str:
     return out or "PROG"
 
 
-GAP = 32  # ダンプの塊のあいだがこれ以下なら、すき間ごと1本のテープにする
+GAP = 32  # ダンプのブロックのあいだがこれ以下なら、すき間ごと1本のテープにする
 
 
 def merge_ranges(blocks: list[tuple[int, bytes]]) -> list[tuple[int, int]]:

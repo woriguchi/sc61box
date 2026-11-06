@@ -1,6 +1,6 @@
 """圧電ブザーの音と、音の出力先
 
-Cポートのビット6〜4で出力が決まる(POPCOMの講座の表7、PockEmulのcompute_xout)。
+Cポートのビット6〜4で出力が決まる。
 
     0, 4  LOW        1, 5  HIGH
     2     2kHzの発振  3     4kHzの発振
@@ -23,7 +23,7 @@ from .machine import CLOCK
 
 RATE = 44100  # 22050Hzでは方形波の高調波の折り返しが耳につく
 AMP = 9000
-# 圧電素子は低音を返さない。50Hzと500Hzから下を一次のハイパスで切る。500Hzのほうは、出力を
+# 圧電素子は低音を返さない。50Hzと500Hzから下を一次のハイパスで切る。500Hzのハイパスは、出力を
 # HIGHにしたまま数ms置いたときの段差(PC-1350のROMが計算のたびにする)を小さな音にするため
 HPF = 1.0 - 2 * math.pi * 50 / RATE
 HPF2 = 1.0 - 2 * math.pi * 500 / RATE
@@ -46,7 +46,7 @@ class Buzzer:
 
     def hold(self, mode: int) -> None:
         """サンプルを作らずに時間が進んだとき(早送り中など)に呼び、modeのまま落ち着いた状態に
-        する。次にサンプルを作り始めたときに、前の状態との差で1回鳴らないように"""
+        する。次にサンプルを作り始めたときに、前の状態との差で音が1回鳴るのを防ぐため"""
         self.mode = mode
         self.x_prev = 1.0 if mode in (1, 5) else 0.0 if mode in OSC_HALF else -1.0
         self.y = self.y2 = self.lp = 0.0
@@ -124,9 +124,9 @@ class Buzzer:
 
 # ---- プリンタの音 ----
 # 感熱プリンタ(CE-126P)の音は、紙を送るステッピングモータのステップの連なり。ステップごとに
-# 短い雑音を入れ、3つの共振(周波数、減衰、大きさ)で色をつける。値はCE-126Pの録音に合わせた
-# (ステップの速さは自己相関、共振は帯域ごとの強さが録音と同じになる組み合わせを探した)。
-# 紙が動いているあいだ鳴らす。印字の速さ(1行0.96秒、行のあいだ0.06秒)も同じ録音から
+# 短い雑音を入れ、3つの共振(周波数、減衰、大きさ)で音色をつける。値はCE-126Pの録音と比べて
+# 決めた(ステップの速さは自己相関から求め、共振は帯域ごとの強さが録音と同じになる組み合わせを
+# 探した)。紙が動いているあいだ鳴らす。印字の速さ(1行0.96秒、行のあいだ0.06秒)も同じ録音で測った
 PRINT_STEP = RATE // 147  # ステップの間隔(サンプル)
 PRINT_BURST = 10  # ステップごとに入れる雑音の長さ(サンプル)
 PRINT_NOISE = 0.6  # ステップのあいだも続く雑音の大きさ
@@ -211,7 +211,7 @@ class PrinterSound:
 
 
 # ---- 音の出力先 ----
-# サンプルはSDL2のSDL_QueueAudioでキューに積む(pygame.mixer.Channelは待ちを1つしか持てず、
+# サンプルはSDL2のSDL_QueueAudioでキューに積む(pygame.mixer.Channelはキューに音を1つしか置けず、
 # フレームが少し遅れると途切れる)。たまっている量を見て、進めるサイクルを少し増減する。
 
 FRAME_SAMPLES = RATE // 30  # 1フレームぶんのサンプル(app.FPSは30)
@@ -257,7 +257,7 @@ def _sdl_library() -> ctypes.CDLL:
                 return ctypes.CDLL(path)
     found = ctypes.util.find_library("SDL2")
     if found is None:
-        raise OSError(tr("SDL2のライブラリが見つかりません"))
+        raise OSError(tr("audio.sdl2_library_not_found"))
     return ctypes.CDLL(found)
 
 
@@ -333,8 +333,8 @@ def speed_adjust(level: int) -> float:
 
 
 class MixerOutput:
-    """pygame.mixerのChannelで鳴らす出力先(SDLのキューが使えないとき)。Channelは待ちを
-    1つしか持てないので、空くまでこちらでためておく"""
+    """pygame.mixerのChannelで鳴らす出力先(SDLのキューが使えないとき)。Channelはキューに
+    音を1つしか置けないので、空くまでself.waitにためておく"""
 
     keep_silent = False  # 無音のフレームには空を渡し、たまった残りをすぐ鳴らす
     PREBUFFER = FRAME_SAMPLES * 2 * 2  # 鳴り始めに2フレームぶんためる(16ビット)
@@ -346,10 +346,10 @@ class MixerOutput:
         pygame.mixer.init(RATE, -16, 1, 512, allowedchanges=0)
         opened = pygame.mixer.get_init()
         if opened is None:
-            raise OSError(tr("ミキサーを開けません"))
+            raise OSError(tr("audio.cannot_open_mixer"))
         freq, _, channels = opened
         if freq != RATE:
-            raise OSError(tr("ミキサーが{freq}Hzで開かれました", freq=freq))
+            raise OSError(tr("audio.mixer_opened_hz", freq=freq))
         self.channel = pygame.mixer.Channel(0)
         self.channels = channels
         self.wait = bytearray()
@@ -396,9 +396,9 @@ def open_output() -> "SoundQueue | MixerOutput | None":
     try:
         return SoundQueue()
     except (OSError, AttributeError) as e:
-        print(tr("SDLのキューが使えないので、mixerで鳴らします({error})", error=e), file=sys.stderr)
+        print(tr("audio.sdl_audio_queue_not", error=e), file=sys.stderr)
     try:
         return MixerOutput()
     except (OSError, pygame.error) as e:
-        print(tr("音を切ります({error})", error=e), file=sys.stderr)
+        print(tr("audio.sound_off", error=e), file=sys.stderr)
     return None

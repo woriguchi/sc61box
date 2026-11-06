@@ -1,5 +1,5 @@
-"""逆アセンブルの、命令とデータの見分け(DTCの表、流れのたどり、形からの推し量り、実行した番地、
-自分で決めた指定)"""
+"""逆アセンブルの、命令とデータの見分け(DTCの表、制御の流れの追跡、形からの推定、実行した番地、
+利用者の指定)"""
 
 from helpers import make_app
 
@@ -81,7 +81,7 @@ def test_lc3_table():
 
 
 def states(b, lo, hi):
-    """lo〜hi-1の行の頭ごとの(番地, 種類, わけ)"""
+    """lo〜hi-1の行の頭ごとの(番地, 種類, 理由)"""
     cm = b.code_map()
     out = []
     for ins in b.lines_from(lo):
@@ -93,7 +93,7 @@ def states(b, lo, hi):
 
 def test_follow_flow():
     """条件つきのジャンプは両方の先、呼び出しは呼んだ先と戻ったあとをたどる。RTNと条件なしの
-    ジャンプのあとはたどらず、そこの文字と埋め草はデータとみる"""
+    ジャンプのあとはたどらず、そのあとの文字とパディングはデータとみる"""
     # LIA 05 / JRZ C007 / CALL C00E / RTN / "HELLO",00 / JP C013 / FF FF / RTN
     flow = bytes.fromhex("0205 3804 78C00E 37 48454C4C4F00 79C013 FFFF 37".replace(" ", ""))
     _m, b = bench_with([(0xC000, flow)])
@@ -118,14 +118,14 @@ def test_flow_stops_at_empty_memory():
 
 
 def test_guess_shapes():
-    """どこからもたどれないところは形で推し量る。文字の並びと00・FFの並びはデータ、ない命令や
-    RAMの外へ飛ぶ命令があればデータ、RTNで終わるきれいな命令の並びは、わからない命令"""
+    """どこからもたどれないところは形から推定する。文字の並びと00・FFの並びはデータ、未定義命令や
+    RAMの外へ飛ぶ命令があればデータ、RTNで終わる命令の並びは命令と推定する"""
     code = bytes.fromhex(
         "37"  # C000 RTN(開始番地)
         "414243444546 00"  # C001 "ABCDEF",00
-        "FFFFFFFF"  # C008 埋め草
+        "FFFFFFFF"  # C008 パディング
         "0201 42 37"  # C00C LIA 01 / INCA / RTN(どこからも呼ばれない)
-        "3C 79 12 34"  # C010 ない命令、JP 1234(RAMの外)
+        "3C 79 12 34"  # C010 未定義命令、JP 1234(RAMの外)
         "0203".replace(" ", "")  # C014
     )
     _m, b = bench_with([(0xC000, code)])
@@ -142,8 +142,8 @@ def test_guess_shapes():
 
 
 def test_jump_outside_ram_is_data_without_rom():
-    """ROMなしでは、名前のわかっているROMのルーチンの入口のほかのRAMの外へ飛ぶ命令はデータとみる。
-    KEYSCAN(1F44)を呼ぶ並びは命令とみる"""
+    """ROMなしでは、RAMの外へ飛ぶ命令は、名前のわかっているROMのルーチンの入口へ飛ぶもののほかは
+    データとみる。KEYSCAN(1F44)を呼ぶ並びは命令とみる"""
     code = bytes.fromhex("37781F443778123437")
     _m, b = bench_with([(0xC000, code)])
     cm = b.code_map()
@@ -211,8 +211,8 @@ PUSHJUMP = bytes.fromhex("02C0 34 0210 34 37".replace(" ", "")) + bytes(9) + byt
 
 
 def test_executed_marks_heads():
-    """実行した番地は、流れでたどれなくても確かな命令の頭になる。書き換えた番地の印は消える"""
-    app = make_app(scale=0.5, frames=2, norom=True)
+    """実行した番地は、流れでたどれなくても確かな命令の頭になる。書き換えた番地は実行済みでなくなる"""
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
     b = app.bench
     b.load_blocks([(0xC000, PUSHJUMP)], 0xC000)
     assert b.code_map().state(0xC010) == ("head", "guessed")
@@ -231,7 +231,7 @@ def test_executed_marks_heads():
 
 
 def test_step_marks_executed():
-    """1命令ずつ進めても、実行した番地に印がつく"""
+    """1命令ずつ進めても、実行した番地は実行済みになる"""
     m, b = bench_with([(0xC000, PUSHJUMP)], start=0xC000)
     b.step()  # 開始番地の前で止まる
     for _ in range(6):
@@ -240,7 +240,7 @@ def test_step_marks_executed():
 
 
 def test_save_restore_codemap_inputs():
-    """BASICのCALLの番地、実行した番地、自分で決めた指定は、状態と一緒に保存して戻せる"""
+    """BASICのCALLの番地、実行した番地、利用者の指定は、状態と一緒に保存して戻せる"""
     m, b = bench_with([(0xC000, PUSHJUMP)], start=0xC000)
     b.calls = [0xC000, 0xC010]
     b.executed[0xC010] = b.executed[0xC012] = 1
@@ -256,8 +256,8 @@ def test_save_restore_codemap_inputs():
 
 
 def test_user_marks_override():
-    """自分で決めた指定は、流れと推し量りより先に効く。データの指定は次の指定の手前まで。
-    指定を消せば推し量りに戻る"""
+    """利用者の指定は、流れの追跡と推定より先に効く。データの指定は次の指定の手前まで。
+    指定を消せば推定に戻る"""
     # RTN / "ABCDEF" / LIA 01 / LIA 02 / RTN
     code = bytes.fromhex("37 414243444546 0201 0202 37".replace(" ", ""))
     _m, b = bench_with([(0xC000, code)])
@@ -266,7 +266,7 @@ def test_user_marks_override():
     assert b.set_mark(0xC001, "code") == "C001番地から命令にしました"
     cm = b.code_map()
     assert cm.state(0xC001) == ("head", "user") and cm.state(0xC002) == ("head", "flow")
-    assert b.set_mark(0xC001, "code") == "いまの指定です"
+    assert b.set_mark(0xC001, "code") == "すでにこの指定です"
     b.set_mark(0xC000, "data")
     cm = b.code_map()
     assert cm.state(0xC000) == ("data", "user") and cm.state(0xC001) == ("head", "user")
@@ -285,7 +285,7 @@ def test_user_marks_override():
 
 def test_bench_menu_marks():
     """作業欄の右クリックのメニューで、その番地からデータ・命令にし、指定を消せる"""
-    app = make_app(scale=0.5, frames=2, norom=True)
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
     b = app.bench
     b.load_blocks([(0xC000, bytes.fromhex("0201 0202 37"))], 0xC000)
     app.frame()
@@ -303,7 +303,7 @@ def test_bench_menu_marks():
 
 
 def test_user_code_mark_on_zeros():
-    """自分で命令に決めた番地は、00が並んでいても命令にする"""
+    """利用者が命令に決めた番地は、00が並んでいても命令にする"""
     _m, b = bench_with([(0xC000, bytes.fromhex("37" + "00" * 6 + "37"))])
     b.set_mark(0xC001, "code")
     cm = b.code_map()
@@ -329,10 +329,10 @@ WITH_TABLE = bytes.fromhex("0201 37 0102030405060708 0202 37".replace(" ", ""))
 
 
 def test_data_directive_round_trip(tmp_path, monkeypatch):
-    """自分で決めたデータの範囲は、書き出した.hexの# data: に入り、読み込むと同じ範囲の
-    データになる。範囲の終わりから先は推し量りに戻る"""
+    """利用者が決めたデータの範囲は、書き出した.hexの# data: に入り、読み込むと同じ範囲の
+    データになる。範囲の終わりから先は推定に戻る"""
     monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
-    app = make_app(scale=0.5, frames=2, norom=True)
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
     b = app.bench
     b.paste(_lines(0xC000, WITH_TABLE))
     b.set_mark(0xC003, "data")
@@ -345,13 +345,13 @@ def test_data_directive_round_trip(tmp_path, monkeypatch):
     assert "# data: C003-C00A\n" in text
     prog = programs.load_program(str(path))
     assert prog.data == [(0xC003, 0xC00B)] and not prog.errors
-    app = make_app(scale=0.5, frames=2, norom=True)
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
     b = app.bench
     app.open_program(prog)
     assert b.marks == {0xC003: "data", 0xC00B: "end"}
     cm = b.code_map()
     assert [cm.state(a)[0] for a in range(0xC003, 0xC00B)] == ["data"] * 8
-    assert cm.state(0xC00B)[1] != "user"  # 範囲の先は推し量り
+    assert cm.state(0xC00B)[1] != "user"  # 範囲の先は推定
     assert b.data_spans() == [(0xC003, 0xC00B)]
     app.close()
 
@@ -372,7 +372,7 @@ def test_data_directive_with_rom(tmp_path):
 def test_bad_data_directive(tmp_path):
     (tmp_path / "t.hex").write_text("# data: C100-ZZ\nC000 37\n", encoding="utf-8")
     prog = programs.load_program(str(tmp_path / "t.hex"))
-    assert prog.errors == ["t.hex: # data: のC100-ZZが読めない"]
+    assert prog.errors == ["t.hex: # data: のC100-ZZを読めません"]
 
 
 def _lines(addr, data):
@@ -404,7 +404,7 @@ def test_overlapping_data_ranges_merge():
 
 
 def test_rewrite_through_mirror_forgets_executed():
-    """ミラーの番地から実行した命令も、RAMの番地を書き換えれば「実行した」ではなくなる"""
+    """ミラーの番地から実行した命令も、RAMの番地を書き換えれば実行済みでなくなる"""
     m, b = bench_with([(0xB800, bytes.fromhex("020137"))], start=0xB000)
     b.step()
     b.step()  # ミラーのB000でLIA 01を実行
@@ -423,7 +423,7 @@ def test_rewrite_through_mirror_forgets_executed():
 
 
 def test_table_note_follows_language():
-    """DTCの表の添え書きは、言語を切り替えると切り替えた言語で出す"""
+    """DTCの表の注釈は、言語を切り替えると切り替えた言語で出す"""
     from sc61box import i18n
 
     _m, b = bench_with([(0xC000, bytes.fromhex("7A00C00769C00737"))], start=0xC000)
@@ -457,8 +457,8 @@ def test_confirming_default_start_updates_map():
 
 
 def test_unterminated_code_reason():
-    """命令としては読めてもRTNかジャンプで終わらない並びはデータとし、そのわけを分ける"""
-    # RTN / 0000×4(埋め草) / LIA 01 / LIB 02(終わりなし)
+    """命令としては読めてもRTNかジャンプで終わらない並びはデータとし、その理由を分ける"""
+    # RTN / 0000×4(パディング) / LIA 01 / LIB 02(終わりなし)
     _m, b = bench_with([(0xC000, bytes.fromhex("37 00000000 0201 0302".replace(" ", "")))])
     b.start_by = ""
     cm = b.code_map()

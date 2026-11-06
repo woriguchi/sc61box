@@ -1,6 +1,6 @@
 """SC61860の逆アセンブラ(マシン語の作業欄で使う)
 
-命令の名前と形は tools/asm61860.py のアセンブラと同じ。相対ジャンプは向きを名前から外し、
+命令の名前と形はtools/asm61860.pyのアセンブラと同じ。相対ジャンプは向きを名前から外し、
 飛び先の番地を書く(アセンブラはJRNZなどの名前から向きを選ぶので、そのまま組み直せる)。
 番地と値は&なしの16進表記。DTCのあとの表は、手前のPTCで行の数がわかれば「DB」の行にする。
 """
@@ -160,13 +160,13 @@ class Ins(NamedTuple):
     name: str
     operand: str
     target: int | None  # 飛び先(ジャンプと呼び出し、DTCの表の行)
-    note: str = ""  # 添え書き(DTCの表の行の行き先など)
+    note: str = ""  # コメント(DTCの表の行の行き先など)
 
     def text(self) -> str:
         return f"{self.name} {self.operand}".rstrip()
 
     def line(self) -> str:
-        """添え書きまでつけた1行(.hexの「;」のあとに書く形)"""
+        """コメントまでつけた1行(.hexの「;」のあとに書く形)"""
         return f"{self.text()} ; {self.note}" if self.note else self.text()
 
 
@@ -244,7 +244,7 @@ def table(read, addr: int, rows: int) -> list[Ins]:
     a = (addr + 3 * rows) & 0xFFFF
     hi, lo = read(a), read((a + 1) & 0xFFFF)
     t = hi << 8 | lo
-    out.append(Ins(a, 2, "DB", f"{hi:02X},{lo:02X}", t, tr("ほかは→{addr:04X}", addr=t)))
+    out.append(Ins(a, 2, "DB", f"{hi:02X},{lo:02X}", t, tr("disasm.else", addr=t)))
     return out
 
 

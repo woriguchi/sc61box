@@ -1,6 +1,6 @@
-"""プログラムの置き場所(ライブラリ)とファイルの読み方
+"""プログラムのフォルダ(ライブラリ)とファイルの読み方
 
-置き場所のディレクトリにファイルを置くと、プログラムの一覧に出る。
+プログラムのフォルダにファイルを置くと、プログラムの一覧に出る。
 
 - 1つの機種だけで動くものは、その機種のフォルダ(pc1251/、pc1245/、pc1261/、pc1350/)に
   置く。RAMの範囲だけが違う機種(PC-1250・1255、PC-1260・1262)では、元の機種のフォルダ
@@ -19,7 +19,8 @@
     *.hex  16進ダンプ。「番地 データ」の行をRAMにそのまま書く。行末の「:チェックサム」は
            読み飛ばし、「;」から後ろはコメント。YASM61860の「c000 : 12 34 … : 5a」も読める
 
-同じ名前の.basと.hexは1本のプログラムにまとめ、ダンプを書いてからBASICを打ち込む。
+同じ名前の.basと.hexは1本のプログラムにまとめ、NEWしてからダンプを書き、BASICを打ち込む
+(NEWは固定変数も消すので、固定変数の範囲にかかるダンプも残る)。
 
 「#」で始まる行はコメントで、次の指示を書ける。
 
@@ -30,12 +31,12 @@
     # help: 0で始まる     読み込んで動かし始めたときに画面の下に出す説明。いくつも書くと
                           行を重ねて出す
     # setup: EQU#43       NEWのあと、BASICの前にPROモードで打つ命令。あるときは、ダンプも
-                          この命令のあとで書く(BASICの置き場所を動かしてマシン語を置く記事用)
+                          この命令のあとで書く(BASICのプログラムの領域を動かしてマシン語を置くとき)
     # hex: pcint.hex      先に書き込む16進ダンプ。1つのダンプをいくつものプログラムから使える
     # bin: code.bin &C300 先に書き込むマシン語のバイナリと置く番地(.binは番地を持たない。
                           PocketToolsのbin2wavの.binと同じ)
     # after: code.hex     実行の文字列を打ったあとで書き込むダンプ(BASICでDIMなどをしてから
-                          マシン語を置く記事用)。「# after: code.bin &C300」も使える
+                          マシン語を置くとき)。「# after: code.bin &C300」も使える
     # data: C100-C17F     命令ではなくデータの範囲(逆アセンブルでDBの行にする)。「,」で区切って
                           いくつも書ける。終わりを書かずに「C100」とすると、そこからデータ
                           (次の指定か、実行した命令の手前まで)
@@ -43,14 +44,20 @@
                           ほかの機種では一覧に出ず、開いても読み込まない
     # pad: dpup=8 a=SPC   ゲームパッドの割り当て(入力の名前=本体のキーの名前。gamepad.py)。
                           読み込むと、この割り当てになる
-    # ram: 6800-7FFF     機種のRAMの終わりより上もRAMにする(終わりの番地まで広げる。ROMや
+    # ram: 6800-7FFF      機種のRAMの終わりより上もRAMにする(終わりの番地まで広げる。ROMや
                           液晶RAMにかかる範囲は書けない)。読み込むと広がり、# ram: のない
                           プログラムを読み込むと機種のRAMに戻る
+    # card: 16            PC-1350で要るRAMカードの大きさ(KB。8か16)。差したカードが
+                          小さければ読み込まず、起動のしかたを知らせる
+    # norom: 説明         ROMなしで読み込んだときに出す説明。「# norom: off」はROMが要るもの
+                          (ROMなしでは一覧に出さず、読み込まない)、「# norom: basic」はROMなしの
+                          BASICが要るもの(作業欄だけのときは一覧に出さず、読み込まない)
 """
 
 import os
 import re
 from dataclasses import dataclass, field
+from typing import Any
 
 from . import paths
 from .i18n import tr
@@ -88,7 +95,7 @@ def folder_model(path: str) -> str:
 def library_dirs() -> list[str]:
     """一覧に使うディレクトリ。SC61BOX_PROGRAMS(:区切り。前の名前のPC1251_PROGRAMSも)、
     データのフォルダのprograms(~/.sc61box/programs)、
-    このリポジトリのprograms/、programs/private/(配布物には含まれない自分用の置き場所。あれば)の順"""
+    このリポジトリのprograms/、programs/private/(配布物には含まれない自分用のフォルダ。あれば)の順"""
     dirs = [d for d in paths.env("PROGRAMS").split(os.pathsep) if d]
     dirs.append(os.path.join(paths.data_dir(), "programs"))
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -124,6 +131,8 @@ class Program:
     setup: str = ""  # NEWのあとに打つ命令。いくつもあれば改行でつなぐ
     help: str = ""  # 読み込んだあとに出す説明。いくつもあれば改行でつなぐ
     norom: str = ""  # ROMなしで読み込んだときに出す説明(# norom:)。いくつもあれば改行でつなぐ
+    # ROMなしでの扱い(# norom: off はROMが要る、basic はROMなしのBASICが要る)。なければ空
+    norom_use: str = ""
     basic: str = ""  # 打ち込むBASICの行(コメントを除いたもの)
     blocks: list[tuple[int, bytes]] = field(default_factory=list)
     after: list[tuple[int, bytes]] = field(default_factory=list)  # # after: で、実行のあとに書く
@@ -136,12 +145,21 @@ class Program:
     # # data: の範囲(始め, 終わりの次)。終わりを書いていなければ(始め, None)
     data: list[tuple[int, int | None]] = field(default_factory=list)
     ram: tuple[int, int] | None = None  # # ram: の範囲(始め, 終わりの次)
+    card: int = 0  # # card: の値(PC-1350で要るRAMカードの大きさ。KB)
     errors: list[str] = field(default_factory=list)
 
     @property
     def norom_ok(self) -> bool:
-        """ROMなしで使えるか。マシン語のダンプがあり、# norom: offでないもの"""
-        return bool(self.blocks or self.after) and self.norom.strip().lower() != "off"
+        """ROMなしの作業欄だけで使えるか(without_rom(basic=False))"""
+        return self.without_rom(basic=False)
+
+    def without_rom(self, basic: bool) -> bool:
+        """ROMなしで動かせるか(一覧に出し、読み込む)。basicならROMなしのBASICで(# norom: off
+        でないもの)、でなければ作業欄だけで(マシン語のダンプがあり、# norom: offでもbasicでも
+        ないもの)"""
+        if basic:
+            return self.norom_use != "off"
+        return bool(self.blocks or self.after) and not self.norom_use
 
     @property
     def models(self) -> list[str] | None:
@@ -191,8 +209,8 @@ class Program:
 
     def _fits_family(self, model: str) -> bool:
         """元の機種用のものを、RAMの範囲が違う機種で使えるか。書き込む番地がRAMに収まり、
-        BASICの置き場所が元の機種と違うときは、BASICが置かれる範囲(見積もり)にかからないこと
-        (# setup:でBASICの置き場所を動かすものは見ない)"""
+        BASICのプログラムの領域が元の機種と違うときは、BASICが置かれる範囲(見積もり)にかからないこと
+        (# setup:でBASICのプログラムの領域を動かすものは見ない)"""
         addrs = self.addresses
         if not fits(model, addrs, self.ram_top):
             return False
@@ -207,9 +225,9 @@ class Program:
         if self.runs_on(model):
             return self.title
         if not self.models:
-            return tr("{title}(番地がどの機種のRAMにも収まらない)", title=self.title)
-        models = tr("・").join(f"PC-{m}" for m in self.models)
-        return tr("{title}({models}用)", title=self.title, models=models)
+            return tr("programs.addresses_fit_no_model", title=self.title)
+        models = tr("common.katakana_middle_dot").join(f"PC-{m}" for m in self.models)
+        return tr("programs.title_models", title=self.title, models=models)
 
     @property
     def kinds(self) -> str:
@@ -227,6 +245,9 @@ class Program:
         return sum(len(b) for _, b in self.blocks + self.after)
 
 
+NOROM_USES = ("off", "basic")  # # norom: の値のうち、説明ではなく扱いを決めるもの
+
+
 def _directive(line: str) -> tuple[str, str] | None:
     body = line.lstrip("#").strip()
     if ":" not in body:
@@ -235,7 +256,7 @@ def _directive(line: str) -> tuple[str, str] | None:
     key = key.strip().lower()
     if key in (
         "title", "run", "hex", "bin", "after", "model", "mode", "setup", "help", "norom", "data",
-        "pad", "ram",
+        "pad", "ram", "card",
     ):  # fmt: skip
         return key, val.strip()
     return None
@@ -303,26 +324,26 @@ def parse_hex(text: str, where: str = "") -> tuple[list[tuple[int, bytes]], list
             data = bytes.fromhex(data_text.replace(" ", ""))
         except ValueError:
             errors.append(
-                tr("{where}{line}行目を16進ダンプとして読めない: {text}",
+                tr("programs.line_not_hex_dump",
                    where=where, line=n, text=line[:30])
             )  # fmt: skip
             continue
         if addr + len(data) > 0x10000:
             errors.append(
-                tr("{where}{line}行目の番地がFFFFを越える: {text}",
+                tr("programs.line_goes_past_ffff",
                    where=where, line=n, text=line[:30])
             )  # fmt: skip
             continue
         total = total.strip()
         if colon and not re.fullmatch(r"[0-9A-Fa-f]{2}", total):
             errors.append(
-                tr("{where}{line}行目の「:」のあとがチェックサム(16進表記2桁)ではない: {text}",
+                tr("programs.line_bad_checksum",
                    where=where, line=n, text=line[:30])
             )  # fmt: skip
             continue
         if colon and sum(data) & 0xFF != int(total, 16):
             errors.append(
-                tr("{where}{line}行目のチェックサムが合わない(計算すると{sum:02X}): {text}",
+                tr("programs.line_has_wrong_checksum",
                    where=where, line=n, sum=sum(data) & 0xFF, text=line[:30])
             )  # fmt: skip
             continue
@@ -349,32 +370,30 @@ def read_bin(path: str, addr: int, where: str = "") -> tuple[list[tuple[int, byt
     except OSError as e:
         return [], [f"{where}{e}"]
     if not data:
-        return [], [tr("{where}中身が空", where=where)]
+        return [], [tr("programs.empty", where=where)]
     if addr + len(data) > 0x10000:
-        why = tr("{where}&{addr:04X}から{n}バイトでは、&FFFFを越える",
+        why = tr("programs.bytes_go_past_ffff",
                  where=where, addr=addr, n=len(data))  # fmt: skip
         return [], [why]
     return [(addr, data)], []
 
 
 def _add_hex(prog: Program, spec: str, near: str, key: str = "hex") -> None:
-    """# hex:・# bin:・# after:のダンプを読んで足す。同じフォルダ、置き場所の同じ機種の
-    フォルダ、置き場所の直下の順に探す"""
+    """# hex:・# bin:・# after:のダンプを読んで足す。同じフォルダ、プログラムのフォルダの同じ機種の
+    フォルダ、プログラムのフォルダの直下の順に探す"""
     name, addr = spec, None
     parts = spec.rsplit(None, 1)
     if len(parts) == 2 and parse_addr(parts[1]) is not None:
         name, addr = parts[0], parse_addr(parts[1])
     is_bin = name.lower().endswith(".bin")
     if is_bin and addr is None:
-        prog.errors.append(
-            tr("# {key}: {name}に置く番地がない(例:# bin: {name} &C300)", key=key, name=name)
-        )
+        prog.errors.append(tr("programs.no_address_e_g", key=key, name=name))
         return
     sub = model_dir(folder_model(os.path.join(near, name)) or "-")
     places = [near] + [os.path.join(d, sub) for d in library_dirs()] + library_dirs()
     p = next((os.path.join(d, name) for d in places if os.path.exists(os.path.join(d, name))), None)
     if p is None:
-        prog.errors.append(tr("# {key}: {name}が見つからない", key=key, name=name))
+        prog.errors.append(tr("programs.not_found", key=key, name=name))
         return
     if p in prog.paths:
         return
@@ -386,9 +405,7 @@ def _add_hex(prog: Program, spec: str, near: str, key: str = "hex") -> None:
         try:
             text = open(p, encoding="utf-8").read()
         except (OSError, UnicodeDecodeError) as e:
-            prog.errors.append(
-                tr("# {key}: {name}を読めない({error})", key=key, name=name, error=e)
-            )
+            prog.errors.append(tr("programs.cannot_read", key=key, name=name, error=e))
             return
         blocks, errors = parse_hex(text, name + " ")
         # 使うダンプに書いた# data: の範囲も取り込む(ほかの指示は使う側で書く)
@@ -398,6 +415,8 @@ def _add_hex(prog: Program, spec: str, near: str, key: str = "hex") -> None:
                 _add_data(prog, d[1], name)
             elif d and d[0] == "ram":
                 _set_ram(prog, d[1], name)
+            elif d and d[0] == "card":
+                _set_card(prog, d[1], name)
     (prog.after if key == "after" else prog.blocks).extend(blocks)
     prog.errors.extend(errors)
 
@@ -405,9 +424,10 @@ def _add_hex(prog: Program, spec: str, near: str, key: str = "hex") -> None:
 def _add_data(prog: Program, value: str, file: str) -> None:
     """# data: の値を読んでprog.dataに足す。読めなければprog.errorsに足す"""
     spans, bad = parse_data(value)
-    prog.data.extend(spans)
+    # 書き出したファイルには、組のダンプに書いた範囲も書くので、同じ範囲は1つにする
+    prog.data.extend(s for s in spans if s not in prog.data)
     if bad:
-        prog.errors.append(tr("{file}: # data: の{text}が読めない", file=file, text=bad))
+        prog.errors.append(tr("programs.cannot_read_data", file=file, text=bad))
 
 
 def _set_ram(prog: Program, value: str, file: str) -> None:
@@ -415,10 +435,20 @@ def _set_ram(prog: Program, value: str, file: str) -> None:
     spans, bad = parse_data(value)
     hi = spans[0][1] if len(spans) == 1 else None
     if bad or hi is None:
-        prog.errors.append(tr("{file}: # ram: の{text}が読めない(例:# ram: 6800-7FFF)",
+        prog.errors.append(tr("programs.cannot_read_ram_e",
                               file=file, text=value.strip()))  # fmt: skip
         return
     prog.ram = (spans[0][0], hi)
+
+
+def _set_card(prog: Program, value: str, file: str) -> None:
+    """# card: の値(8か16)を読んでprog.cardにする。読めなければprog.errorsに足す"""
+    v = value.strip().upper().removesuffix("KB")
+    if v not in ("8", "16"):
+        prog.errors.append(tr("programs.cannot_read_card_8",
+                              file=file, text=value.strip()))  # fmt: skip
+        return
+    prog.card = max(prog.card, int(v))
 
 
 def _read_into(prog: Program, path: str) -> None:
@@ -437,8 +467,12 @@ def _read_into(prog: Program, path: str) -> None:
                 _add_data(prog, d[1], os.path.basename(path))
             elif d and d[0] == "ram":
                 _set_ram(prog, d[1], os.path.basename(path))
+            elif d and d[0] == "card":
+                _set_card(prog, d[1], os.path.basename(path))
             elif d and d[0] == "pad":  # いくつもの行に分けて書ける
                 prog.pad = d[1] if prog.pad is None else f"{prog.pad} {d[1]}".strip()
+            elif d and d[0] == "norom" and d[1].lower() in NOROM_USES:
+                prog.norom_use = d[1].lower()  # .basと.hexの両方に書いてあっても1つ
             elif d and d[0] in ("run", "setup", "help", "norom") and d[1]:
                 old = getattr(prog, d[0])
                 setattr(prog, d[0], old + "\n" + d[1] if old else d[1])
@@ -471,9 +505,89 @@ def load_program(path: str) -> Program:
     return prog
 
 
+# 状態のファイルに書く、読み込んだプログラムの情報(書き出しと説明に使う)。元のファイルは保存した
+# あとで書き換えられるかもしれないので、場所ではなく中身を書く
+STATE_TEXT = ("name", "title", "run", "mode", "setup", "help", "model", "norom", "norom_use")
+STATE_LISTS = ("paths", "links")
+
+
+def to_state(prog: Program) -> dict:
+    """状態のファイルに書くプログラムの情報(from_stateで読む)"""
+    out: dict = {k: getattr(prog, k) for k in (*STATE_TEXT, *STATE_LISTS, "pad")}
+    out["ram"] = list(prog.ram) if prog.ram else None
+    out["card"] = prog.card
+    out["data"] = [[lo, hi] for lo, hi in prog.data]
+    return out
+
+
+def from_state(saved: object) -> Program | None:
+    """to_stateで書いたプログラムの情報を読む。おかしければNone。前の版の状態にない項目
+    (norom、norom_use、pad、ram、card、data)は、ないものとする"""
+    if not isinstance(saved, dict):
+        return None
+    text = {k: saved.get(k, "") for k in STATE_TEXT}
+    lists = {k: saved.get(k) for k in STATE_LISTS}
+    pad, ram, card, data = (saved.get("pad"), saved.get("ram"), saved.get("card", 0),
+                            saved.get("data", []))  # fmt: skip
+
+    def is_addr(v: object) -> bool:
+        return type(v) is int and 0 <= v <= 0x10000
+
+    def is_span(d: object) -> bool:
+        return (
+            isinstance(d, list)
+            and len(d) == 2
+            and is_addr(d[0])
+            and (d[1] is None or is_addr(d[1]))
+        )
+
+    if not (
+        all(isinstance(v, str) for v in text.values())
+        and text["norom_use"] in ("", *NOROM_USES)
+        and all(isinstance(v, list) and all(isinstance(x, str) for x in v) for v in lists.values())
+        and (pad is None or isinstance(pad, str))
+        and (ram is None or (isinstance(ram, list) and len(ram) == 2 and all(map(is_addr, ram))))
+        and type(card) is int
+        and card in (0, 8, 16)
+        and isinstance(data, list)
+        and all(map(is_span, data))
+    ):
+        return None
+    fields: dict[str, Any] = {**text, **lists}  # 型は上で確かめた
+    return Program(
+        **fields, pad=pad, ram=(ram[0], ram[1]) if ram else None, card=card,
+        data=[(d[0], d[1]) for d in data],
+    )  # fmt: skip
+
+
+def header_lines(prog: Program) -> list[str]:
+    """プログラムの指示(# title: のほか)を、書き出すファイルの頭に書く行にする。読み直せば同じ
+    指示になる(組になっていたダンプは、場所の指示だけを書く)"""
+    head = []
+    if prog.model:
+        head.append(f"# model: {prog.model}")
+    head += [f"# {link}" for link in prog.links]
+    for key in ("setup", "run", "help", "norom"):
+        head += [f"# {key}: {line}" for line in getattr(prog, key).split("\n") if line]
+    if prog.norom_use:
+        head.append(f"# norom: {prog.norom_use}")
+    if prog.mode:
+        head.append(f"# mode: {prog.mode}")
+    if prog.pad is not None:
+        head.append(f"# pad: {prog.pad}".rstrip())
+    if prog.ram is not None:
+        head.append(f"# ram: {prog.ram[0]:04X}-{prog.ram[1] - 1:04X}")
+    if prog.card:
+        head.append(f"# card: {prog.card}")
+    if prog.data:
+        spans = [f"{lo:04X}" if hi is None else f"{lo:04X}-{hi - 1:04X}" for lo, hi in prog.data]
+        head.append("# data: " + ", ".join(spans))
+    return head
+
+
 def scan(dirs: list[str] | None = None) -> list[Program]:
-    """置き場所(直下と機種のフォルダ)にあるプログラム。同じフォルダの同じ名前が
-    いくつかの置き場所にあれば、先の置き場所のものを使う"""
+    """プログラムのフォルダ(直下と機種のフォルダ)にあるプログラム。同じフォルダの同じ名前が
+    いくつかのフォルダにあれば、先のフォルダのものを使う"""
     seen: dict[tuple[str, str], str] = {}
     for d in dirs if dirs is not None else library_dirs():
         for sub in [""] + [model_dir(m) for m in MODELS]:
@@ -498,7 +612,7 @@ def scan(dirs: list[str] | None = None) -> list[Program]:
 
 
 def find(name: str, model: str = "") -> Program | None:
-    """パスか、置き場所にあるプログラムの名前から探す。modelのフォルダ、元の機種のフォルダ、
+    """パスか、プログラムのフォルダにある名前から探す。modelのフォルダ、元の機種のフォルダ、
     直下、ほかの機種のフォルダの順に見る"""
     if os.path.exists(name):
         return load_program(name)

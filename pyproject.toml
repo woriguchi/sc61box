@@ -1,7 +1,7 @@
 [project]
 name = "sc61box"
-version = "0.6.1"
-description = "SHARPのポケコン(PC-1251/1245/1261/1350)のエミュレータ(SC61860を命令単位で実行し、ROMを動かす)"
+version = "0.7.0"
+description = "SHARPのポケコン(PC-1251/1245/1261/1350)のエミュレータ(ROMなしでBASICとマシン語が動き、ROMを置けばそのROMで動く)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"

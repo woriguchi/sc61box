@@ -1,5 +1,5 @@
 # title: LC-3 サンプル3 定義文字
-# norom: off
+# norom: basic
 # help: 自分で形を決めた字(定義文字)を出す。止まったら、何かキーを押すと終わる
 # hex: lc3.hex
 # setup: EQU#43

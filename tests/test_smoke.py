@@ -4,6 +4,7 @@ import os
 import re
 
 import pygame
+import pytest
 from helpers import make_app, settle
 
 from sc61box.lcdtext import lcd_text
@@ -18,7 +19,8 @@ def test_app_types_and_computes():
     assert lcd_text(app.m).strip().startswith("36")
     for ch in "(+)":  # 記号はTEXTINPUTから入り、SHIFT付きの打鍵に直る
         app.handle(pygame.event.Event(pygame.TEXTINPUT, text=ch))
-    assert app.typer.queue[0][0] == app.typer.LIVE and app.typer.queue[0][2:] == ["SHIFT"]
+    first = app.typer.queue[0]
+    assert isinstance(first, list) and first[0] == app.typer.LIVE and first[2:] == ["SHIFT"]
     for _ in range(30):
         app.frame()
     assert not app.typer.busy
@@ -91,7 +93,7 @@ def test_shortcuts_and_popup():
     app.frame()
     titles = [p.title for p in app.menu.items]
     assert "文字のアニメーション(WAITの例)" in titles
-    # 見えている行のうち、選んでいない、この機種で動くもの(置き場所の中身で並びが変わる)
+    # 見えている行のうち、選んでいない、この機種で動くもの(プログラムのフォルダの中身で並びが変わる)
     items = app.menu.items
     i, rect = next(
         (i, r) for i, r in app.menu.rows if i != app.menu.sel and items[i].runs_on(app.m.model.name)
@@ -192,8 +194,8 @@ def test_open_basic_and_hex_pair(tmp_path=None):
     app.typer.add_text("10 PRINT 1\n")  # 前のプログラムはNEWで消える
     settle(app)
     app.open_program(prog, run=True)
-    assert bytes(app.m.mem[0xC300:0xC304]) == bytes([1, 2, 3, 4])
     settle(app)
+    assert bytes(app.m.mem[0xC300:0xC304]) == bytes([1, 2, 3, 4])
     app.m.run(CLOCK)
     assert lcd_text(app.m).strip().startswith("X"), lcd_text(app.m)
     assert "42" in lcd_text(app.m)
@@ -228,7 +230,7 @@ def test_samples_load():
 
 
 def test_mogura_on_pc_interpreter():
-    """もぐらたたき(# hex: でPC-インタープリタを読む)で、出た穴の数字キーを押すと得点が入る"""
+    """もぐらたたき(# hex: でPC-インタープリタを読み込む)で、出た穴の数字キーを押すと得点が入る"""
     from sc61box import programs
 
     prog = programs.find("mogura")
@@ -410,7 +412,7 @@ def _to_play(m, model="1251"):
 
 
 def test_model_folders(tmp_path, monkeypatch):
-    """置き場所の直下はどの機種でも、pc1251/とpc1245/はその機種用。同じ名前でも別に並ぶ"""
+    """プログラムのフォルダの直下はどの機種でも、pc1251/とpc1245/はその機種用。同じ名前でも別に並ぶ"""
     from sc61box import programs
 
     (tmp_path / "pc1245").mkdir()
@@ -502,7 +504,7 @@ def test_yasm_dump():
         (0xC108, bytes(range(6, 12))),
         (0xC200, bytes([0xAA, 0xBB])),
     ]
-    # 記事の形(番地のあとに空白、行末に「:チェックサム」)は今までどおり
+    # 番地のあとに空白、行末に「:チェックサム」の形も今までどおり読める
     assert programs.parse_hex("C200 04F1F9:EE\nC208: 01 02")[0] == [
         (0xC200, bytes([0x04, 0xF1, 0xF9])),
         (0xC208, bytes([1, 2])),
@@ -529,9 +531,9 @@ def test_bin_link(tmp_path):
     assert game.after == [(0xC400, bytes([0x9A]))]
     assert game.kinds == "BASIC+HEX" and game.size == 4
     noaddr = next(p for p in items if p.name == "noaddr")
-    assert not noaddr.blocks and any("番地がない" in e for e in noaddr.errors)
+    assert not noaddr.blocks and any("番地がありません" in e for e in noaddr.errors)
     over = next(p for p in items if p.name == "over")
-    assert not over.blocks and any("&FFFFを越える" in e for e in over.errors)
+    assert not over.blocks and any("&FFFFを越えます" in e for e in over.errors)
 
     # 読み込んで動かすと、RAMに書かれる
     app = make_app("1251")
@@ -591,12 +593,12 @@ def test_ball_runs():
 
 
 def test_scroll_runs():
-    """文字を流すマシン語は、液晶の全幅を1コマで1列ずつずらして写し、BRKでBASICへ戻る"""
+    """文字を流すマシン語は、液晶の全幅を1コマで1列ずつずらしてコピーし、BRKでBASICへ戻る"""
     from sc61box import programs
 
     for model, org in (("1251", 0xC000), ("1245", 0xC100)):
         rows = _hex_rows(_hex_path(model, "scroll.hex"))
-        waitf = next(a for a, note in rows if note.startswith("WAIT FA"))  # 写し終えて待つところ
+        waitf = next(a for a, note in rows if note.startswith("WAIT FA"))  # コピーし終えて待つ所
         after = next(a for a, note in rows if a > waitf and note.startswith("TEST 08"))
         app = make_app(model)
         m = app.m
@@ -608,7 +610,7 @@ def test_scroll_runs():
         for _ in range(10):
             app.frame()
         seen = []
-        for _ in range(30):  # 1コマずつ、写し終えたところの液晶を見る
+        for _ in range(30):  # 1コマずつ、コピーし終えたところで液晶を見る
             for _ in range(100000):
                 if m.cpu.pc == waitf:
                     break
@@ -617,7 +619,7 @@ def test_scroll_runs():
             while m.cpu.pc != after:
                 m.cpu.step()
         assert len(seen[-1]) == (120 if model == "1251" else 80), model
-        assert any(seen[-1][60:]), model  # 右半分にも写す
+        assert any(seen[-1][60:]), model  # 右半分にもコピーする
         for a, b in zip(seen, seen[1:], strict=False):
             assert b[:-1] == a[1:], model  # 1列ずつ左へずれる
         assert len(set(seen)) > 20, model
@@ -733,6 +735,83 @@ def test_sound_has_no_gaps_between_frames():
     for c in range(0, CLOCK, per):
         n += len(b.render([e for e in events if c <= e[0] < c + per], c, c + per)) // 2
     assert abs(n - RATE) <= 1
+
+
+@pytest.mark.parametrize("model", ["1251", "1261"])
+def test_export_option_reads_rom_less_ram(model, tmp_path, monkeypatch):
+    """--norom(またはROMがないとき)の--exportは、ROMなしで起動したときに保存するRAMから
+    書き出す(ROMで動かしたときのRAMのファイルは見ない)"""
+    from typer.testing import CliRunner
+
+    from sc61box import app as app_module
+    from sc61box import paths
+
+    data = tmp_path / "data"
+    data.mkdir()
+    monkeypatch.setattr(paths, "DATA_DIR", str(data))
+    monkeypatch.setattr(paths, "old_data_dir", lambda: None)
+    monkeypatch.setattr(app_module, "STATE_DIR", str(data))
+    app = make_app(model=model, norom=True)
+    app.typer.add_mode("PRO")
+    app.typer.add_text('NEW\n10 PRINT "NOROM"\n')
+    settle(app)
+    app.m.save_ram(app_module.ram_file(model, 0, norom=True))
+    app.close()
+    out = tmp_path / "out"
+    result = CliRunner().invoke(
+        app_module.make_cli(), ["--model", model, "--norom", "--export", str(out)]
+    )
+    assert result.exit_code == 0, result.output
+    path = result.output.strip().splitlines()[-1]
+    assert '10 PRINT "NOROM"' in open(path, encoding="utf-8").read()
+
+
+@pytest.mark.parametrize(
+    ("model", "addr"), [("1251", 0xC200), ("1245", 0xC200), ("1261", 0x5800), ("1350", 0x6800)]
+)
+def test_reset_stops_runaway_and_keeps_program(model, addr):
+    """ROM使用時に裏のRESETボタンを押すと、CALLで入って抜けないマシン語も止まってBASICに戻り、
+    プログラムと変数は残る"""
+    from conftest import HAVE_ROM, HAVE_ROM_1245, HAVE_ROM_1260, HAVE_ROM_1350
+
+    from sc61box import basictext
+
+    have = {"1251": HAVE_ROM, "1245": HAVE_ROM_1245, "1261": HAVE_ROM_1260, "1350": HAVE_ROM_1350}
+    if not have[model]:
+        pytest.skip("ROMがない")
+    app = make_app(model=model, frames=90)
+    m = app.m
+    pro, run = (["MODE"], ["MODE"]) if model == "1350" else (None, None)
+    if pro:
+        app.typer.add_keys([pro])
+    else:
+        app.typer.add_mode("PRO")
+    app.typer.add_text("NEW\n10 A=7\n")
+    settle(app)
+    if run:
+        app.typer.add_keys([run])
+    else:
+        app.typer.add_mode("RUN")
+    app.typer.add_text("B=5\n")
+    settle(app)
+    m.mem[addr : addr + 3] = bytes([0x79, addr >> 8, addr & 0xFF])  # JP addr(抜けない)
+    app.typer.add_text(f"CALL &{addr:04X}\n")
+    settle(app)
+    for _ in range(30):
+        app.frame()
+    assert addr <= m.cpu.pc < addr + 3
+    app.press_reset()
+    for _ in range(90):
+        app.frame()
+    assert not addr <= m.cpu.pc < addr + 3
+    lines = basictext.program_lines(m.mem, m.program_start(), model in ("1261", "1350"))
+    assert [n for n, _ in lines] == [10]
+    app.typer.add_text("B\n")
+    settle(app)
+    for _ in range(20):
+        app.frame()
+    assert "5" in lcd_text(m)
+    app.close()
 
 
 def test_export_basic_round_trip(tmp_path=None):
@@ -852,13 +931,15 @@ def test_arrows_as_numpad():
     assert app.numpad_arrows
     for key, name in ((pygame.K_UP, "8"), (pygame.K_LEFT, "4")):
         app.key_down(ev(pygame.KEYDOWN, key=key, mod=0))
-        assert app.typer.queue[-1][2:] == [name]
+        last = app.typer.queue[-1]
+        assert isinstance(last, list) and last[2:] == [name]
         app.key_up(ev(pygame.KEYUP, key=key, mod=0))
         assert name not in app.typer.physical
     app.key_down(ev(pygame.KEYDOWN, key=pygame.K_F7, mod=0))
     assert not app.numpad_arrows
     app.key_down(ev(pygame.KEYDOWN, key=pygame.K_DOWN, mod=0))
-    assert app.typer.queue[-1][2:] == ["DOWN"]
+    last = app.typer.queue[-1]
+    assert isinstance(last, list) and last[2:] == ["DOWN"]
     app.close()
 
 
@@ -1034,7 +1115,7 @@ def test_tape_round_trip(tmp_path):
 
 
 def test_csave_writes_wav(tmp_path, monkeypatch):
-    """画面でCSAVEすると置き場所にwavができ、別の本体でCLOADすると元に戻る。BEEPはwavにしない"""
+    """画面でCSAVEするとプログラムのフォルダにwavができ、別の本体でCLOADすると元に戻る。BEEPはwavにしない"""
     from sc61box import basictext, tape
     from sc61box.machine import CLOCK, PC1251
 
@@ -1192,7 +1273,7 @@ def test_recording_without_ffmpeg(tmp_path, monkeypatch):
 
 
 def test_recording(tmp_path, monkeypatch):
-    """⇧⌘Rで録画を始めて止めると、置き場所に音つきの動画(1280×720)ができ、
+    """⇧⌘Rで録画を始めて止めると、プログラムのフォルダに音つきの動画(1280×720)ができ、
     長さは録ったフレームの数に合う"""
     import subprocess
 
@@ -1278,4 +1359,169 @@ def test_state_shortcuts(tmp_path, monkeypatch):
     for _ in range(5):
         app.frame()
     assert "36" in lcd_text(app.m)
+    app.close()
+
+
+def test_keys_after_mode_switch_are_not_dropped():
+    """スイッチをRUNにしてすぐPROに戻したあとに打ったキーも落ちない(ROMがモードに気づくのは
+    スイッチを動かしてから最長0.8秒ほど。液晶の記号が変わるまで待ってから打つ)"""
+    import pytest
+    from conftest import HAVE_ROM
+    from helpers import boot, finish
+
+    from sc61box.machine import CLOCK
+
+    if not HAVE_ROM:
+        pytest.skip("ROMがない")
+    for k in range(0, 25, 3):
+        m, t = boot("1251")
+        m.run(CLOCK * k // 25)
+        t.add_mode("PRO")
+        t.add_text("10 A=1\n")
+        finish(m, t)
+        m.run(CLOCK * k // 25)
+        t.add_mode("RUN")
+        t.add_mode("PRO")
+        t.add_text("LIST\n")
+        finish(m, t)
+        m.run(CLOCK // 2)
+        assert lcd_text(m).replace("?", " ").split()[:2] == ["10", "A"], (k, lcd_text(m))
+
+
+@pytest.mark.parametrize("scale", [0.0, -1.0, float("nan")])
+def test_bad_scale_opens_smallest_window(scale):
+    """--scaleが0や負の数、NaNでも、ウィンドウが作れずに落ちず、いちばん小さい拡大率で開く"""
+    from sc61box.app import MIN_SCALE
+
+    app = make_app(frames=2, norom=True, scale=scale)
+    assert app.want_scale == MIN_SCALE and app.scale > 0
+    app.close()
+
+
+def test_missing_load_file_is_reported_before_start(tmp_path):
+    """--loadや--typeのファイルがなければ、起動の待ちのあとで落ちず、起動のときに見つからないと
+    断る"""
+    with pytest.raises(FileNotFoundError, match="見つかりません"):
+        make_app(frames=0, norom=True, load=str(tmp_path / "nosuch.hex"))
+    with pytest.raises(FileNotFoundError, match="見つかりません"):
+        make_app(frames=0, norom=True, type=str(tmp_path / "nosuch.txt"))
+
+
+def test_load_dump_with_bad_line_writes_nothing(tmp_path):
+    """--loadのダンプに、チェックサムの合わない行などが1つでもあれば、どの行も書かずに断る
+    (一覧から読み込むときと同じ)。正しいダンプは、起動の待ちのあとで書く"""
+    from sc61box.app import DumpError
+
+    bad = tmp_path / "bad.hex"
+    bad.write_text("C200 AA:AA\nC201 BB:00\n", encoding="utf-8")
+    with pytest.raises(DumpError, match="2"):
+        make_app(frames=0, norom=True, load=str(bad))
+    good = tmp_path / "good.hex"
+    good.write_text("C200 AA:AA\nC201 BB:BB\n", encoding="utf-8")
+    app = make_app(frames=90, norom=True, load=str(good))
+    assert app.m.mem[0xC200:0xC202] == b"\xaa\xbb"
+    app.close()
+
+
+def test_typing_finishes_after_reset_late_in_session():
+    """起動から長くたってから、打ち込みの途中でRESETを押しても、打ち込みが終わってキーが
+    離れる(CPUを初めに戻しても、時刻のサイクルは戻らない)"""
+    from conftest import HAVE_ROM
+
+    if not HAVE_ROM:
+        pytest.skip("ROMがない")
+    app = make_app(frames=60 * 60)
+    m = app.m
+    app.typer.add_mode("RUN")
+    app.typer.add_text("1234567890+1234567890\n")
+    for _ in range(10):
+        app.frame()
+    assert m.held and m.cpu.cycles > 10**7
+    before = m.cpu.cycles
+    app.press_reset()
+    assert m.cpu.pc == 0 and m.cpu.cycles == before
+    for _ in range(90):
+        app.frame()
+    assert not m.held and not app.typer.busy
+    app.close()
+
+
+@pytest.mark.parametrize(
+    ("norom", "loop", "pause"),
+    [
+        (True, "C20079C200", False),  # JP C200(抜けない)
+        (False, "C20079C200", False),
+        (False, "C200781D1779C200", False),  # CALL 1D17(ROMのキー待ち)をくり返す
+        (False, "C200781D1779C200", True),  # そのROMのルーチンの中で一時停止している
+    ],
+)
+def test_load_and_run_stops_running_machine_code(norom, loop, pause, tmp_path):
+    """CALLで呼んだマシン語が抜けずに動いているときに「読み込んで実行」を選ぶと、そのマシン語を
+    止めてから読み込み、実行する(止めないと、打つRUNが届かず何も起きない)。マシン語がROMの
+    ルーチンを呼んでいる最中でも、一時停止していても同じ。止めたことを知らせる"""
+    from conftest import HAVE_ROM
+
+    from sc61box import programs
+
+    if not norom and not HAVE_ROM:
+        pytest.skip("ROMがない")
+    path = tmp_path / "seven.bas"
+    path.write_text("10 PRINT 77\n", encoding="utf-8")
+    app = make_app(frames=90, norom=norom)
+    m = app.m
+    app.typer.add_mode("RUN")
+    settle(app)
+    at = int(loop[:4], 16)
+    code = bytes.fromhex(loop[4:])
+    m.mem[at : at + len(code)] = code
+    app.typer.add_text(f"CALL &{at:04X}\n")
+    settle(app)
+    for _ in range(30):
+        app.frame()
+    if norom:
+        assert m.basic is not None and m.basic.where == "call-direct"
+    else:
+        assert m.running_ram_code()
+    if pause:
+        app.toggle_halt()
+        assert app.bench.state == "pause"
+    prog = programs.find(str(path), m.model.name)
+    assert prog is not None
+    app.open_program(prog, run=True)
+    assert "止めて" in str(app.warning)
+    settle(app)
+    for _ in range(60):
+        app.frame()
+    assert lcd_text(m).strip().startswith("77")
+    app.close()
+
+
+@pytest.mark.parametrize("model", ["1251", "1245", "1261", "1350"])
+def test_running_ram_code_is_false_at_basic_prompts(model):
+    """ROM使用時、BASICの入力待ち(PRO・RUNモード、INPUTの待ち)では、マシン語の実行中とみない
+    (読み込むたびにRESETしないように)"""
+    from conftest import HAVE_ROM, HAVE_ROM_1245, HAVE_ROM_1260, HAVE_ROM_1350
+
+    have = {"1251": HAVE_ROM, "1245": HAVE_ROM_1245, "1261": HAVE_ROM_1260, "1350": HAVE_ROM_1350}
+    if not have[model]:
+        pytest.skip("ROMがない")
+    app = make_app(model=model, frames=90)
+    m = app.m
+
+    def mode(name):
+        if model == "1350":
+            app.typer.add_keys([["MODE"]])
+        else:
+            app.typer.add_mode(name)
+
+    mode("PRO")
+    app.typer.add_text('NEW\n10 INPUT "Q";A\n20 GOSUB 40\n30 END\n40 RETURN\n')
+    settle(app)
+    assert not m.running_ram_code()
+    mode("RUN")
+    settle(app)
+    assert not m.running_ram_code()
+    app.typer.add_text("RUN\n")
+    settle(app)
+    assert m.halted and not m.running_ram_code()
     app.close()

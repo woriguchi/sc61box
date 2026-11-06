@@ -1,4 +1,4 @@
-"""ROMなしのマシン語の作業欄(打ち込み、実行、1命令ずつ、止める所、貼り付け、逆アセンブル)"""
+"""ROMなしのマシン語の作業欄(打ち込み、実行、1命令ずつ、ブレークポイント、貼り付け、逆アセンブル)"""
 
 import os
 
@@ -10,7 +10,7 @@ from sc61box import app as appmod
 from sc61box import benchview, disasm, workbench
 from sc61box.machine import CLOCK, RomNotFound, new_machine
 
-VLINE = "C000 027F10F800523700 12"  # 本のダンプリストの縦線(第4章)
+VLINE = "C000 027F10F800523700 12"  # 本のダンプリストの縦線
 ev = pygame.event.Event
 
 
@@ -100,7 +100,7 @@ def test_run_vline():
 
 
 def test_step_and_finish():
-    """編集中に1命令を押すと、開始番地の最初の命令の前で止まる。1命令ずつ進んでRTNで終わる"""
+    """編集中にステップを押すと、開始番地の最初の命令の前で止まる。1命令ずつ進んでRTNで終わる"""
     m, b = bench()
     type_line(b, "C000 027F10F800523700")
     b.step()
@@ -114,7 +114,7 @@ def test_step_and_finish():
 
 
 def test_breakpoint_and_resume():
-    """止める所で止まり、続けるとその命令から実行する"""
+    """ブレークポイントで止まり、続けるとその命令から実行する"""
     m, b = bench()
     # C000 LIB 3 / C002 DECB / C003 JRNZM C002 / C005 RTN
     type_line(b, "C000 0303C3290237")
@@ -147,13 +147,13 @@ def test_step_over_call():
 
 
 def test_jump_to_rom_stops():
-    """まねていないROMのルーチンを呼ぶと、呼んだところで止まって名前を出す"""
+    """代替ROMルーチンのないROMの番地を呼ぶと、呼んだところで止まる"""
     m, b = bench()
-    type_line(b, "C000 EB5037")  # CAL 0B50(数の足し算)
+    type_line(b, "C000 EB6937")  # CAL 0B69(表の減算の番地)
     b.run()
     run_until_stop(m, b)
-    assert b.state == "pause" and m.cpu.pc == 0x0B50
-    assert "FADD" in b.reason and "ROMなしでは使えません" in b.reason
+    assert b.state == "pause" and m.cpu.pc == 0x0B69
+    assert "0B69" in b.reason and "ROMなしでは使えません" in b.reason
 
 
 def test_endless_loop_can_be_paused():
@@ -249,7 +249,7 @@ def test_app_without_rom(monkeypatch):
         return real(model, rom=False)
 
     monkeypatch.setattr(appmod, "new_machine", no_rom)
-    app = make_app(scale=0.5, frames=3)
+    app = make_app(scale=0.5, frames=3, basic=False)
     assert app.bench is not None and app.m.norom
     assert app.window.get_width() == app.body_size[0] + benchview.PANE_W
     _type(app, "C000 027F10F800523700\n")
@@ -273,6 +273,28 @@ def test_app_without_rom(monkeypatch):
     app.close()
 
 
+def test_app_without_rom_pc1350(monkeypatch):
+    """PC-1350もROMがなければROMなしで起動する(ROMなしのBASICで動く)。RAMカードの大きさも
+    そのまま使う。--no-basicなら作業欄だけで動く"""
+    real = appmod.new_machine
+
+    def no_rom(model="1251", card=0, overseas=False, rom=True):
+        if rom:
+            raise RomNotFound("ROMがない")
+        return real(model, card, overseas, rom=False)
+
+    monkeypatch.setattr(appmod, "new_machine", no_rom)
+    app = make_app("1350", scale=0.5, frames=3, card=16)
+    assert app.m.norom and app.is1350 and app.m.model.ram[0] == 0x2000
+    assert app.m.basic is not None and not app.bench_only
+    app.close()
+    app = make_app("1350", scale=0.5, frames=3, card=16, basic=False)
+    assert app.bench_only
+    app.bench.run()
+    assert app.bench_view is not None and "PC-1350" in app.bench_view.hint()
+    app.close()
+
+
 def test_app_open_hex_program(tmp_path, monkeypatch):
     """ROMなしでプログラムを読み込むと、マシン語だけを書き、呼び出し用のBASICの最後のCALLを
     開始番地にする"""
@@ -280,7 +302,7 @@ def test_app_open_hex_program(tmp_path, monkeypatch):
 
     (tmp_path / "two.hex").write_text("C200 37\nC000 027F10F80052 37\n", encoding="utf-8")
     (tmp_path / "two.bas").write_text("10 CALL &C200:CALL &C000\n20 GOTO 20\n", encoding="utf-8")
-    app = make_app(scale=0.5, frames=2, norom=True)
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
     assert app.bench is not None
     app.open_program(programs.load_program(str(tmp_path / "two.bas")), run=True)
     assert app.bench.start == 0xC000 and app.m.mem[0xC200] == 0x37
@@ -293,11 +315,11 @@ def test_app_open_hex_program(tmp_path, monkeypatch):
 def test_norom_font_at_rom_addresses():
     """ROMなしの本体には、ROMと同じ番地と並びで、1から描いた文字の形を置く(本の見本の
     電光掲示板などがROMの表を読むため)"""
-    from sc61box import norom
+    from sc61box import charset
 
     m, _b = bench()
-    assert bytes(m.mem[0x43C4 + 5 * 0x51 :][:5]) == norom.glyph("A") != bytes(5)
-    assert bytes(m.mem[0x4414 + 5 * 0x17 :][:5]) == norom.glyph("¥")
+    assert bytes(m.mem[0x43C4 + 5 * 0x51 :][:5]) == charset.glyph("A") != bytes(5)
+    assert bytes(m.mem[0x4414 + 5 * 0x17 :][:5]) == charset.glyph("¥")
 
 
 def test_norom_routines():
@@ -338,7 +360,7 @@ def test_norom_ok():
     hexed = programs.Program("a", blocks=[(0xC000, b"\x37")])
     assert hexed.norom_ok
     assert not programs.Program("b", basic="10 PRINT 1\n").norom_ok
-    assert not programs.Program("c", blocks=[(0xC000, b"\x37")], norom="off").norom_ok
+    assert not programs.Program("c", blocks=[(0xC000, b"\x37")], norom_use="off").norom_ok
 
 
 BUNDLED = os.path.join(os.path.dirname(__file__), "..", "programs")
@@ -347,7 +369,7 @@ BUNDLED = os.path.join(os.path.dirname(__file__), "..", "programs")
 @pytest.mark.parametrize(
     ("model", "name"),
     [("1251", "pc1251/ball"), ("1251", "pc1251/break"), ("1251", "pc1251/scroll"),
-     ("1245", "pc1245/break"), ("1261", "pc1261/ball")],
+     ("1245", "pc1245/break"), ("1261", "pc1261/ball"), ("1350", "pc1350/ball")],
 )  # fmt: skip
 def test_bundled_programs_without_rom(model, name):
     """同梱の弾むボール、ブロック崩し、文字を流す見本は、ROMなしでも遊べて、BRKで戻る"""
@@ -400,7 +422,7 @@ def test_key_repeat_only_while_editing(monkeypatch):
 
     now = [100.0]
     monkeypatch.setattr(appmod.time, "monotonic", lambda: now[0])
-    app = make_app(scale=0.5, frames=2, norom=True)
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
     b = app.bench
     assert pygame.key.get_repeat() == (0, 0)  # pygameのリピートは使わない
     _type(app, "C000 2D01")  # JR C000(自分へ)
@@ -442,7 +464,7 @@ def test_dump_follows_pc_and_disasm_follows_cursor():
     """一時停止するたびにダンプのカーソルがPCの命令に移り、カーソルを動かせば逆アセンブルが
     ついていく。逆アセンブルの行を押しても、ダンプの行の並び(開始番地から8バイトずつ)は
     変わらない"""
-    app = make_app(scale=0.5, frames=2, norom=True)
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
     b, v = app.bench, app.bench_view
     assert b is not None and v is not None
     _type(app, "C000 0201020203020402\n05020602070208")  # LIA 1 / LIA 2 / ... / LIA 8
@@ -481,7 +503,7 @@ def test_export_keeps_code_after_zeros(tmp_path, monkeypatch):
     from sc61box import programs
 
     monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
-    app = make_app(scale=0.5, frames=2, norom=True)
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
     b = app.bench
     assert b is not None
     b.paste(_hex_lines(0xC000, JUMP_OVER_ZEROS) + "C300 37\n")
@@ -500,7 +522,7 @@ def test_export_keeps_code_after_zeros(tmp_path, monkeypatch):
 def test_menu_paste_and_export_use_bench(tmp_path, monkeypatch):
     """ROMなしでは、メニューの貼り付けと書き出しも⌘V・⌘Eと同じく作業欄のダンプを扱う"""
     monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
-    app = make_app(scale=0.5, frames=2, norom=True)
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
     monkeypatch.setattr(app, "clipboard", lambda: "C000 027F10F8005237")
     actions = {it.label: it.action for it in app.popup_items("program") if it.action}
     actions["クリップボードからダンプを貼り付ける"]()
@@ -513,8 +535,8 @@ def test_menu_paste_and_export_use_bench(tmp_path, monkeypatch):
 
 def test_pause_shortcut_controls_bench():
     """ROMなしでは、⌘Pと右クリックの一時停止も作業欄の一時停止と続けるになる(止めた状態は
-    1つだけで、作業欄の「続ける」でそのまま動き出す)"""
-    app = make_app(scale=0.5, frames=2, norom=True)
+    1つだけで、作業欄の「続行」でそのまま動き出す)"""
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
     b = app.bench
     assert b is not None
     b.paste("C000 2D01")  # JR C000(自分へ)
@@ -539,8 +561,8 @@ def test_pause_shortcut_controls_bench():
 
 def test_state_restores_bench(tmp_path, monkeypatch):
     """どこでもセーブに作業欄の開始番地と実行の状態も書く。実行中に保存したものは、保存した
-    ときのPCで一時停止した状態に戻り、「続ける」で続きから動く"""
-    app = make_app(scale=0.5, frames=2, norom=True)
+    ときのPCで一時停止した状態に戻り、「続行」で続きから動く"""
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
     monkeypatch.setattr(app, "state_file", str(tmp_path / "state.json"))
     b = app.bench
     assert b is not None
@@ -567,20 +589,20 @@ def test_restart_keeps_written_ranges(tmp_path, monkeypatch):
     0が続いた先のコードを落とさない。範囲を保存していない前の版のRAMでは、0でない所を
     すべて書き出す"""
     monkeypatch.setattr(appmod, "STATE_DIR", str(tmp_path))
-    app = make_app(scale=0.5, frames=2, norom=True, fresh=False)
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False, fresh=False)
     b = app.bench
     assert b is not None
     b.paste(_hex_lines(0xC000, JUMP_OVER_ZEROS))
     b.paste("C300 37")
     b.start = 0xC000
     app.close()
-    app = make_app(scale=0.5, frames=2, norom=True, fresh=False)
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False, fresh=False)
     b = app.bench
     assert b is not None and b.start == 0xC000 and b.state == "edit"
     assert b.export_ranges() == [(0xC000, 0xC027), (0xC300, 0xC301)]
     app.close()
     os.remove(appmod.bench_file(appmod.ram_file("1251", norom=True)))
-    app = make_app(scale=0.5, frames=2, norom=True, fresh=False)
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False, fresh=False)
     assert app.bench is not None
     assert app.bench.export_ranges() == [(0xC000, 0xC027), (0xC300, 0xC301)]
     app.close()
@@ -588,11 +610,11 @@ def test_restart_keeps_written_ranges(tmp_path, monkeypatch):
 
 def test_undo_loading_resumes_running_program(tmp_path):
     """実行中に別のプログラムを読み込んでから「読み込む前に戻す」と、そのときのPCで一時停止
-    した状態に戻り、「続ける」で続きから動く"""
+    した状態に戻り、「続行」で続きから動く"""
     from sc61box import programs
 
     (tmp_path / "other.hex").write_text("C200 37\n", encoding="utf-8")
-    app = make_app(scale=0.5, frames=2, norom=True)
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
     b = app.bench
     assert b is not None
     b.paste("C100 2D01")
@@ -616,7 +638,7 @@ def test_export_keeps_start_address(tmp_path, monkeypatch):
     from sc61box import programs
 
     monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
-    app = make_app(scale=0.5, frames=2, norom=True)
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
     b = app.bench
     assert b is not None
     b.paste("C000 37\nC100 027F10F8005237")
@@ -625,7 +647,7 @@ def test_export_keeps_start_address(tmp_path, monkeypatch):
     app.close()
     path = next(tmp_path.rglob("dump-*.hex"))
     assert "# run: CALL &C100" in path.read_text(encoding="utf-8")
-    app = make_app(scale=0.5, frames=2, norom=True)
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
     assert app.bench is not None
     app.open_program(programs.load_program(str(path)), run=True)
     assert app.bench.start == 0xC100
@@ -637,7 +659,7 @@ def test_export_keeps_start_address(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("routine", ["FF44", "FFBC"])
 def test_step_over_rom_routine(routine):
-    """ROMのルーチンの代わり(CAL 1F44・CAL 1FBC)も、「CALLごと」で戻り先の命令の前で止まる
+    """代替ROMルーチン(CAL 1F44・CAL 1FBC)も、「CALL単位で実行」で戻り先の命令の前で止まる
     (戻り先の命令はまだ実行しない)"""
     m, b = bench()
     b.paste(f"C000 {routine}026337")  # CAL / LIA 63 / RTN
@@ -650,7 +672,7 @@ def test_step_over_rom_routine(routine):
 
 
 def test_rom_routine_advances_timer():
-    """ROMのルーチンの代わりにかかったことにするサイクルも、タイマ(2ms・512ms)を進める"""
+    """代替ROMルーチンにかかったことにするサイクルも、タイマ(2ms・512ms)を進める"""
     from sc61box.machine import TICK_2MS
 
     m, b = bench()
@@ -665,26 +687,26 @@ def test_rom_routine_advances_timer():
 
 
 def test_step_does_not_run_missing_rom():
-    """ROMなしで使えないROMの番地で止まったあと、「1命令」や「CALLごと」を押しても、
-    そこの命令(ROMの代わりの0)は実行せず、レジスタもPCも変えない"""
+    """ROMなしで使えないROMの番地で止まったあと、「ステップ」や「CALL単位で実行」を押しても、
+    そこの命令(ROMの番地の0)は実行せず、レジスタもPCも変えない"""
     m, b = bench()
-    b.paste("C000 0007EB5037")  # LII 07 / CAL 0B50 / RTN
+    b.paste("C000 0007EB6937")  # LII 07 / CAL 0B69(代替ROMルーチンはない) / RTN
     b.start = 0xC000
     b.run()
     run_until_stop(m, b)
-    assert b.state == "pause" and m.cpu.pc == 0x0B50 and m.cpu.ram[0] == 7
+    assert b.state == "pause" and m.cpu.pc == 0x0B69 and m.cpu.ram[0] == 7
     why = b.reason
     for act in (b.step, b.step_over):
         act()
-        assert b.state == "pause" and m.cpu.pc == 0x0B50 and m.cpu.ram[0] == 7
+        assert b.state == "pause" and m.cpu.pc == 0x0B69 and m.cpu.ram[0] == 7
         assert b.reason == why
     b.resume()  # 続けても、同じ所でまた止まる
     run_until_stop(m, b)
-    assert b.state == "pause" and m.cpu.pc == 0x0B50 and m.cpu.ram[0] == 7
+    assert b.state == "pause" and m.cpu.pc == 0x0B69 and m.cpu.ram[0] == 7
 
 
 def test_step_over_recursive_call():
-    """再帰の呼び出しを「CALLごと」で飛び越すと、内側の呼び出しが同じ戻り先へ戻っても止まらず、
+    """再帰の呼び出しを「CALL単位で実行」で飛び越すと、内側の呼び出しが同じ戻り先へ戻っても止まらず、
     押したCALLが戻ってきたところで止まる"""
     m, b = bench()
     # C000 LIA 3 / CALL C010 / RTN
@@ -704,7 +726,7 @@ def test_step_over_recursive_call():
 
 
 def test_step_over_recursive_stops_at_break():
-    """再帰の呼び出しを飛び越している途中でも、戻り先に置いた止める所では止まる"""
+    """再帰の呼び出しを飛び越している途中でも、戻り先に置いたブレークポイントでは止まる"""
     m, b = bench()
     b.paste("C000 020378C01037\nC010 437EC01878C010C237")
     b.start = 0xC000
@@ -714,14 +736,14 @@ def test_step_over_recursive_stops_at_break():
     b.toggle_break(0xC017)
     b.step_over()
     run_until_stop(m, b)
-    assert b.state == "pause" and m.cpu.pc == 0xC017 and "止める所" in b.reason
+    assert b.state == "pause" and m.cpu.pc == 0xC017 and "ブレークポイント" in b.reason
     assert m.cpu.ram[3] == 0  # 内側の戻りで、INCBの前に止まっている
 
 
 def test_step_over_recursive_return_loops():
     """再帰の内側の戻り先で終わらないループになっても、フレームごとに画面へ戻り、一時停止
     できる(戻り先を通り過ぎるたびに、呼び出しを入れ子にしない)"""
-    app = make_app(scale=0.5, frames=2, norom=True)
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
     b, m = app.bench, app.m
     assert b is not None
     # C017でJR C017を繰り返す(内側から戻ったあと、そこから先へ進まない)
@@ -742,23 +764,23 @@ def test_step_over_recursive_return_loops():
 @pytest.mark.parametrize("act", ["step", "over", "resume"])
 @pytest.mark.parametrize("brk", [False, True])
 def test_unsupported_rom_never_runs(act, brk):
-    """ROMなしで使えないROMの番地で止まったあと、止める所の有無にかかわらず、「1命令」
-    「CALLごと」「続ける」のどれでもROMの番地の命令(0)を実行しない。止める所も置けない"""
-    app = make_app(scale=0.5, frames=2, norom=True)
+    """ROMなしで使えないROMの番地で止まったあと、ブレークポイントの有無にかかわらず、「ステップ」
+    「CALL単位で実行」「続行」のどれでもROMの番地の命令(0)を実行しない。ブレークポイントも置けない"""
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
     b, m = app.bench, app.m
     assert b is not None
-    b.paste("C000 0007EB5037")  # LII 07 / CAL 0B50 / RTN
+    b.paste("C000 0007EB6937")  # LII 07 / CAL 0B69 / RTN
     b.start = 0xC000
     app.bench_do("run")
     app.frame()
-    assert b.state == "pause" and m.cpu.pc == 0x0B50
+    assert b.state == "pause" and m.cpu.pc == 0x0B69
     if brk:
-        assert b.toggle_break(0x0B50) is None and 0x0B50 not in b.breaks
-        b.breaks.add(0x0B50)  # 前の版で置いた止める所が残っていても
+        assert b.toggle_break(0x0B69) is None and 0x0B69 not in b.breaks
+        b.breaks.add(0x0B69)  # 前の版で置いたブレークポイントが残っていても
     app.bench_do(act)
     for _ in range(3):
         app.frame()
-    assert b.state == "pause" and m.cpu.pc == 0x0B50 and m.cpu.ram[0] == 7
+    assert b.state == "pause" and m.cpu.pc == 0x0B69 and m.cpu.ram[0] == 7
     assert app.bench_view is not None
     assert [btn.action for btn in app.bench_view.button_specs()] == ["abandon"]
     app.close()
@@ -767,8 +789,8 @@ def test_unsupported_rom_never_runs(act, brk):
 @pytest.mark.parametrize("act", ["step", "over", "resume"])
 @pytest.mark.parametrize("brk", [False, True])
 def test_ram_call_paths(act, brk):
-    """RAMの中では、止める所の有無にかかわらず、「1命令」「CALLごと」「続ける」が動く"""
-    app = make_app(scale=0.5, frames=2, norom=True)
+    """RAMの中では、ブレークポイントの有無にかかわらず、「ステップ」「CALL単位で実行」「続行」が動く"""
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
     b, m = app.bench, app.m
     assert b is not None
     b.paste("C000 78C01037\nC010 020537")  # CALL C010 / RTN、C010 LIA 5 / RTN
@@ -793,12 +815,12 @@ def test_internal_ram_folds(tmp_path, monkeypatch):
     起動したときも同じ。覚えたものがなければ開いておく"""
     monkeypatch.setattr(appmod, "STATE_DIR", str(tmp_path))
     monkeypatch.setattr(pygame.display, "get_desktop_sizes", lambda: [(1920, 1080)])
-    app = make_app(scale=0.5, frames=2, norom=True)
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
     v = app.bench_view
     assert v is not None and v.show_iram
     tall = app.window.get_height()
     rect = next(r for r, kind, _a in v.hits if kind == "iram")
-    pos = rect.center  # hitsの場所は窓の座標
+    pos = rect.center  # hitsの場所はウィンドウの座標
     app.handle(ev(pygame.MOUSEBUTTONDOWN, button=1, pos=pos))
     app.handle(ev(pygame.MOUSEBUTTONUP, button=1, pos=pos))
     assert not v.show_iram and v.min_height() < v.min_height(True)
@@ -806,7 +828,7 @@ def test_internal_ram_folds(tmp_path, monkeypatch):
     assert app.window.get_height() <= tall
     assert not any(kind == "iram" and r.bottom > rect.bottom + 20 for r, kind, _a in v.hits)
     app.close()
-    app = make_app(scale=0.5, frames=2, norom=True)
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
     assert app.bench_view is not None and not app.bench_view.show_iram
     app.close()
 
@@ -815,21 +837,21 @@ def test_internal_ram_folded_on_small_screen(tmp_path, monkeypatch):
     """覚えたものがなく、開いた作業欄が画面の高さに入らなければ、内部RAMは閉じておく"""
     monkeypatch.setattr(appmod, "STATE_DIR", str(tmp_path))
     monkeypatch.setattr(pygame.display, "get_desktop_sizes", lambda: [(1280, 720)])
-    app = make_app(scale=0.5, frames=2, norom=True)
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
     assert app.bench_view is not None and not app.bench_view.show_iram
     app.close()
 
 
 def test_undo_typing_byte_by_byte():
     """打ち込みは1バイト(2桁)ずつ取り消せ、やり直せる。取り消すとカーソルも戻り、
-    書いた印(書き出す範囲)も消える"""
+    書いたことを示すフラグ(書き出す範囲)も消える"""
     m, b = bench()
     type_line(b, "C000 0102")
     assert bytes(m.mem[0xC000:0xC002]) == b"\x01\x02"
-    assert b.undo() == "C001番地の打ち込みを取り消しました"
+    assert b.undo() == "C001番地への入力を取り消しました"
     assert bytes(m.mem[0xC000:0xC002]) == b"\x01\x00"
     assert (b.cursor, b.nib, b.field) == (0xC001, 0, "data")
-    assert b.redo() == "C001番地の打ち込みをやり直しました"
+    assert b.redo() == "C001番地への入力をやり直しました"
     assert m.mem[0xC001] == 2 and b.cursor == 0xC002
     b.undo()
     b.undo()
@@ -876,7 +898,7 @@ def test_undo_keeps_running_code_alone():
 
 def test_undo_shortcut_and_menu():
     """⌘Z(Ctrl+Z)で取り消し、⇧⌘Zでやり直す。プログラムのメニューにも同じ項目がある"""
-    app = make_app(scale=0.5, frames=2, norom=True)
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
     b = app.bench
     assert b is not None
     _type(app, "C000 AB")
@@ -896,7 +918,7 @@ def test_undo_shortcut_and_menu():
 
 def test_undo_paste_through_ram_mirror():
     """同じRAMを指すミラーの番地(PC-1251のB000〜B7FFはB800〜BFFF)を1回で貼り付けても、
-    取り消すと貼り付ける前の値と書いた印に戻る"""
+    取り消すと貼り付ける前の値と書いたことを示すフラグに戻る"""
     m, b = bench()
     b.paste("B800 11\nB000 22\n")
     assert m.read(0xB800) == 0x22
@@ -909,8 +931,8 @@ def test_undo_paste_through_ram_mirror():
 
 def test_undo_disabled_states():
     """取り消せないときは、メニューの項目と作業欄のボタンを押せない状態にし、理由を出す。
-    取り消せたことの知らせは警告の色にしない"""
-    app = make_app(scale=0.5, frames=2, norom=True)
+    取り消せたことのメッセージは警告の色にしない"""
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
     b, v = app.bench, app.bench_view
     assert b is not None and v is not None
 
@@ -941,7 +963,7 @@ def test_undo_disabled_states():
 
 def test_undo_button_in_pane():
     """作業欄の取り消すボタンを押すと、1バイトの打ち込みを取り消す"""
-    app = make_app(scale=0.5, frames=2, norom=True)
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
     v = app.bench_view
     assert v is not None
     _type(app, "C000 AB")
@@ -956,7 +978,7 @@ def test_undo_button_in_pane():
 def test_undo_notes_read_naturally_and_dump_stays():
     """取り消しの説明は、1バイトなら値の変化、ほかは「貼り付け(2バイト)を取り消す」の形。
     書き出す範囲がなくなっても、ダンプの位置は変わらない"""
-    app = make_app(scale=0.5, frames=2, norom=True)
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
     b, v = app.bench, app.bench_view
     assert b is not None and v is not None
     b.paste("C000 0102")
@@ -989,7 +1011,7 @@ def test_set_start_is_kept():
     そのプログラムの開始番地になる"""
     m, b = bench()
     b.paste("C000 37")
-    assert b.set_start_at(0xC010) == "開始番地をC010にしました"
+    assert b.set_start_at(0xC010) == workbench.Said("開始番地をC010にしました", ok=True)
     assert (b.start, b.start_by) == (0xC010, "user")
     b.paste("C100 2D01")
     assert b.start == 0xC010
@@ -998,7 +1020,8 @@ def test_set_start_is_kept():
     b.to_addr()
     type_line(b, "C300 37")
     assert b.start == 0xC010
-    assert "RAMの外" in b.set_start_at(0x1000) and b.start == 0xC010
+    said = b.set_start_at(0x1000)
+    assert not said.ok and "RAMの外" in said.text and b.start == 0xC010
     b.load_blocks([(0xC400, b"\x37")], 0xC400)
     assert (b.start, b.start_by) == (0xC400, "auto")
 
@@ -1020,7 +1043,7 @@ def test_start_survives_state_save():
 def test_start_field_typing():
     """開始番地の欄をクリックして16進表記の4桁を打つと、開始番地になる。Escでやめると
     変わらない。打っているあいだ、カーソルは動かない"""
-    app = make_app(scale=0.5, frames=2, norom=True)
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
     b, v = app.bench, app.bench_view
     assert b is not None and v is not None
     _type(app, "C000 37")
@@ -1045,8 +1068,8 @@ def test_start_field_typing():
 
 def test_start_shortcut_and_menu():
     """⌘Aでカーソルの所を開始番地にする。作業欄の右クリックでは、クリックした番地を開始番地に
-    する、そこから実行する、止める所を置くを選べる。開始番地の行には印を描く"""
-    app = make_app(scale=0.5, frames=2, norom=True)
+    する、そこから実行する、ブレークポイントの設定を選べる。開始番地の行にはマークを描く"""
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
     b, v = app.bench, app.bench_view
     assert b is not None and v is not None
     b.paste("C000 37\nC010 027F10F8005237")
@@ -1063,7 +1086,7 @@ def test_start_shortcut_and_menu():
     assert labels == [
         "C000番地を開始番地にする",
         "C000番地から実行する",
-        "C000番地の止める所を置く",
+        "C000番地にブレークポイントを設定",
         "",
         "C000番地からデータにする",
         "C000番地から命令にする",
@@ -1071,9 +1094,9 @@ def test_start_shortcut_and_menu():
     ]
     app.popup_run(2)
     assert 0xC000 in b.breaks and app.popup is None
-    app.frame()  # 開始番地の印と止める所を描く
+    app.frame()  # 開始番地のマークとブレークポイントを描く
     app.handle(ev(pygame.MOUSEBUTTONDOWN, button=3, pos=hit[0].center))
-    assert app.popup_items()[2].label == "C000番地の止める所を外す"
+    assert app.popup_items()[2].label == "C000番地のブレークポイントを解除"
     app.popup_run(0)
     assert b.start == 0xC000
     app.handle(ev(pygame.MOUSEBUTTONDOWN, button=3, pos=hit[0].center))
@@ -1091,7 +1114,7 @@ def test_start_shortcut_and_menu():
 def test_paste_into_start_field(monkeypatch):
     """開始番地の欄に打っているあいだの⌘Vは、番地として欄へ入れ、ダンプは書き換えない。
     番地でなければ欄はそのまま。⌘Zは欄の字を消すだけ、⌘Aは何もしない"""
-    app = make_app(scale=0.5, frames=2, norom=True)
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
     b, v = app.bench, app.bench_view
     _type(app, "C000 020137")
     b.place(0xC000)
@@ -1115,7 +1138,7 @@ def test_paste_into_start_field(monkeypatch):
 
 def test_counter_reset_clears_timer_flags():
     """OUTCでカウンタをリセットすると、立ったままのタイマのフラグも消える。リセットのあとTEST 01で
-    512msを待つプログラム(押し続けたキーの繰り返しまでの待ちなど)が、前に立った印で
+    512msを待つプログラム(押し続けたキーの繰り返しまでの待ちなど)が、前に立ったフラグで
     すぐに抜けない"""
     from sc61box.machine import TICK_2MS
 
@@ -1135,7 +1158,7 @@ def test_counter_reset_clears_timer_flags():
 
 def test_timer_counts_only_after_reset_in_a_run():
     """まとめて動かす区切りの途中でカウンタをリセットしても、タイマはリセットのあとの
-    時間だけ進む(区切りの頭からの時間を足すと、リセットの直後に2msの印が立つ)"""
+    時間だけ進む(区切りの頭からの時間を足すと、リセットの直後に2msのフラグが立つ)"""
     from sc61box.machine import TICK_2MS
 
     m, b = bench()
@@ -1157,7 +1180,7 @@ def test_timer_counts_only_after_reset_in_a_run():
 def test_lcd_duty_from_real_writes():
     """液晶RAMに書いた時刻から、点いていた時間の割合を求める。ほんの数サイクルだけ点いた
     ドットは、そのフレームのあいだずっと点いていたようには出ない"""
-    app = make_app(scale=0.5, frames=2, norom=True)
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
     b = app.bench
     # F800に7Fを書いてすぐ00に戻し、WAITで待って繰り返す
     b.paste("C000 027F10F800520200524EFF4EFF2D0E")
@@ -1170,9 +1193,26 @@ def test_lcd_duty_from_real_writes():
     app.close()
 
 
+def test_lcd_duty_ignores_writes_while_display_off():
+    """液晶を消しているあいだに液晶RAMに書いたもの(ROMが計算のあいだ作業に使う)は、
+    点いていたとみない"""
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
+    b = app.bench
+    # 液晶を消してF800に7Fを書き、待ってから00に戻して液晶を点け、待つのを繰り返す
+    b.paste("C000 0200125FDBDF 027F10F80052 4EFF4EFF 020052 0201125FDBDF 4EFF4EFF 2D1E")
+    app.bench_do("run")
+    for _ in range(3):
+        app.frame()
+    assert app.lcd_any_on
+    share = app.lcd_duty[0]
+    assert share[0] == 0 and share[6] == 0
+    assert app.panel.level[0][0] < 0.01
+    app.close()
+
+
 def test_tab_jumps_to_typed_address():
     """Tabで番地の欄へ移り、4桁打つとその番地の行へ飛ぶ(メモリは書き換えない)。説明にも出す"""
-    app = make_app(scale=0.5, frames=2, norom=True)
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
     b, v = app.bench, app.bench_view
     assert b is not None and v is not None
     _type(app, "C000 37")
@@ -1191,7 +1231,7 @@ def test_dump_list_export_reloads(tmp_path, monkeypatch):
     from sc61box import programs
 
     monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
-    app = make_app(scale=0.5, frames=2, norom=True)
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
     b = app.bench
     assert b is not None
     b.paste(_hex_lines(0xC000, JUMP_OVER_ZEROS))
@@ -1224,10 +1264,10 @@ def test_hex_file_checksums():
     assert not errors and len(blocks) == 2
     blocks, errors = programs.parse_hex("C000 027F10F800523700:12\nC008 0102:04\n", "x.hex ")
     assert blocks == [(0xC000, bytes.fromhex("027F10F800523700"))]
-    assert errors == ["x.hex 2行目のチェックサムが合わない(計算すると03): C008 0102:04"]
+    assert errors == ["x.hex 2行目のチェックサムが合いません(計算すると03): C008 0102:04"]
     for bad in ("0G", "3", "", "03:03"):
         blocks, errors = programs.parse_hex(f"C008 0102:{bad}\n")
-        assert not blocks and "チェックサム(16進表記2桁)ではない" in errors[0]
+        assert not blocks and "チェックサム(16進表記2桁)ではありません" in errors[0]
     m, b = bench()
     res = b.paste("C000 027F10F800523700:13\nC008: 01 02 : 03\n")
     assert res.written == 10 and res.bad_sums == [0xC000]
@@ -1237,7 +1277,7 @@ def test_span_field_typing(monkeypatch, tmp_path):
     """範囲の行をクリックして始めと終わりの番地を8桁打つと、書き出す範囲になる。Escでやめる、
     何も打たずにEnterで自動に戻す。逆の順は理由を出す。⌘Vで貼り付けられる"""
     monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
-    app = make_app(scale=0.5, frames=2, norom=True)
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
     b, v = app.bench, app.bench_view
     assert b is not None and v is not None
     _type(app, "C000 020137")
@@ -1256,7 +1296,7 @@ def test_span_field_typing(monkeypatch, tmp_path):
     _type(app, "C010C00")
     _key(app, pygame.K_BACKSPACE)
     _type(app, "00")
-    assert b.span is None and "前です" in v.flash and not v.flash_ok
+    assert b.span is None and "前にあります" in v.flash and not v.flash_ok
     app.handle(ev(pygame.MOUSEBUTTONDOWN, button=1, pos=rect.center))
     _type(app, "C000C00F")
     assert b.span == (0xC000, 0xC010) and b.export_ranges() == [(0xC000, 0xC010)]
@@ -1287,7 +1327,7 @@ def test_span_field_typing(monkeypatch, tmp_path):
 
 def test_span_without_written_bytes():
     """書いた所がなくても、範囲を決めれば書き出せる(BASICのPOKEで書いたマシン語など)"""
-    app = make_app(scale=0.5, frames=2, norom=True)
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
     b, v = app.bench, app.bench_view
     assert b is not None and v is not None
     app.frame()
@@ -1317,8 +1357,8 @@ def test_full_range_export_finishes():
 
 def test_fields_keep_non_hex_keys():
     """開始番地と範囲の欄では、空白や区切りの字を打っても欄に打ったまま(続けて打った字で
-    ダンプを書き換えない)。ほかの字は知らせを出す。矢印は欄をやめてカーソルを動かす"""
-    app = make_app(scale=0.5, frames=2, norom=True)
+    ダンプを書き換えない)。ほかの字はメッセージを出す。矢印は欄をやめてカーソルを動かす"""
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
     b, v = app.bench, app.bench_view
     assert b is not None and v is not None
     _type(app, "C000 37")
@@ -1347,7 +1387,7 @@ def test_fields_keep_non_hex_keys():
 
 def test_auto_button_clears_span():
     """自分で範囲を決めると、範囲の行の右に「自動に戻す」が出る。押すと書いた所からの範囲"""
-    app = make_app(scale=0.5, frames=2, norom=True)
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
     b, v = app.bench, app.bench_view
     assert b is not None and v is not None
     _type(app, "C000 37")
@@ -1386,3 +1426,299 @@ def test_restore_puts_cursor_on_address():
     assert b2.field == "addr"
     type_line(b2, "C000 37")
     assert bytes(m2.mem[0xC000:0xC002]) == bytes.fromhex("377F")
+
+
+def _frames_until(app, done, limit=600):
+    for _ in range(limit):
+        app.frame()
+        if done():
+            return True
+    return False
+
+
+def test_app_without_rom_runs_basic(monkeypatch):
+    """ROMがなければ、PC-1251はROMなしのBASICで動く。作業欄はROMのある本体と同じ扱いで、
+    実行のボタン(⌘G)は、BASICが入力を待っていれば「CALL &開始番地」を打ったのと同じ"""
+    from basic_diff import lcd
+
+    real = appmod.new_machine
+
+    def no_rom(model="1251", card=0, overseas=False, rom=True):
+        if rom:
+            raise RomNotFound("ROMがない")
+        return real(model, rom=False)
+
+    monkeypatch.setattr(appmod, "new_machine", no_rom)
+    app = make_app(scale=0.5, frames=3)
+    m, b = app.m, app.bench
+    assert m.norom and m.basic is not None and b.live and b.state == "run"
+    assert not app.bench_only
+    app.typer.add_text("1+2\n")
+    assert _frames_until(app, lambda: lcd(m).strip() == "3.")
+    b.paste("C000 10C100025A5237")  # C100に5Aを書いて戻る(LIDP C100、LIA 5A、STD、RTN)
+    b.start = 0xC000
+    app.bench_do("run")
+    assert _frames_until(app, lambda: m.mem[0xC100] == 0x5A and m.basic.idle)
+    assert lcd(m).startswith(">")
+    assert m.basic.active and b.state == "run"
+    # BASICが動いているあいだは、1命令ずつは進められない
+    app.bench_do("pause")
+    app.bench_do("step")
+    assert b.state == "pause" and "BASIC" in b.reason
+    app.bench_do("resume")
+    assert b.state == "run"
+
+
+def test_basic_call_from_bench_waits_for_input():
+    """作業欄からのCALLは、BASICが行を打つキーを待っているときだけ受ける"""
+    from basic_diff import basic_machine
+
+    m = basic_machine()
+    basic = m.basic
+    assert basic is not None and basic.idle
+    m.write(0xC000, 0x37)
+    assert basic.request_call(0xC000)
+    assert not basic.request_call(0xC000)  # 前の頼みがまだ済んでいない
+    m.run(CLOCK // 5)
+    assert basic.idle and basic.pending_call is None
+
+
+def test_rom_bench_run_types_call():
+    """ROMのある本体でも、作業欄の実行のボタン(⌘G)は、BASICが入力を待っていれば
+    「CALL &開始番地」を打つ"""
+    from conftest import HAVE_ROM
+
+    from sc61box.lcdtext import lcd_text
+
+    if not HAVE_ROM:
+        pytest.skip("ROMがない")
+    app = make_app(scale=0.5, frames=60)
+    m, b = app.m, app.bench
+    assert b.live and not m.norom
+    b.paste("C000 10C100025A5237")  # C100に5Aを書いて戻る(LIDP C100、LIA 5A、STD、RTN)
+    b.start = 0xC000
+    m.write(0xC100, 0)
+    app.bench_do("run")
+    assert app.typer.busy
+    assert _frames_until(app, lambda: not app.typer.busy and m.mem[0xC100] == 0x5A)
+    app.typer.add_text("5\n")
+    assert _frames_until(app, lambda: not app.typer.busy)
+    # PRINTの待ちでは押せない(CLを打つとプログラムが止まってしまう)
+    for step in ("PRO", "10 PRINT 1\n", "RUN", "RUN\n"):
+        if step in ("PRO", "RUN"):
+            app.typer.add_mode(step)
+        else:
+            app.typer.add_text(step)
+        assert _frames_until(app, lambda: not app.typer.busy)
+        for _ in range(100):  # ROMがスイッチに気づくのを待つ
+            app.frame()
+    assert lcd_text(m).strip().startswith("1")
+    app.bench_do("run")
+    assert not app.typer.busy and "CL" in app.bench_view.flash
+
+
+def test_norom_basic_lists_and_loads_basic_programs(tmp_path, monkeypatch):
+    """ROMなしのBASICで動かしているときは、BASICのプログラムも一覧に出て、ROMのある本体と
+    同じに読み込んで実行できる(作業欄だけのときは、マシン語のダンプのあるものだけ)"""
+    from basic_diff import lcd
+    from helpers import settle
+
+    from sc61box import basictext, programs
+
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    (lib / "anime.bas").write_text(
+        '10 DIM T$(0)*40\n20 T$(0)="  POCKET"\n30 PRINT MID$ (T$(0),3,6);π\n'
+    )
+    (lib / "romonly.bas").write_text("# hex: x.hex\n# norom: off\n10 CALL &C000\n")
+    (lib / "x.hex").write_text("C000 37\n")
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(lib))
+    app = make_app(norom=True)
+    app.open_menu()
+    assert app.menu is not None
+    names = {p.name for p in app.menu.items}
+    assert "anime" in names and "romonly" not in names
+    app.menu = None
+    app.open_program(programs.load_program(str(lib / "anime.bas")), run=True)
+    settle(app)
+    m = app.m
+    assert basictext.program_text(m.mem, start=m.program_start()).startswith("10 DIM T$(0)*40")
+    assert lcd(m).strip() == "POCKET3.141592654"
+    app.close()
+    bench = make_app(norom=True, basic=False)
+    bench.open_menu()
+    assert bench.menu is not None and "anime" not in {p.name for p in bench.menu.items}
+    bench.close()
+
+
+def test_norom_basic_reports_missing_rom_routine():
+    """ROMなしのBASICで、CALLで呼んだマシン語が代替ROMルーチンのないROMのルーチンへ入ると、作業欄は
+    止めずにBASICに戻り、番地を知らせる"""
+    from basic_diff import lcd
+    from helpers import settle
+
+    from sc61box import programs
+
+    app = make_app(norom=True, frames=20)
+    prog = programs.Program("n", title="n", basic="10 POKE &C200,2,1,255,160,55\n20 CALL &C200\n")
+    app.open_program(prog, run=True)
+    settle(app)
+    for _ in range(10):
+        app.frame()
+    assert lcd(app.m).strip() == "BREAK IN 20"
+    assert "1FA0" in app.status and app.bench.state == "run" and not app.halted
+    app.close()
+
+
+def test_window_title_tells_rom_or_not():
+    """ウィンドウの名前で、ROMで動いているか、ROMなしのBASICか、作業欄だけかがわかる"""
+    import pygame
+
+    for kwargs, model, title in (
+        ({}, "1251", "PC-1251 (ROM-less BASIC)"),
+        ({"basic": False}, "1251", "PC-1251 (no ROM, workbench only)"),
+        ({}, "1245", "PC-1245 (ROM-less BASIC)"),
+    ):
+        app = make_app(model, frames=2, norom=True, **kwargs)
+        assert pygame.display.get_caption()[0] == title
+        app.close()
+
+
+@pytest.mark.parametrize("model", ["1251", "1245", "1261", "1350"])
+def test_recording_title_has_no_maker_name(model, monkeypatch):
+    """録画の題とコメントは、機種の名前から(メーカーの名前は書かない)"""
+    from sc61box import recorder
+
+    seen: list[tuple[str, str]] = []
+
+    def fake(path, title, sub, *args):
+        seen.append((title, sub))
+        raise OSError("録画しない")
+
+    monkeypatch.setattr(recorder, "Recorder", fake)
+    app = make_app(model, frames=2, norom=True)
+    app.toggle_recording()
+    title, sub = seen[0]
+    assert title == app.m.model.title and sub.startswith(app.m.model.title + " / sc61box")
+    assert "SHARP" not in title + sub
+    app.close()
+
+
+def test_app_warns_about_missing_rom_routine(monkeypatch):
+    """ROMなしのBASICで、代替ROMルーチンのないROMのルーチンをCALLで呼ぶと、実行を中止して、ウィンドウの
+    左上に注意を出す。注意は、注意をクリックするか、次にキーを押すと消える"""
+    real = appmod.new_machine
+
+    def no_rom(model="1251", card=0, overseas=False, rom=True):
+        if rom:
+            raise RomNotFound("ROMがない")
+        return real(model, rom=False)
+
+    monkeypatch.setattr(appmod, "new_machine", no_rom)
+    app = make_app(scale=0.5, frames=3)
+    app.typer.add_text("CALL &4000\n")
+    assert _frames_until(app, lambda: bool(app.warning))
+    assert "4000" in app.warning
+    app.frame()  # 注意を描く
+    # 注意はクリックでも閉じる(注意の外をクリックしても閉じない)
+    rect = app.warning_rect
+    assert rect.width > 0
+    ox, oy = app.origin
+    app.mouse_down((rect.right + ox + 5, rect.bottom + oy + 40))
+    app.mouse_up()
+    assert app.warning
+    app.mouse_down((rect.right + ox - 5, rect.centery + oy))
+    app.mouse_up()
+    assert app.warning == ""
+    app.typer.add_text("CALL &4000\n")
+    assert _frames_until(app, lambda: bool(app.warning))
+    app.frame()
+    app.key_down(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_a, mod=0, unicode="a"))
+    assert app.warning == ""
+
+
+@pytest.mark.parametrize("model", ["1251", "1245", "1261", "1350"])
+def test_paused_norom_basic_offers_continue(model, monkeypatch):
+    """ROMなしのBASICを一時停止すると、作業欄のボタンは「続行」(BASICの続きを動かす)。編集に戻る
+    ボタンは出さない(BASICのある本体では何もしない)"""
+    app = make_app(model, scale=0.5, frames=30, norom=True)
+    app.toggle_pane(True)
+    b, v = app.bench, app.bench_view
+    assert app.m.basic is not None and app.m.basic.active
+    app.toggle_halt()
+    assert b.state == "pause"
+    assert [s.action for s in v.button_specs()] == ["resume", "break"]
+    # CPUのPC(0000)から「ROMなしでは使えない番地で止まっています」とは出さない
+    drawn: list[str] = []
+    real = v._text
+    monkeypatch.setattr(
+        v, "_text", lambda dst, x, y, text, *a: drawn.append(text) or real(dst, x, y, text, *a)
+    )
+    app.frame()
+    assert drawn and not any("ROMなしでは使えない" in t for t in drawn)
+    app.bench_do("resume")
+    assert b.state == "run"
+    app.close()
+
+
+def test_field_message_colors(monkeypatch):
+    """開始番地と範囲の欄のメッセージは、決められたかで色を分ける(文を比べて決めない)。英語でも
+    同じ"""
+    from sc61box import i18n
+
+    app = make_app(scale=0.5, frames=3, norom=True, basic=False)
+    b, v = app.bench, app.bench_view
+    said: list[bool] = []
+    monkeypatch.setattr(v, "say", lambda text, seconds, ok=False: said.append(ok))
+    for lang in ("ja", "en"):
+        i18n.set_language(lang)
+        said.clear()
+        app.bench_said(b.paste_start("C010"))
+        app.bench_said(b.paste_start("1000"))  # RAMの外
+        app.bench_said(b.paste_span("C000-C0FF"))
+        app.bench_said(b.paste_span("C0FF-C000"))  # 終わりが始めより前
+        assert said == [True, False, True, False], lang
+    app.close()
+
+
+def test_card_and_data_survive_state_and_export(tmp_path):
+    """# card:・# data:・# norom: は、状態のファイルに書いて戻しても、書き出しても残る"""
+    import json
+
+    from helpers import settle
+
+    from sc61box import programs
+
+    src = tmp_path / "big.bas"
+    src.write_text(
+        "# model: 1350\n# card: 16\n# data: 2040-204F, 2100\n# norom: basic\n# norom: 説明\n"
+        "10 A=1\n",
+        encoding="utf-8",
+    )
+    prog = programs.load_program(str(src))
+    want = (16, [(0x2040, 0x2050), (0x2100, None)], "説明", "basic")
+
+    def kept(p):
+        return (p.card, p.data, p.norom, p.norom_use)
+
+    assert kept(prog) == want and not prog.errors
+    back = programs.from_state(json.loads(json.dumps(programs.to_state(prog))))
+    assert back is not None and kept(back) == want
+    bad_values = (("card", 4), ("card", "16"), ("data", [[0x2040]]), ("data", "2040"),
+                  ("norom_use", "on"))  # fmt: skip
+    for key, bad in bad_values:
+        assert programs.from_state({**programs.to_state(prog), key: bad}) is None, key
+
+    app = make_app("1350", scale=0.5, frames=3, card=16, norom=True)
+    app.open_program(prog, run=False)
+    settle(app)
+    app.save_state()
+    app.last_prog = None
+    app.load_state()
+    assert app.last_prog is not None and app.last_prog.card == 16
+    path = appmod.export_program(app.m, str(tmp_path / "out"), app.last_prog)
+    assert path is not None
+    again = programs.load_program(path)
+    assert kept(again) == want and not again.errors
+    assert "10 A=1" in again.basic
+    app.close()

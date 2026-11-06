@@ -1,4 +1,4 @@
-"""ROMのある本体で使うマシン語の作業欄(出し入れ、止める所、1命令ずつ、キーの行き先)"""
+"""ROMのある本体で使うマシン語の作業欄(出し入れ、ブレークポイント、1命令ずつ、キーの行き先)"""
 
 import pygame
 import pytest
@@ -39,7 +39,7 @@ def test_pane_toggles_and_is_remembered(tmp_path, monkeypatch):
     _ctrl(app, pygame.K_d)
     assert app.pane_open and app.window.get_width() == narrow + benchview.PANE_W
     labels = [it.label for it in app.popup_items("view")]
-    assert "マシン語の作業欄をしまう" in labels
+    assert "マシン語の作業欄を隠す" in labels
     app.close()
     app = _rom_app(tmp_path, monkeypatch)
     assert app.pane_open
@@ -49,7 +49,7 @@ def test_pane_toggles_and_is_remembered(tmp_path, monkeypatch):
 
 
 def test_break_in_called_code(tmp_path, monkeypatch):
-    """BASICのCALLで呼んだマシン語の止める所で止まり、しまってあった作業欄が出る。1命令ずつ
+    """BASICのCALLで呼んだマシン語のブレークポイントで止まり、しまってあった作業欄が出る。1命令ずつ
     進め、続けるとBASICに戻る"""
     app = _rom_app(tmp_path, monkeypatch)
     m, b = app.m, app.bench
@@ -71,7 +71,7 @@ def test_break_in_called_code(tmp_path, monkeypatch):
 
 
 def test_break_and_step_over_in_rom(tmp_path, monkeypatch):
-    """ROMの中にも止める所を置ける。ROMのルーチンを呼ぶCALLは「CALLごと」で飛び越せる
+    """ROMの中にもブレークポイントを設定できる。ROMのルーチンを呼ぶCALLは「CALL単位で実行」で飛び越せる
     (ROMがあるので、ROMの中身をそのまま実行する)"""
     app = _rom_app(tmp_path, monkeypatch)
     m, b = app.m, app.bench
@@ -150,8 +150,8 @@ def _stopped_before_write(app):
 
 
 def test_break_when_loading_and_running(tmp_path, monkeypatch):
-    """一覧から「読み込んで実行」したときも、止める所で止まる(読み込みを速く回している
-    あいだも、止める所を調べる)。止まったときは、まだC100を書いていない"""
+    """一覧から「読み込んで実行」したときも、ブレークポイントで止まる(読み込みを速く回している
+    あいだも、ブレークポイントを調べる)。止まったときは、まだC100を書いていない"""
     from sc61box import programs
 
     src = tmp_path / "inc.hex"
@@ -168,7 +168,7 @@ def test_break_when_loading_and_running(tmp_path, monkeypatch):
 
 
 def test_break_when_pasting(tmp_path, monkeypatch):
-    """貼り付けで打ったCALLでも、止める所で止まる"""
+    """貼り付けで打ったCALLでも、ブレークポイントで止まる"""
     app = _rom_app(tmp_path, monkeypatch)
     for i, v in enumerate(INC_C100):
         app.m.write(0xC000 + i, v)
@@ -184,7 +184,7 @@ def test_break_when_pasting(tmp_path, monkeypatch):
 
 
 def test_pane_fits_screen(tmp_path, monkeypatch):
-    """作業欄をあとから出しても、窓が画面の幅に入るように本体を縮める。しまえば元に戻る"""
+    """作業欄をあとから出しても、ウィンドウが画面の幅に入るように本体を縮める。しまえば元に戻る"""
     monkeypatch.setattr(appmod, "STATE_DIR", str(tmp_path))
     monkeypatch.setattr(pygame.display, "get_desktop_sizes", lambda: [(1280, 720)])
     app = make_app(scale=1.0)
@@ -197,7 +197,7 @@ def test_pane_fits_screen(tmp_path, monkeypatch):
 
 
 def test_stop_reason_in_rom(tmp_path, monkeypatch):
-    """ROMがあれば、ROMの中の止める所で止まったときや1命令進めたときに、「ROMなしでは
+    """ROMがあれば、ROMの中のブレークポイントで止まったときや1命令進めたときに、「ROMなしでは
     使えません」とは出さない"""
     app = _rom_app(tmp_path, monkeypatch)
     m, b = app.m, app.bench
@@ -206,7 +206,7 @@ def test_stop_reason_in_rom(tmp_path, monkeypatch):
     b.toggle_break(0x1F44)
     _call(app, 0xC000)
     assert b.state == "pause" and m.cpu.pc == 0x1F44
-    assert "ROMなし" not in b.reason and "止める所" in b.reason
+    assert "ROMなし" not in b.reason and "ブレークポイント" in b.reason
     app.bench_do("step")
     assert b.state == "pause" and m.cpu.pc != 0x1F44 and "ROMなし" not in b.reason
     app.close()
@@ -214,7 +214,7 @@ def test_stop_reason_in_rom(tmp_path, monkeypatch):
 
 def test_export_after_loading_with_rom(tmp_path, monkeypatch):
     """ROMのある本体で読み込んだダンプも、作業欄から書き出すと0のバイトを含めて全部が出る。
-    「読み込む前に戻す」と、作業欄の覚えも読み込む前に戻る"""
+    「読み込む前に戻す」と、作業欄の書き出す範囲も読み込む前に戻る"""
     from sc61box import programs
 
     monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path / "out"))
@@ -345,10 +345,11 @@ def test_export_button_stays_in_pane(tmp_path, monkeypatch, norom, count):
 
 
 def test_export_notice_fits(tmp_path, monkeypatch):
-    """範囲が多くても、書き出したときの知らせはファイルの名前とバイト数を先に出し、作業欄の
+    """範囲が多くても、書き出したときのメッセージはファイルの名前とバイト数を先に出し、作業欄の
     下の2行に入る"""
     monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path / "out"))
     app = _rom_app(tmp_path, monkeypatch, norom=True, frames=2)
+    app.toggle_pane(True)
     for k in range(12):
         app.bench.paste(_hex_text(0xC000 + 0x80 * k, JUMP_CODE))
     app.bench_export()
@@ -372,11 +373,12 @@ def test_export_notice_fits(tmp_path, monkeypatch):
 
 
 def test_unwritable_places_are_reported(tmp_path, monkeypatch):
-    """プログラムの置き場所や状態の置き場所に同じ名前のファイルがあって作れなくても、
+    """プログラムのフォルダや状態の保存先に同じ名前のファイルがあって作れなくても、
     書き出し・一覧・フォルダを開く・画面の保存・終了は止まらず、書けないことを知らせる"""
     blocker = tmp_path / "root-is-file"
     blocker.write_text("x", "utf-8")
     app = _rom_app(tmp_path, monkeypatch, norom=True, frames=2)
+    app.toggle_pane(True)
     monkeypatch.setenv("SC61BOX_PROGRAMS", str(blocker))
     monkeypatch.setattr(appmod, "STATE_DIR", str(blocker))
     monkeypatch.setattr(app, "reveal", lambda path: None)
@@ -391,7 +393,7 @@ def test_unwritable_places_are_reported(tmp_path, monkeypatch):
     app.frame()
     app.menu = None
     for it in app.popup_items("program"):
-        if it.label == "置き場所のフォルダを開く" and it.action is not None:
+        if it.label == "プログラムのフォルダを開く" and it.action is not None:
             it.action()
     app.screenshot()
     assert app.status.startswith("画面の画像を保存できません")
@@ -419,3 +421,14 @@ def test_loading_forgets_edits(tmp_path, monkeypatch):
     assert b.undo() == "取り消せる書き込みはありません"
     assert app.m.read(0xC000) == 0x37
     app.close()
+
+
+def test_workbench_is_closed_by_default_without_rom(tmp_path, monkeypatch):
+    """ROMなしのBASICでは、作業欄は初めは閉じている(前に出していれば出す)。BASICを付けずに
+    作業欄だけで動かすときは、いつも出す"""
+    app = _rom_app(tmp_path, monkeypatch, norom=True, frames=2)
+    assert not app.pane_open
+    app.close()
+    only = _rom_app(tmp_path, monkeypatch, norom=True, basic=False, frames=2)
+    assert only.pane_open
+    only.close()

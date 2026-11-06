@@ -163,7 +163,7 @@ def test_app_starts_as_pc1245():
     import pygame
 
     app = make_app("1245")
-    assert pygame.display.get_caption()[0] == "SHARP PC-1245"
+    assert pygame.display.get_caption()[0] == "PC-1245 (ROM BASIC)"
     assert [m for m, _y in app.sw_stops] == ["PRO", "RUN", "OFF"]
     app.move_switch(-1)
     assert app.m.mode == "PRO"
@@ -189,3 +189,21 @@ def test_store_basic_matches_typing():
     end = typed.mem[0xC6E3] | typed.mem[0xC6E4] << 8  # 終わりのFFの番地
     assert stored.mem[0xC6E3:0xC6E5] == typed.mem[0xC6E3:0xC6E5]
     assert bytes(stored.mem[0xC000 : end + 1]) == bytes(typed.mem[0xC000 : end + 1])
+
+
+def test_dump_over_fixed_variables_survives_new(tmp_path):
+    """.basと組の.hexが固定変数の範囲(C5D0〜)にかかっても、NEWで消えずに残る"""
+    from sc61box import programs
+
+    data = bytes(range(1, 0x79))  # C5D0〜C647
+    total = sum(data) & 0xFF
+    (tmp_path / "game.hex").write_text(f"C5D0 {data.hex().upper()}:{total:02X}\n")
+    (tmp_path / "game.bas").write_text("10 PRINT 1\n")
+    app = make_app("1245")
+    app.typer.add_mode("PRO")
+    app.typer.add_text("10 PRINT 1\n")  # 起動直後のNEWは固定変数を消さないので、先に1行入れる
+    settle(app)
+    app.open_program(programs.load_program(str(tmp_path / "game.bas")))
+    settle(app)
+    assert bytes(app.m.mem[0xC5D0:0xC648]) == data
+    app.close()

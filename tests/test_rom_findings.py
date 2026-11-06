@@ -1,4 +1,4 @@
-"""ROMを読んでわかったことが、エミュレータでも同じように起きるか"""
+"""ROMのある本体で確かめたふるまいが、エミュレータでも同じように起きるか"""
 
 import os
 import subprocess
@@ -6,7 +6,7 @@ import sys
 
 from helpers import boot, finish, typ
 
-from sc61box import romsyms
+from sc61box import romsyms, routines
 from sc61box.machine import CLOCK
 
 ROOT = os.path.join(os.path.dirname(__file__), "..")
@@ -41,7 +41,7 @@ def call(m, addr, ret=0xC4F0, limit=2_000_000):
 
 
 def test_rom_version_byte():
-    """7FFF番地で機種と版がわかる(本書のROMはF0版。PC-1245は01)"""
+    """7FFF番地で機種と版がわかる(PC-1251のF0版、PC-1245の01)"""
     for model, v in (("1251", 0xF0), ("1245", 0x01)):
         m, t = boot(model)
         assert m.mem[0x7FFF] == v
@@ -59,7 +59,7 @@ def test_array_subscript_fixed_only_on_pc1245():
 
 
 def test_exponent_with_space_only_on_pc1245():
-    """PC-1245だけ、指数の中の空白を飛ばすルーチン(0522)がある"""
+    """PC-1245だけ、VALで指数の中の空白を飛ばす"""
     for model, v in (("1251", "1"), ("1245", "100")):
         m, t = boot(model)
         assert value(typ(m, t, 'VAL "1[E] 2"\n')) == v  # [E]は指数のE(4Bh)
@@ -85,7 +85,7 @@ def test_twelve_digits_then_round():
 
 
 def _poke_add_sub(m, entry):
-    """変数A・Bを演算Y・演算Xに写してentryを呼び、答えを変数Cに入れる機械語"""
+    """変数A・Bを演算Y・演算Xにコピーしてentryを呼び、答えを変数Cに入れる機械語"""
     code = bytes.fromhex(
         "10C698 A8 0007 18"  # LIDP C698; LP 28; LII 7; MVWD(演算Y ← A)
         "10C690 A0 18"  # LIDP C690; LP 20; MVWD(演算X ← B)
@@ -98,8 +98,8 @@ def _poke_add_sub(m, entry):
 
 
 def test_subtract_entry_is_0b67_not_0b69():
-    """日本語版マニュアルの表の0B69(減算)は入口の途中。0B67から呼ぶと正しい"""
-    for entry, negative in ((romsyms.symbols()["FSUB"], False), (0x0B69, True)):
+    """減算の入口を0B69として呼ぶと負の数で答えが狂う。0B67から呼ぶと正しい"""
+    for entry, negative in ((routines.symbols()["FSUB"], False), (0x0B69, True)):
         m, t = boot()
         _poke_add_sub(m, entry)
         for line in ("A=-2\n", "B=-7\n", "CALL &C500\n"):
@@ -110,22 +110,22 @@ def test_subtract_entry_is_0b67_not_0b69():
 
 
 def test_display_on_entry_is_11e0():
-    """表示ONは11E0。表の11EDはRTNで、何もしない"""
+    """表示ONは11E0から呼ぶ。表の11EDを呼んでも表示はつかない"""
     m, t = boot()
     m.pc_out = 0
     call(m, 0x11ED)
     assert m.pc_out & 1 == 0
-    call(m, romsyms.symbols()["DISPON"])
+    call(m, routines.symbols()["DISPON"])
     assert m.pc_out & 1 == 1
 
 
 def test_glyph_needs_j_one():
-    """1FBC(字の形の番地)は、中でJを入れずにMVBを使うので、Jが1でないと狂う"""
+    """1FBC(字の形の番地)は、呼ぶときにJが1でないと答えが狂う"""
     m, t = boot()
     for j, ok in ((1, True), (0, False)):
         m.cpu.ram[0x01] = j
         m.cpu.ram[0x02] = 0x51  # Aの字
-        call(m, romsyms.symbols()["GLYPH"])
+        call(m, routines.symbols()["GLYPH"])
         x = m.cpu.ram[0x04] | m.cpu.ram[0x05] << 8
         assert (x == 0x4558) is ok
 
@@ -141,7 +141,7 @@ def test_assembler_knows_rom_names(tmp_path):
 
 
 def test_pc1350_rom_sums():
-    """PC-1350のどこからも呼ばれないベクタ802D・802Aは、ROMの16ビットの和を表示する"""
+    """PC-1350でCALL &802Dとすると、決まった数(31887)を表示する"""
     m, t = boot("1350")
     assert "31887" in typ(m, t, "CALL &802D\n", 4.0)
 
@@ -157,7 +157,7 @@ def test_pc1350_overseas_wiring():
 
 
 def test_assembler_ptc_dtc(tmp_path):
-    """PTC・DTCで値ごとに行き先を分け、処理のRTNでPTCの番地へ戻る(付録Cのフレーズ)"""
+    """PTC・DTCで値ごとに行き先を分け、処理のRTNでPTCの番地へ戻る"""
     src = tmp_path / "t.asm"
     out = tmp_path / "t.hex"
     src.write_text(

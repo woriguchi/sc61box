@@ -4,6 +4,7 @@ import pygame
 import pytest
 from helpers import make_app
 
+from sc61box import app as appmod
 from sc61box import programs
 from sc61box.machine import CLOCK
 
@@ -76,14 +77,14 @@ def test_escape_cancels_loading():
     app.fast = True
     app.handle(ev(pygame.KEYDOWN, key=pygame.K_ESCAPE, mod=0, unicode="", scancode=0))
     assert not app.typer.busy and not app.fast and not app.m.brk
-    assert "やめました" in app.status
+    assert "中止しました" in app.status
     app.close()
 
 
 def test_record_buttons(tmp_path, monkeypatch):
-    """操作欄の「録画」で録り始めると、そのボタンが録画中の印と経過時間になる。押すと、
-    そのすぐ上に止めるか一時停止するかのメニューが出る。録画の一時停止のあいだは動画に
-    入らず、実行は止まらない"""
+    """操作欄の「録画」を押すと録画の形のメニューが出て、選ぶと録り始める。録画中はボタンが
+    録画中のマークと経過時間になり、押すと、そのすぐ上に止めるか一時停止するかのメニューが出る。
+    録画の一時停止のあいだは動画に入らず、実行は止まらない"""
     monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
     app = make_app()
     app.frame()
@@ -91,15 +92,15 @@ def test_record_buttons(tmp_path, monkeypatch):
     def rec_button():
         return next(i for i, b in enumerate(app.bar.buttons) if b[0].startswith("録画"))
 
-    def choose(label):
+    def choose(label, kind="rec"):
         _click(app, app.bar.rects[rec_button()].center)
         app.frame()
-        assert app.popup is not None and app.popup.kind == "rec"
+        assert app.popup is not None and app.popup.kind == kind
         labels = [it[0] for it in app.popup_items()]
         _click(app, next(r for i, r in app.popup.rows if labels[i] == label).center)
         app.frame()
 
-    _click(app, app.bar.rects[rec_button()].center)
+    choose("液晶の拡大と本体", "recstart")
     assert app.recorder is not None
     for _ in range(30):
         app.frame()
@@ -123,7 +124,7 @@ def test_record_buttons(tmp_path, monkeypatch):
 
 
 def test_bar_fits_narrow_window():
-    """窓が狭いときは、操作欄のボタンを短い表示にして窓に収める(入らなければ「速さ」の
+    """ウィンドウが狭いときは、操作欄のボタンを短い表示にしてウィンドウに収める(入らなければ「速さ」の
     ボタンを省く。実行の一時停止は省かない)"""
     app = make_app(scale=0.35)
     app.recorder = type("R", (), {"seconds": 75.0})()  # 録画中の操作欄を見る
@@ -488,7 +489,7 @@ def test_sound_after_restore_between_substeps_is_short():
 
 def test_keys_after_restoring_state(tmp_path, monkeypatch):
     """状態を戻したあとも、戻した本体に合わせてキーを届ける。プログラムが動いている状態に
-    戻せば同時押しがすぐ伝わり、入力待ちの状態に戻せば列に入る"""
+    戻せば同時押しがすぐ伝わり、入力待ちの状態に戻せばキューに入る"""
     m = (app := make_app(model="1261")).m
     monkeypatch.setattr(app, "state_file", str(tmp_path / "state.json"))
     app.save_state()  # 入力待ち
@@ -519,12 +520,12 @@ def test_keys_after_restoring_state(tmp_path, monkeypatch):
 
 
 def test_keys_at_prompt_are_still_queued():
-    """ROMが入力を待っているときのキーは、これまでどおり列に入れて1つずつ届ける"""
+    """ROMが入力を待っているときのキーは、これまでどおりキューに入れて1つずつ届ける"""
     app = make_app(model="1261")
     assert app.m.halted
     app.typer.press_live("A")
     app.typer.press_live("B")
-    assert [e[2:] for e in app.typer.queue] == [["A"], ["B"]]
+    assert [e[2:] if isinstance(e, list) else e for e in app.typer.queue] == [["A"], ["B"]]
     assert not app.typer.direct
     app.close()
 
@@ -604,7 +605,7 @@ def test_switch_menus_with_one_click():
 
 def test_same_key_from_two_sources():
     """同じ本体のキーを2つの入力元から押しているときは、片方を離しても押したまま。
-    ↑を8にしたときの↑と数字の8、パソコンのキーボードとマウス"""
+    2つの入力元は、↑を8にしたときの↑と数字の8や、パソコンのキーボードとマウス"""
     m = (app := make_app()).m
     _running(app)
     app.toggle_arrows()
@@ -668,3 +669,99 @@ def test_brk_from_two_sources():
     app.handle(mouse_up)
     assert not m.brk
     app.close()
+
+
+@pytest.mark.parametrize("shape", ["both", "body", "lcd"])
+def test_record_shapes(tmp_path, monkeypatch, shape):
+    """録画の形(液晶の拡大と本体、本体だけ、液晶だけ)は、どれも1280×720の動画になる。選んだ形を
+    覚え、⇧⌘R(toggle_recording)はその形で始め、メニューではその形に●をつける"""
+    import subprocess
+
+    from PIL import Image
+
+    from sc61box import recorder
+
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
+    app = make_app()
+    app.start_recording(shape)
+    assert app.recorder is not None and app.rec_shape == shape
+    for _ in range(40):
+        app.frame()
+    app.toggle_recording()
+    files = sorted(tmp_path.glob("rec-*.mp4"))
+    assert len(files) == 1, app.status
+    shot = tmp_path / "frame.png"
+    subprocess.run(
+        [recorder.ffmpeg_exe(), "-loglevel", "error", "-ss", "1", "-i", str(files[0]),
+         "-frames:v", "1", str(shot)],
+        check=True,
+    )  # fmt: skip
+    img = Image.open(shot).convert("RGB")
+    assert img.size == (recorder.W, recorder.H)
+
+    def looks(y: int) -> str:
+        """高さyの帯の色(lcdは灰緑の液晶の地、bgは動画の地、otherはほか)"""
+        band = img.crop((340, y - 4, 1240, y + 4))
+        r, g, b = band.resize((1, 1), Image.Resampling.BOX).getpixel((0, 0))  # type: ignore[misc]
+        if 140 < g < 220 and g > b + 8 and abs(r - g) < 20:
+            return "lcd"
+        return "bg" if max(r, g, b) < 40 else "other"
+
+    # 液晶の拡大は、bothでは題名のすぐ下、lcdでは題名の下の中ほど(上下は地)。bodyは下まで本体
+    x0, y0, x1, y1 = app.panel.lcd_box()
+    lcd_h = round((y1 - y0) * recorder.LCD_W / (x1 - x0) / 2) * 2
+    room = recorder.H - 20 - recorder.LCD_TOP
+    under_title, bottom = recorder.LCD_TOP + 6, recorder.H - 60
+    if shape == "both":
+        assert looks(recorder.LCD_TOP + lcd_h // 2) == "lcd"
+    elif shape == "lcd":
+        assert looks(recorder.LCD_TOP + (room - lcd_h) // 2 + lcd_h // 2) == "lcd"
+        assert looks(under_title) == looks(bottom) == "bg"
+    else:
+        assert looks(bottom) == "other"
+    # 次に⇧⌘Rで始めるのも同じ形。メニューの●もその形
+    app.toggle_recording()
+    assert app.recorder is not None and app.rec_shape == shape
+    app.open_bar_popup("recstart")
+    assert app.popup_mark() == str(appmod.REC_SHAPE_NAMES[shape])
+    app.popup = None
+    app.recorder.abort()
+    app.recorder = None
+    app.close()
+
+
+def test_record_graph_fits():
+    """録画の形ごとのffmpegのフィルタ。絵は題名の下(LCD_TOPから下の余白20まで)に、左右の
+    中央に収まる。形の名前が違えば断る"""
+    from sc61box import display, recorder
+
+    size = (display.OUT_W, display.OUT_H)
+    for shape in recorder.SHAPES:
+        assert "[v]" in recorder.graph(shape, size)
+    with pytest.raises(ValueError):
+        recorder.graph("big", size)
+
+
+def test_record_stop_without_frames(tmp_path):
+    """本体の絵を1枚も渡さずに録画を終えても(録り始めてすぐ止めたときなど)、ffmpegを待ち続け
+    ない(題名の画像を繰り返す入力にしていたので、終わらずに止まっていた)"""
+    import threading
+
+    from sc61box import recorder
+
+    for shape in recorder.SHAPES:
+        rec = recorder.Recorder(str(tmp_path / f"{shape}.mp4"), "T", "S", shape=shape)
+        done: list[str] = []
+
+        def finish(rec=rec, done=done):
+            try:
+                done.append(rec.close())
+            except OSError as e:
+                done.append(str(e))
+
+        t = threading.Thread(target=finish, daemon=True)
+        t.start()
+        t.join(30)
+        if not done:
+            rec.proc.kill()
+        assert done, shape

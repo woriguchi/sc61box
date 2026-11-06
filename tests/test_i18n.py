@@ -17,69 +17,87 @@ from helpers import make_app
 
 from sc61box import i18n, romsyms
 from sc61box.i18n import tr
-from sc61box.i18n_en import EN
+from sc61box.messages import MESSAGES
 
 SRC = os.path.join(os.path.dirname(__file__), "..", "sc61box")
 JAPANESE = re.compile(r"[぀-ヿ一-鿿]")
 
 
 def templates() -> dict[str, str]:
-    """ソースのtr()に、文字列のまま渡している文と、その場所"""
+    """ソース(basic/の下も)のtr()とText()に、文字列のまま渡しているIDと、その場所"""
     found: dict[str, str] = {}
-    for path in sorted(glob.glob(os.path.join(SRC, "*.py"))):
+    for path in sorted(glob.glob(os.path.join(SRC, "**", "*.py"), recursive=True)):
         with open(path, encoding="utf-8") as f:
             tree = ast.parse(f.read())
         for node in ast.walk(tree):
             if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
                 continue
-            if node.func.id != "tr" or not node.args:
+            if node.func.id not in ("tr", "Text") or not node.args:
                 continue
             arg = node.args[0]
             if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-                found.setdefault(arg.value, f"{os.path.basename(path)}:{node.lineno}")
+                where = os.path.relpath(path, SRC)
+                found.setdefault(arg.value, f"{where}:{node.lineno}")
     return found
 
 
-def rom_texts() -> set[str]:
-    """作業欄に出すROMのルーチンの働き(tr(what)で引くもの)のうち、日本語のもの"""
-    return {what for _a, what in romsyms.ROUTINES_1251.values() if JAPANESE.search(what)}
+def rom_ids() -> set[str]:
+    """作業欄に出すROMのルーチンの働きのID(tr(r.what)で引くもの)"""
+    return {f"rom.{family}.{name.lower()}" for family in ("1251", "1261", "1350")
+            for name in romsyms.entries(family)}  # fmt: skip
+
+
+def forms(text: str | tuple[str, str]) -> tuple[str, ...]:
+    return text if isinstance(text, tuple) else (text,)
 
 
 def fields(text: str) -> set[str]:
     return {name for _lit, name, _spec, _conv in string.Formatter().parse(text) if name}
 
 
-def test_every_template_has_english():
-    missing = [f"{where}: {text}" for text, where in templates().items() if text not in EN]
-    missing += [f"romsyms: {text}" for text in rom_texts() if text not in EN]
-    assert not missing, "英語の表にない文:\n" + "\n".join(missing)
+def test_every_id_is_in_table():
+    missing = [f"{where}: {key}" for key, where in templates().items() if key not in MESSAGES]
+    missing += [f"romsyms: {key}" for key in rom_ids() if key not in MESSAGES]
+    assert not missing, "表にないID:\n" + "\n".join(missing)
 
 
-def test_english_uses_same_placeholders():
-    for ja, en in EN.items():
-        for form in en if isinstance(en, tuple) else (en,):
-            assert fields(form) == fields(ja), (ja, form)
+def test_every_message_has_all_languages():
+    for key, texts in MESSAGES.items():
+        assert set(texts) == set(i18n.LANGUAGES), key
+        assert all(forms(texts[lang]) for lang in i18n.LANGUAGES), key
+
+
+def test_languages_use_same_placeholders():
+    for key, texts in MESSAGES.items():
+        ja = texts["ja"]
+        assert isinstance(ja, str), key
+        for lang in i18n.LANGUAGES:
+            for form in forms(texts[lang]):
+                assert fields(form) == fields(ja), (key, lang, form)
 
 
 def test_plural_forms_take_n():
-    for ja, en in EN.items():
-        if isinstance(en, tuple):
-            assert len(en) == 2 and "n" in fields(ja), ja
+    for key, texts in MESSAGES.items():
+        ja = texts["ja"]
+        assert isinstance(ja, str), key
+        for lang in i18n.LANGUAGES:
+            if isinstance(texts[lang], tuple):
+                assert len(texts[lang]) == 2 and "n" in fields(ja), key
 
 
-def test_no_unused_entries():
-    used = set(templates()) | rom_texts()
-    unused = [ja for ja in EN if ja not in used]
-    assert not unused, "使っていない英語の表の文:\n" + "\n".join(unused)
+def test_no_unused_messages():
+    used = set(templates()) | rom_ids()
+    unused = [key for key in MESSAGES if key not in used]
+    assert not unused, "使っていないID:\n" + "\n".join(unused)
 
 
 def test_tr_picks_language_and_plural():
-    assert tr("{n}バイトを書きました", n=3) == "3バイトを書きました"
+    assert tr("app.wrote_bytes", n=3) == "3バイトを書き込みました"
     i18n.set_language("en")
-    assert tr("{n}バイトを書きました", n=1) == "Wrote 1 byte"
-    assert tr("{n}バイトを書きました", n=3) == "Wrote 3 bytes"
-    assert tr("開始番地を{addr:04X}にしました", addr=0xC012) == "Start address set to C012"
-    # 表にない文は日本語のまま
+    assert tr("app.wrote_bytes", n=1) == "Wrote 1 byte"
+    assert tr("app.wrote_bytes", n=3) == "Wrote 3 bytes"
+    assert tr("common.start_address_set", addr=0xC012) == "Start address set to C012"
+    # 表にない文字列(利用者が記述した代替ROMルーチンの働きなど)は、そのまま
     assert tr("表にない文 {x}", x=5) == "表にない文 5"
     with pytest.raises(ValueError):
         i18n.set_language("fr")
@@ -99,7 +117,7 @@ def test_choose_language_order():
     assert choose(environ=env, **linux) == "ja"
     env = {"LC_MESSAGES": "en_US", "LANG": "ja_JP.UTF-8"}
     assert choose(environ=env, **linux) == "en"
-    # メニューで選んだものはロケールより先、SC61BOX_LANGと--langはそれより先
+    # メニューで選んだものはロケールより先、SC61BOX_LANGと--langはメニューより先
     assert choose(remembered="en", environ={"LANG": "ja_JP"}, **linux) == "en"
     assert choose(remembered="ja", environ={"SC61BOX_LANG": "en", "LANG": "ja"}, **linux) == "en"
     assert choose("ja", remembered="en", environ={"SC61BOX_LANG": "en"}, **linux) == "ja"
@@ -142,7 +160,7 @@ def test_wrap_keeps_words():
     assert " ".join(lines) == text
     assert all(font.size(line)[0] <= 200 for line in lines)
     # 日本語は字ごとに折り返せる
-    ja = "カーソルの命令(C000番地)に止める所を置く。置いてあれば外す"
+    ja = "カーソルの命令(C000番地)にブレークポイントを設定・解除する"
     assert "".join(wrap_text(font, ja, 120)) == ja
 
 
@@ -177,6 +195,84 @@ def test_switch_language_from_menu(monkeypatch):
     assert i18n.language() == "en"
 
 
+def test_kept_messages_follow_language(tmp_path):
+    """止まった理由、注意、代替ROMルーチンの知らせのように覚えておいてあとで出す文は、言語を
+    切り替えると新しい言語で出る"""
+    from sc61box import routines
+    from sc61box.i18n import Joined, Text
+
+    app = make_app("1251", frames=3, norom=True)
+    b = app.bench
+    b.pause()
+    app.warning = Text("app.routine_rom_address_not", addr=0x4000)
+    folder = tmp_path / "routines"
+    folder.mkdir()
+    (folder / "dup.py").write_text(
+        "from sc61box.routines import routine\n"
+        "@routine('1261', 0x5F00, 'BA2X')\n"
+        "def f(m):\n"
+        "    return 0\n",
+        encoding="utf-8",
+    )
+    try:
+        routines.load_user(str(folder), force=True)
+        assert b.reason == "一時停止しました"
+        warning = app.warning
+        app.set_language("en")
+        assert b.reason == "Paused"
+        assert app.warning != warning
+        assert app.warning == tr("app.routine_rom_address_not", addr=0x4000)
+        why = "the name BA2X is used by the built-in at 0225"
+        assert routines.notices() == [f"dup.py: BA2X (5F00) is not used: {why}"]
+        assert [w for _r, w in routines.listing("1261") if w] == [why]
+        assert str(Joined(["A", "B"])) == "A, B" and f"{Text('common.builtin'):>10}" == "  built-in"
+    finally:
+        i18n.set_language("ja")
+        routines.load_user(str(tmp_path / "none"), force=True)
+    app.close()
+
+
+def test_pad_source_follows_language():
+    """割り当ての出どころ(「初期設定」など)も、言語を切り替えると新しい言語で出る。状態の
+    ファイルには訳した文ではなくIDで書き、前の版の状態(訳した文)も読める"""
+    import json
+
+    app = make_app("1251", frames=3, norom=True, lang="ja")
+    assert app.pad_map.source == "初期設定"
+    app.set_language("en")
+    assert app.pad_map.source == "factory mapping"
+    app.save_state()
+    with open(app.state_file, encoding="utf-8") as f:
+        state = json.load(f)
+    assert state["app"]["pad"]["source"] == {"id": "app.factory_mapping", "args": {}}
+    i18n.set_language("ja")
+    app.load_state()
+    assert app.pad_map.source == "初期設定"
+    old, dirty = app._saved_pad_map({"keys": {}, "source": "前の版"}, None)
+    assert old.source == "前の版" and not dirty
+    broken, _ = app._saved_pad_map({"keys": {}, "source": {"id": "app.wrote_bytes"}}, None)
+    assert broken.source == ""
+    # 壊れた出どころは読むときに断る(割り当ての画面を描くときになって例外にしない)
+    app.toggle_pad_panel(True)
+    for bad in (
+        {"id": [], "args": {}},  # IDが文字列でない
+        {"id": "app.saved", "args": {"other": "x"}},  # 差し込みの名前が違う
+        {"id": "app.saved", "args": {}},  # 差し込みが足りない
+        {"id": "app.saved", "args": {"name": "x", "more": 1}},  # 多い
+        {"id": "app.saved", "args": {"name": ["x"]}},  # 値が文字列か数でない
+        {"id": "app.saved", "args": []},
+    ):
+        pad_map, _ = app._saved_pad_map({"keys": {}, "source": bad}, None)
+        assert pad_map.source == "", bad
+        app.set_pad_map(pad_map)
+        app.frame()
+    good, _ = app._saved_pad_map(
+        {"keys": {}, "source": {"id": "app.saved", "args": {"name": "game"}}}, None
+    )
+    assert "game" in good.source
+    app.close()
+
+
 def test_switch_mark_in_english():
     """スイッチの位置の●は、英語の画面でも、いまのスイッチの項目につく"""
     from sc61box.overlay import Popup
@@ -190,7 +286,7 @@ def test_switch_mark_in_english():
 
 
 def test_start_field_message_in_english():
-    """開始番地の欄に4桁打つと、英語の画面でも済んだ知らせ(緑)になる"""
+    """開始番地の欄に4桁打つと、英語の画面でも済んだメッセージ(緑)になる"""
     app = make_app("1251", frames=1, norom=True, lang="en")
     b, v = app.bench, app.bench_view
     b.start_buf = ""
@@ -312,7 +408,7 @@ def test_cli_language_from_environment():
 
 @pytest.mark.skipif(not HAVE_ROM, reason="ROMがない")
 def test_english_bar_fits_narrow_window():
-    """英語の操作欄も、狭い窓では短い表示で収まる(実行の一時停止は省かない)"""
+    """英語の操作欄も、狭いウィンドウでは短い表示で収まる(実行の一時停止は省かない)"""
     app = make_app(scale=0.35, lang="en")
     app.recorder = type("R", (), {"seconds": 75.0})()
     app.rec_paused = True

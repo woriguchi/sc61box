@@ -38,7 +38,7 @@ def test_llist(model):
     assert [line.split(":", 1)[1] for line in text.splitlines()] == ['PRINT "OK"', "A=10"]
 
 
-def test_kana_on_s1():
+def test_kana_on_pc1261():
     assert _printed("1261", '10 LPRINT "ｱｲｳ"\n') == "ｱｲｳ\n"
 
 
@@ -51,7 +51,7 @@ def test_no_printer_skips_lprint():
 
 
 def test_paper_appears_when_printing(tmp_path, monkeypatch):
-    """プリンタはいつもつながっていて、印字したときだけ窓の下に紙が出る。印字は紙の絵として
+    """プリンタはいつもつながっていて、印字したときだけウィンドウの下に紙が出る。印字は紙の絵として
     保存でき、紙はしまえる"""
     monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
     app = make_app()
@@ -63,7 +63,7 @@ def test_paper_appears_when_printing(tmp_path, monkeypatch):
     for _ in range(60):
         app.frame()
     assert app.m.printer.lines == [b"HELLO"]
-    # 紙のぶん窓が高くなる(画面に入らなければ本体を縮めるので、本体の高さから数える)
+    # 紙のぶんウィンドウが高くなる(画面に入らなければ本体を縮めるので、本体の高さから数える)
     assert app.paper_open
     assert app.window.get_height() == app.body_size[1] + app.paper.height + BAR_H
     app.save_printout()
@@ -288,7 +288,7 @@ def test_printer_font():
 
     font = load_font()
     assert sorted(font) == list(range(256)) and all(len(g) == 5 for g in font.values())
-    assert font[0x41] == bytes.fromhex("7c1211127c")  # A
+    assert font[0x41] == bytes.fromhex("7e0909097e")  # A
     assert font[0x20] == font[0x00] == bytes(5) and font[0xB1] != bytes(5)  # 空白とｱ
     assert font[0x18] == font[0x5B] and font[0x19] == font[0x5D]  # √とπは2か所にある
     assert "".join(char(c) for c in (0x01, 0x0E, 0x5C, 0x61, 0xB1, 0xF1)) == "≠θ¥aｱ年"
@@ -338,7 +338,7 @@ def test_exponent_mark_1251():
 
 
 def test_printout_saved_automatically(tmp_path, monkeypatch):
-    """印字がとぎれると、紙の絵が置き場所に保存され、紙の左に保存先が出る。紙をしまうと
+    """印字がとぎれると、紙の絵がプログラムのフォルダに保存され、紙の左に保存先が出る。紙をしまうと
     その紙は終わり、次の印字は新しいファイルになる"""
     import time
 
@@ -455,7 +455,7 @@ def test_print_file_name_is_reserved(tmp_path):
 
 
 def test_printout_picture_is_opaque():
-    """印字の絵はアルファのない形式で作る。窓がアルファの成分のある形式でも、字のところが
+    """印字の絵はアルファのない形式で作る。ウィンドウがアルファの成分のある形式でも、字のところが
     透けない"""
     app = make_app()
     img = app.paper.picture([b"AB"])
@@ -465,7 +465,7 @@ def test_printout_picture_is_opaque():
 
 
 def test_opaque_drops_meaningless_alpha():
-    """アルファの成分があってSRCALPHAでない絵(macOSの窓の形式)は、写すと透けずに色が残る"""
+    """アルファの成分があってSRCALPHAでない絵(macOSのウィンドウの形式)は、写すと透けずに色が残る"""
     from sc61box.app import opaque
 
     masks = (0xFF0000, 0xFF00, 0xFF, 0xFF000000)

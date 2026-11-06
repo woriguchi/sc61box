@@ -129,16 +129,20 @@ class Panel:
         self.cell_pitch = lay.get("cell_pitch", (self.cw + 1) * self.pitch_x)
         self.line_pitch = lay.get("line_pitch", 0)  # 行の間隔(2行の液晶)
         self.ann_y, self.ann_h = lay["ann"]
-        # 右端と下端のドットの外に1pxの余白を含む
-        self.col_x = [self._col_x(x) for x in range(self.w)]
-        self.mat_w = self.col_x[-1] + self.dot_w + 1
-        self.mat_h = (
-            (self.lines - 1) * self.line_pitch
-            + self.line_rows * self.pitch_y
-            - self.pitch_y
-            + self.dot_h
-            + 1
+        # 桁と行のあいだのすきまをなくし、ドットを同じ間隔で並べるか(実機にはない見せ方)
+        self.packed = False
+        packed_cell = self.cw * self.pitch_x
+        packed_line = self.line_rows * self.pitch_y
+        self.can_pack = self.cell_pitch != packed_cell or (
+            self.lines > 1 and self.line_pitch != packed_line
         )
+        # ドットの面の大きさは実機の並びで決める(詰めたときは、その中央に寄せる)。
+        # 右端と下端のドットの外に1pxの余白を含む
+        self.mat_w = self._col_x(self.w - 1, self.cell_pitch) + self.dot_w + 1
+        self.mat_h = self._row_y(self.line_rows * self.lines - 1, self.line_pitch) + self.dot_h + 1
+        self.col_x: list[int] = []
+        self.row_y: list[int] = []
+        self._place()
         with open(path("keys.json")) as f:
             keys = json.load(f)
         self.key_rects = {k: tuple(v) for k, v in keys["keys"].items()}
@@ -166,7 +170,6 @@ class Panel:
             self.key_down[name] = _surface(kb_down.crop(box))
         self.shown_down: set[str] = set()
         self.glass = _surface(self._glass())
-        self.grid = self._grid()
         self.grid_level = 0.0
         mx = self.mat_x
         self.dots = [self._dot(k) for k in range(LEVELS)]
@@ -216,17 +219,36 @@ class Panel:
             self.rise = 1.0 - math.exp(-dt / (TAU_RISE_MS * persist))
             self.fall = 1.0 - math.exp(-dt / (TAU_FALL_MS * persist))
 
-    def _col_x(self, x: int) -> int:
-        """左からx列目のドットの左端(マトリクスの左端から)"""
+    def set_packed(self, on: bool) -> None:
+        """桁と行のあいだのすきまをなくすか、実機と同じにするか"""
+        on = on and self.can_pack
+        if on != self.packed:
+            self.packed = on
+            self._place()
+
+    def _place(self) -> None:
+        """ドットの位置(col_x・row_y)と、消灯ドットの格子を決める"""
+        cell, line = self.cell_pitch, self.line_pitch
+        if self.packed:
+            cell, line = self.cw * self.pitch_x, self.line_rows * self.pitch_y
+        n = self.line_rows * self.lines
+        dx = (self.mat_w - 1 - self.dot_w - self._col_x(self.w - 1, cell)) // 2
+        dy = (self.mat_h - 1 - self.dot_h - self._row_y(n - 1, line)) // 2
+        self.col_x = [dx + self._col_x(x, cell) for x in range(self.w)]
+        self.row_y = [dy + self._row_y(y, line) for y in range(n)]
+        self.grid = self._grid()
+
+    def _col_x(self, x: int, cell: float) -> int:
+        """左からx列目のドットの左端(マトリクスの左端から)。cellは桁の左端の間隔"""
         cw = self.cw
-        return int(round((x // cw) * self.cell_pitch)) + (x % cw) * self.pitch_x
+        return int(round((x // cw) * cell)) + (x % cw) * self.pitch_x
 
-    def _row_y(self, y: int) -> int:
-        """上からy行目のドットの上端"""
+    def _row_y(self, y: int, line: int) -> int:
+        """上からy行目のドットの上端。lineは行(2行の液晶)の上端の間隔"""
         r = self.line_rows
-        return (y // r) * self.line_pitch + (y % r) * self.pitch_y
+        return (y // r) * line + (y % r) * self.pitch_y
 
-    # ---- 下ごしらえ ----
+    # ---- 前もって作る絵 ----
     def _desk(self) -> Image.Image:
         """机の上に置いた本体の影"""
         ow, oh = self.out_w, self.out_h
@@ -287,7 +309,7 @@ class Panel:
         for y in range(self.line_rows * self.lines):
             for x in range(self.w):
                 px = 4 + self.col_x[x]
-                py = 4 + self._row_y(y)
+                py = 4 + self.row_y[y]
                 d.rectangle([px, py, px + dw - 1, py + dh - 1], fill=DOT_INK + (OFF_ALPHA,))
         return _surface(ov)
 
@@ -372,7 +394,7 @@ class Panel:
             lrow = level[y]
             bit = 1 << (y % r)
             base = (y // r) * w
-            py = my + self._row_y(y)
+            py = my + self.row_y[y]
             for x in range(w):
                 v = lrow[x]
                 share = mixed.get(base + x) if mixed else None

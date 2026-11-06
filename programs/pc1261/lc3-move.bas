@@ -1,5 +1,5 @@
 # title: LC-3 サンプル2 キーで丸を動かす
-# norom: off
+# norom: basic
 # help: 8・2・4・6で丸を上下左右に動かす(2つ同時に押すと斜め。Cmd+K・Ctrl+Kで矢印キーでも)。BRK(Esc)で止める
 # hex: lc3.hex
 # setup: EQU#43
