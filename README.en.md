@@ -33,9 +33,9 @@ Without a ROM, every model runs on a BASIC provided by the emulator (the ROM-les
 These are the main differences from running with the ROM. The user guide covers them in detail (the section 「ROMなしで使う」).
 
 - The font is an original one and differs slightly from the real one.
-- The last digits of results and the time things take may differ from the real machine.
-- Machine code that calls a ROM routine works only if the emulator has a stand-in for that routine. A call to a routine with no stand-in stops there and returns to BASIC. Programs marked `# norom: off` are left out of the program list.
-- Programs that read the contents of the ROM do not behave as they do with the ROM.
+- Calculation precision and calculation time may differ from the real machine.
+- Machine code that calls a ROM routine works only if the emulator has a stand-in ROM routine for it. If there is none, a warning is shown and the program stops. Programs marked `# norom: off` are left out of the program list.
+- Programs that read data from ROM addresses do not work correctly without the ROM, because apart from the font and a few tables those addresses do not hold the ROM's contents.
 
 With `--no-basic`, the emulator shows only the machine-code workbench next to the machine, without BASIC. Writing your own stand-ins for ROM routines is described in `doc/norom.md`.
 
