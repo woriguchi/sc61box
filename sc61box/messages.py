@@ -896,6 +896,15 @@ MESSAGES: dict[str, dict[str, str | tuple[str, str]]] = {
         "ja": "16進ダンプ(番地 データ)をRAMに書き込む",
         "en": "Write a hex dump (address data) into RAM",
     },
+    "app.ram_loaded": {
+        "ja": "前回終了時のRAMを読み込みました(--freshで初期状態から起動できます)",
+        "en": "Loaded the RAM saved on the last exit "
+        "(start with --fresh to begin from a cleared RAM)",
+    },
+    "app.ram_loaded_locked": {
+        "ja": "前回終了時のRAMを読み込みました。プログラムはパスワードで保護されています",
+        "en": "Loaded the RAM saved on the last exit. The program is protected by a password",
+    },
     "app.do_not_load_saved": {
         "ja": "保存したRAMを読まず、終了時にも保存しない",
         "en": "Do not load the saved RAM, and do not save it on exit",
@@ -1942,6 +1951,10 @@ MESSAGES: dict[str, dict[str, str | tuple[str, str]]] = {
             "{name} not loaded. The BASIC is {size} bytes and does not fit in RAM ({room} bytes "
             "free)"
         ),
+    },
+    "load.password_locked": {
+        "ja": "プログラムがパスワードで保護されています",
+        "en": "The program is protected by a password",
     },
     "load.empty": {
         "ja": "{name}は空です",

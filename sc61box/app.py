@@ -536,6 +536,7 @@ class App:
             self.m.cpu.reset()
             self.bench.prev_regs = bytes(self.m.cpu.ram)
             self._load_bench_info(info)
+            self._say_ram_loaded()
         self.boot_frames = FPS  # 起動してから貼り付けを始めるまで
         if args.type:
             if not os.path.isfile(args.type):
@@ -2411,6 +2412,20 @@ class App:
     def say(self, text: str, seconds: float = 3.0) -> None:
         self.status = text
         self.status_until = time.monotonic() + seconds
+
+    def _say_ram_loaded(self) -> None:
+        """起動時に前回終了時のRAMを読み込んだことを、出ているメッセージのあとに続けて出す。
+        ROMなしのBASICでプログラムを保護していれば、そのことも出す(何も表示されない理由が
+        分かるように)"""
+        basic = self.m.basic
+        if basic is not None and basic.PASSWORD.locked(self.m):
+            text, seconds = tr("app.ram_loaded_locked"), 8.0
+        else:
+            text, seconds = tr("app.ram_loaded"), 4.0
+        left = self.status_until - time.monotonic()
+        if self.status and left > 0:
+            text, seconds = f"{self.status}\n{text}", max(seconds, left)
+        self.say(text, seconds)
 
     def say_loaded(self, text: str, seconds: float = 3.0) -> None:
         """読み込み終わりのメッセージ。# pad: に読めない語があれば、そのメッセージも続けて出す"""

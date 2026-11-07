@@ -78,12 +78,22 @@ def open_problem(prog: Program, m: PC1251, encode: Callable[[str], bytes | None]
         or _errors_problem(prog, name)
         or short
         or (_norom_problem(prog, name, basic=True) if m.norom else None)
+        or _password_problem(prog, m)
         or ram_problem(prog, m)
         or _outside_problem(m, prog.blocks + prog.after, prog.ram_top, name)
         or _long_problem(prog, m, name)
         or _size_problem(prog, m, name, encode)
         or _empty_problem(prog)
     )
+
+
+def _password_problem(prog: Program, m: PC1251) -> Problem | None:
+    """ROMなしのBASICで、プログラムをパスワードで保護しているとき。NEWでプログラムを消せない
+    機種(PC-1245、PC-1261系、PC-1350)では、BASICの行を打ち込んでも登録されないので断る"""
+    b = m.basic
+    if b is None or not needs_new(prog) or b.dialect.new_when_locked or not b.PASSWORD.locked(m):
+        return None
+    return tr("load.password_locked"), 8
 
 
 def _model_problem(prog: Program, m: PC1251) -> Problem | None:

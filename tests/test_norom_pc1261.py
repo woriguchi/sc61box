@@ -1477,6 +1477,27 @@ def test_app_without_rom_marks_power_off_when_closing():
     assert data[hi - lo + a : hi - lo + a + len(mark)] == mark
 
 
+def test_app_says_saved_ram_was_loaded():
+    """起動時に前回終了時のRAMを読み込んだら、そのことを出す。プログラムを保護していれば、
+    それも出す(初めての起動では出さない)"""
+    from helpers import make_app
+
+    plain = "前回終了時のRAMを読み込みました(--freshで初期状態から起動できます)"
+    locked = "前回終了時のRAMを読み込みました。プログラムはパスワードで保護されています"
+    app = make_app(model="1261", frames=3, norom=True, fresh=False)
+    assert "前回終了時" not in app.status
+    app.m.mem[0x66D9] |= 0x20
+    app.close()
+    app = make_app(model="1261", frames=3, norom=True, fresh=False)
+    assert locked in app.status
+    app.m.mem[0x66D9] &= ~0x20 & 0xFF
+    app.close()
+    app = make_app(model="1261", frames=3, norom=True, fresh=False)
+    assert plain in app.status and "保護" not in app.status
+    assert app.status.startswith("ROMがないため") and app.status.endswith("\n" + plain)
+    app.close()
+
+
 # ---- 印字モード(SHIFTのあとENTER)とプリンタ ----
 
 PRINT_MODE_STEPS = [

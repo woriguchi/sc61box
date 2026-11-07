@@ -252,3 +252,34 @@ def test_norom_use_is_not_a_note(tmp_path):
     assert (basic.norom_use, basic.norom) == ("basic", "")  # 読み込んだときに「basic」と出さない
     assert basic.without_rom(basic=True) and not basic.without_rom(basic=False)
     assert loading.open_problem(basic, machine(), lambda text: None) is None
+
+
+# 保護のフラグの番地(ROMなしのBASIC)
+LOCK_FLAGS = {"1245": 0xC6D9, "1251": 0xC6D9, "1261": 0x66D9, "1350": 0x6F14}
+
+
+def _locked(model):
+    from basic_diff import basic_machine
+
+    m = basic_machine(model)
+    m.mem[LOCK_FLAGS[model]] |= 0x20
+    assert m.basic is not None and m.basic.PASSWORD.locked(m)
+    return m
+
+
+def test_open_refuses_basic_into_locked_program():
+    """ROMなしのBASICでプログラムを保護していると、NEWで消せない機種ではBASICを読み込まない
+    (行を打ち込んでも登録されず、何も出ないままになるので)"""
+    prog = Program("p", title="P", basic="10 END")
+    want = ("プログラムがパスワードで保護されています", 8)
+    for model in ("1245", "1261", "1350"):
+        assert opened(prog, _locked(model)) == want, model
+
+
+def test_open_allows_locked_program_when_new_clears_it():
+    """PC-1251はNEWで保護ごと消すので、保護していても読み込む。BASICのないダンプだけのものも
+    行を打ち込まないので読み込む"""
+    basic = Program("p", basic="10 END")
+    assert loading.open_problem(basic, _locked("1251"), lambda t: b"") is None
+    dump = Program("p", blocks=[(0x4800, b"\x37")])
+    assert loading.open_problem(dump, _locked("1261"), never) is None
