@@ -383,8 +383,10 @@ def _lines(addr, data):
 
 def test_shared_hex_brings_data(tmp_path):
     """# hex: と# after: で使うダンプに書いた# data: の範囲も取り込む"""
-    (tmp_path / "shared.hex").write_text("# data: C001-C004\nC000 37 02 01 02 02 37\n")
-    (tmp_path / "more.hex").write_text("# data: C101\nC100 37 00\n")
+    (tmp_path / "shared.hex").write_text(
+        "# data: C001-C004\nC000 37 02 01 02 02 37\n", encoding="utf-8"
+    )
+    (tmp_path / "more.hex").write_text("# data: C101\nC100 37 00\n", encoding="utf-8")
     (tmp_path / "caller.bas").write_text(
         "# hex: shared.hex\n# after: more.hex\n10 CALL &C000\n", encoding="utf-8"
     )

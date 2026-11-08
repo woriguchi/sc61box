@@ -133,10 +133,12 @@ def test_glyph_needs_j_one():
 def test_assembler_knows_rom_names(tmp_path):
     src = tmp_path / "t.asm"
     out = tmp_path / "t.hex"
-    src.write_text("        ORG &C500\n        CAL FADD\n        CAL KEYSCAN\n        RTN\n")
+    src.write_text(
+        "        ORG &C500\n        CAL FADD\n        CAL KEYSCAN\n        RTN\n", encoding="utf-8"
+    )
     cmd = [sys.executable, ASM, str(src), str(out), "--rom", "1251"]
     subprocess.run(cmd, check=True, capture_output=True)
-    text = out.read_text()
+    text = out.read_text(encoding="utf-8")
     assert "C500 EB 50" in text and "C502 FF 44" in text
 
 
@@ -164,10 +166,11 @@ def test_assembler_ptc_dtc(tmp_path):
         "        ORG &C100\n        PTC 2,E\n        DTC\n"
         "        DB  5,hi(L1),lo(L1)\n        DB  7,hi(L2),lo(L2)\n        DB  hi(LD),lo(LD)\n"
         "E:      RTN\nL1:     LIB 1\n        RTN\nL2:     LIB 2\n        RTN\n"
-        "LD:     LIB &FF\n        RTN\n"
+        "LD:     LIB &FF\n        RTN\n",
+        encoding="utf-8",
     )
     subprocess.run([sys.executable, ASM, str(src), str(out)], check=True, capture_output=True)
-    rows = [line for line in out.read_text().splitlines() if line[:1] == "C"]
+    rows = [line for line in out.read_text(encoding="utf-8").splitlines() if line[:1] == "C"]
     code = bytes.fromhex("".join(line.split(";")[0].split(None, 1)[1] for line in rows))
     assert code[:5] == bytes([0x7A, 0x02, 0xC1, 0x0D, 0x69])
     for a, b in ((5, 1), (7, 2), (9, 0xFF)):

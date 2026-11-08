@@ -19,7 +19,9 @@ def test_migrate_moves_old_folder():
     assert os.path.islink(old) and not os.path.islink(new)
     assert os.path.isdir(os.path.join(new, "programs", "mine"))
     assert open(os.path.join(old, "ram.bin"), "rb").read() == b"\x01\x02"  # 前のパスで読める
-    with open(os.path.join(old, "programs", "mine", "a.bas"), "w") as f:  # 前のパスで書ける
+    with open(
+        os.path.join(old, "programs", "mine", "a.bas"), "w", encoding="utf-8"
+    ) as f:  # 前のパスで書ける
         f.write("10 END\n")
     assert os.path.isfile(os.path.join(new, "programs", "mine", "a.bas"))
     assert paths.data_dir() == new

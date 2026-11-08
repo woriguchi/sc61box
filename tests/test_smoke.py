@@ -184,9 +184,9 @@ def test_open_basic_and_hex_pair(tmp_path=None):
     from sc61box.machine import CLOCK
 
     d = tmp_path or tempfile.mkdtemp()
-    with open(os.path.join(d, "pair.hex"), "w") as f:
+    with open(os.path.join(d, "pair.hex"), "w", encoding="utf-8") as f:
         f.write("# title: 組の試験\nC300 0102 0304:0A\n")
-    with open(os.path.join(d, "pair.bas"), "w") as f:
+    with open(os.path.join(d, "pair.bas"), "w", encoding="utf-8") as f:
         f.write('# run: RUN\n10 A=6*7\n20 PRINT "X";A\n')
     prog = programs.load_program(os.path.join(d, "pair.bas"))
     assert prog.title == "組の試験" and prog.kinds == "BASIC+HEX" and prog.size == 4
@@ -1293,6 +1293,8 @@ def test_recording(tmp_path, monkeypatch):
         [recorder.ffmpeg_exe(), "-hide_banner", "-i", str(files[0])],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     ).stderr
     assert "1280x720" in info and "Audio: aac" in info
     dur = info.split("Duration: ")[1].split(",")[0]

@@ -1528,10 +1528,12 @@ def test_norom_basic_lists_and_loads_basic_programs(tmp_path, monkeypatch):
     lib = tmp_path / "lib"
     lib.mkdir()
     (lib / "anime.bas").write_text(
-        '10 DIM T$(0)*40\n20 T$(0)="  POCKET"\n30 PRINT MID$ (T$(0),3,6);π\n'
+        '10 DIM T$(0)*40\n20 T$(0)="  POCKET"\n30 PRINT MID$ (T$(0),3,6);π\n', encoding="utf-8"
     )
-    (lib / "romonly.bas").write_text("# hex: x.hex\n# norom: off\n10 CALL &C000\n")
-    (lib / "x.hex").write_text("C000 37\n")
+    (lib / "romonly.bas").write_text(
+        "# hex: x.hex\n# norom: off\n10 CALL &C000\n", encoding="utf-8"
+    )
+    (lib / "x.hex").write_text("C000 37\n", encoding="utf-8")
     monkeypatch.setenv("SC61BOX_PROGRAMS", str(lib))
     app = make_app(norom=True)
     app.open_menu()

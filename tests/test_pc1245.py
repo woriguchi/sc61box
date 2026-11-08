@@ -197,8 +197,8 @@ def test_dump_over_fixed_variables_survives_new(tmp_path):
 
     data = bytes(range(1, 0x79))  # C5D0〜C647
     total = sum(data) & 0xFF
-    (tmp_path / "game.hex").write_text(f"C5D0 {data.hex().upper()}:{total:02X}\n")
-    (tmp_path / "game.bas").write_text("10 PRINT 1\n")
+    (tmp_path / "game.hex").write_text(f"C5D0 {data.hex().upper()}:{total:02X}\n", encoding="utf-8")
+    (tmp_path / "game.bas").write_text("10 PRINT 1\n", encoding="utf-8")
     app = make_app("1245")
     app.typer.add_mode("PRO")
     app.typer.add_text("10 PRINT 1\n")  # 起動直後のNEWは固定変数を消さないので、先に1行入れる

@@ -229,7 +229,7 @@ class Recorder:
                 "-c:v", "copy", "-c:a", "aac", "-b:a", "128k", "-shortest",
                 "-movflags", "+faststart", self.path,
             ],
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
         )  # fmt: skip
         shutil.rmtree(self.work, ignore_errors=True)
         if done.returncode != 0:

@@ -13,7 +13,7 @@ from sc61box.overlay import Popup, ProgramMenu
 
 def _broken_states(path):
     """正しく保存した状態から、1か所ずつ壊したものを作る"""
-    good = json.loads(open(path).read())
+    good = json.loads(open(path, encoding="utf-8").read())
     bad = []
     for change in ("mem", "cpu.p", "cpu.ram", "mode", "rom", "list", "port"):
         s = json.loads(json.dumps(good))
@@ -45,7 +45,7 @@ def test_broken_state_changes_nothing(tmp_path):
     before = bytes(m.mem), bytes(m.cpu.ram), m.cpu.state()
     for change, state in _broken_states(path):
         bad = str(tmp_path / f"{change}.json")
-        with open(bad, "w") as f:
+        with open(bad, "w", encoding="utf-8") as f:
             json.dump(state, f)
         with pytest.raises(ValueError):
             m.load_state(bad)
@@ -57,10 +57,10 @@ def test_save_state_keeps_previous(tmp_path):
     path = str(tmp_path / "state.json")
     m, _ = boot()
     m.save_state(path)
-    first = open(path).read()
+    first = open(path, encoding="utf-8").read()
     m.mem[0xC100] = 0x5A
     m.save_state(path)
-    assert open(path + ".bak").read() == first
+    assert open(path + ".bak", encoding="utf-8").read() == first
     assert not (tmp_path / "state.json.tmp").exists()
 
 
@@ -142,11 +142,12 @@ def test_export_keeps_directives(tmp_path):
     """書き出したファイルに、# after:・# model:・# help:などの指示が残る"""
     folder = tmp_path / "lib"
     folder.mkdir()
-    (folder / "code.hex").write_text("C400 55\n")
-    (folder / "late.hex").write_text("C500 66\n")
+    (folder / "code.hex").write_text("C400 55\n", encoding="utf-8")
+    (folder / "late.hex").write_text("C500 66\n", encoding="utf-8")
     (folder / "game.bas").write_text(
         "# model: 1251,1245\n# hex: code.hex\n# after: late.hex\n# help: 8と2で動く\n"
-        "# run: RUN\n10 PRINT 7\n"
+        "# run: RUN\n10 PRINT 7\n",
+        encoding="utf-8",
     )
     prog = programs.load_program(str(folder / "game.bas"))
     app = make_app()
@@ -241,7 +242,7 @@ def test_unreadable_dependency(tmp_path, monkeypatch):
     lib = tmp_path / "lib"
     lib.mkdir()
     (lib / "broken.hex").write_bytes(b"\xff")
-    (lib / "uses.bas").write_text("# hex: broken.hex\n10 PRINT 1\n")
+    (lib / "uses.bas").write_text("# hex: broken.hex\n10 PRINT 1\n", encoding="utf-8")
     prog = programs.load_program(str(lib / "uses.bas"))
     assert prog.errors and "broken.hex" in prog.errors[0]
     monkeypatch.setenv("SC61BOX_PROGRAMS", str(lib))

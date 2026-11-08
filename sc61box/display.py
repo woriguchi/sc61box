@@ -29,7 +29,7 @@ ASSETS = os.path.join(HERE, "assets")
 MARGIN = 28  # 本体のまわりの机の幅
 
 # PC-1251の絵の寸法(Panelはどの機種もlayout.jsonの値を使う)
-with open(os.path.join(ASSETS, "keys.json")) as _f:
+with open(os.path.join(ASSETS, "keys.json"), encoding="utf-8") as _f:
     IMG_H = json.load(_f)["height"]
 IMG_W = 1425
 OUT_W, OUT_H = IMG_W + 2 * MARGIN, IMG_H + 2 * MARGIN
@@ -60,7 +60,7 @@ def asset_path(model: str, name: str) -> str:
 
 def layout(model: str = "1251") -> dict:
     """液晶とスイッチの配置(assets/…/layout.json)"""
-    with open(asset_path(model, "layout.json")) as f:
+    with open(asset_path(model, "layout.json"), encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -143,7 +143,7 @@ class Panel:
         self.col_x: list[int] = []
         self.row_y: list[int] = []
         self._place()
-        with open(path("keys.json")) as f:
+        with open(path("keys.json"), encoding="utf-8") as f:
             keys = json.load(f)
         self.key_rects = {k: tuple(v) for k, v in keys["keys"].items()}
         self.body_h = keys["top"]  # 液晶部の高さ。その下がキーボードの絵
@@ -177,7 +177,7 @@ class Panel:
         self.symbols = {}
         # 記号の下地。影が右下へはみ出す分も含めて、毎フレーム貼り直す
         self.sym_bg: list[tuple[pygame.Surface, tuple[int, int]]] = []
-        with open(path("symbols.txt")) as f:
+        with open(path("symbols.txt"), encoding="utf-8") as f:
             for line in f:
                 # 名前、ドットの左端からのx、絵の上端からのy(なければann_y)
                 name, x, *rest = line.split()
