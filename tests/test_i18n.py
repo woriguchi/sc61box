@@ -321,13 +321,17 @@ def test_cli_help_follows_language():
 
     from sc61box.app import make_cli
 
+    def plain(output: str) -> str:
+        # GitHub ActionsではTyperが端末でなくても色を付ける(--langは-と-langに分かれる)
+        return re.sub(r"\x1b\[[0-9;]*m", "", output)
+
     i18n.set_language("en")
     result = CliRunner().invoke(make_cli(), ["--help"])
     assert result.exit_code == 0
-    assert "Window scale" in result.output and "--lang" in result.output
+    assert "Window scale" in plain(result.output) and "--lang" in plain(result.output)
     i18n.set_language("ja")
     result = CliRunner().invoke(make_cli(), ["--help"])
-    assert "拡大率" in result.output
+    assert "拡大率" in plain(result.output)
     result = CliRunner().invoke(make_cli(), ["--lang", "fr", "--fresh"])
     assert result.exit_code == 2
 
