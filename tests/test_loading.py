@@ -1,5 +1,7 @@
 """プログラムを読み込めるかの検査と、読み込む手順(sc61box.loading。Appを作らずに試す)"""
 
+import pytest
+
 from sc61box import loading
 from sc61box.loading import Step
 from sc61box.machine import SYMBOLS_1350, new_machine
@@ -283,3 +285,37 @@ def test_open_allows_locked_program_when_new_clears_it():
     assert loading.open_problem(basic, _locked("1251"), lambda t: b"") is None
     dump = Program("p", blocks=[(0x4800, b"\x37")])
     assert loading.open_problem(dump, _locked("1261"), never) is None
+
+
+def _locked_with_rom(model):
+    """ROMのある本体で、プログラムを入れてPASSで保護したもの"""
+    from helpers import boot, finish
+
+    from sc61box.machine import CLOCK
+
+    m, t = boot(model)
+    t.add_mode("PRO")
+    for line in ("10 PRINT 11", 'PASS "A"'):
+        t.add_text(line + "\n")
+    finish(m, t)
+    m.run(CLOCK // 2)
+    return m
+
+
+@pytest.mark.parametrize(("model", "refused"), [("1245", True), ("1251", False), ("1261", True),
+                                                ("1350", True)])  # fmt: skip
+def test_open_checks_password_with_rom(model, refused):
+    """ROMのある本体でも、PASSで保護したプログラムには、NEWで消せない機種ではBASICを読み込まない
+    (読み込むと、保護したまま置き換わる)。保護のフラグの番地はROMなしのBASICと同じ"""
+    from conftest import HAVE_ROM, HAVE_ROM_1245, HAVE_ROM_1260, HAVE_ROM_1350
+
+    have = {"1245": HAVE_ROM_1245, "1251": HAVE_ROM, "1261": HAVE_ROM_1260, "1350": HAVE_ROM_1350}
+    if not have[model]:
+        pytest.skip("ROMがない")
+    m = _locked_with_rom(model)
+    assert m.basic is None and m.mem[LOCK_FLAGS[model]] & 0x20
+    found = loading.open_problem(Program("p", basic="10 PRINT 77"), m, lambda t: b"")
+    if refused:
+        assert found == ("プログラムがパスワードで保護されています", 8)
+    else:
+        assert found is None

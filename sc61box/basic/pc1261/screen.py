@@ -8,6 +8,7 @@ from . import font
 
 # 液晶にない記号(ビットだけを立てる。GRADは207Cのビット2。machine.SYMBOLS_1261の註釈も参照)
 HIDDEN = {"GRAD": (0x207C, 0x04)}
+BLANK = frozenset({0x60})  # 液晶に何も描かない字(観察。PC-1350では`の形)
 
 
 def char(code: int) -> str:
@@ -25,6 +26,8 @@ def glyph(code: int) -> bytes:
     """字の形(5列)。形のない字は空白"""
     if code == 0x01:
         return INSERT_MARK
+    if code in BLANK:
+        return bytes(5)
     ch = font.SAME.get(char(code), char(code))
     return font.glyph(ch) or charset.glyph(ch) if ch else bytes(5)
 

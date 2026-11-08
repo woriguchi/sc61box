@@ -49,6 +49,37 @@ FAMILIES: dict[str, tuple[str, ...]] = {
     "1350": ("1350",),
 }
 
+
+def save_waits(m) -> dict:
+    """待っている代替ROMルーチンの様子(状態の保存用)。系統の名前ごと"""
+    from . import norom, norom1261
+
+    out = {}
+    for family, module in (("1251", norom), ("1261", norom1261)):
+        w = module.save_wait(m)
+        if w is not None:
+            out[family] = w
+    return out
+
+
+def prepare_waits(m, d: object) -> Callable[[], None]:
+    """save_waitsの値を調べ、待ちの様子を戻す関数を返す(前の版の状態にはないので、Noneなら
+    待ちを捨てる)。おかしければValueError"""
+    from . import norom, norom1261
+
+    if d is None:
+        d = {}
+    if not isinstance(d, dict) or not set(d) <= {"1251", "1261"}:
+        raise ValueError("waits")
+    steps = [norom.prepare_wait(m, d.get("1251")), norom1261.prepare_wait(m, d.get("1261"))]
+
+    def apply() -> None:
+        for step in steps:
+            step()
+
+    return apply
+
+
 # 比べるもの(routinecheck)の名前。ほかに、数で内部RAMとメモリの番地を書く
 COMPARED = ("c", "z", "p", "q", "dp", "pa", "pb", "pc", "ko", "power", "mem", "cycles")
 

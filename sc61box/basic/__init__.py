@@ -9,22 +9,33 @@ RAMの置き方、液晶の出し方は系統ごとのフォルダにある。
 - pc1261/: PC-1261系(PC-1260・1261・1262)とPC-1350(PC-1350の液晶とキーはpc1261/pc1350.py)
 """
 
+from .password import Password
 from .system import Basic
 
 PC1261_MODELS = ("1260", "1261", "1262")  # PC-1261系の機種
 MODELS = ("1250", "1251", "1255", "1245", *PC1261_MODELS, "1350")  # ROMなしのBASICで動かせる機種
 
 
-def attach(m) -> Basic:
-    """ROMなしの本体mにBASICを付ける"""
-    if m.model.name == "1350":
+def _family(name: str):
+    """機種のBASICの系統のモジュール"""
+    if name == "1350":
         from .pc1261 import pc1350 as family
-    elif m.model.name in PC1261_MODELS:
+    elif name in PC1261_MODELS:
         from .pc1261 import system as family
     else:
         from .pc1251 import system as family
-    m.basic = family.Basic(m)
+    return family
+
+
+def attach(m) -> Basic:
+    """ROMなしの本体mにBASICを付ける"""
+    m.basic = _family(m.model.name).Basic(m)
     return m.basic
 
 
-__all__ = ["MODELS", "Basic", "attach"]
+def password_of(m) -> Password:
+    """本体mの機種のパスワードの置き方。RAMの形はROMのある本体と同じなので、ROMのある本体でも使える"""
+    return _family(m.model.name).Basic.PASSWORD
+
+
+__all__ = ["MODELS", "Basic", "attach", "password_of"]

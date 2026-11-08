@@ -191,6 +191,23 @@ EXPRESSIONS = [
 ]  # fmt: skip
 
 
+@pytest.mark.parametrize("model", ["1261", "1350"])
+def test_char_60_like_rom(model):
+    """60hの字は、PC-1261系の液晶では何も描かず、PC-1350では`の形(ROMのある本体と同じ。
+    M・MON KITTは、液晶の2行の字を60hで埋めて空白にする)"""
+    if not (HAVE_ROM_1350 if model == "1350" else HAVE_ROM_1260):
+        pytest.skip("ROMがない")
+    from basic_diff import basic_machine, lcd_1350, lcd_pc1261, play
+
+    read = lcd_1350 if model == "1350" else lcd_pc1261
+    shown = []
+    for m in (boot(model)[0], basic_machine(model)):
+        play(m, [("mode", "RUN"), ("wait", 1.5), ("type", '"A"+CHR$ 96+"B"\n'), ("wait", 1.0)])
+        shown.append([line.strip() for line in read(m).splitlines() if "CHR$" not in line])
+    assert shown[0] == shown[1]
+    assert ("A`B" if model == "1350" else "A B") in shown[1]
+
+
 def test_expressions_like_rom():
     """RUNモードで打った式の答え(pc1261.evaluate)が、ROMのある本体の2行目と同じ(PC-1261)"""
     if not HAVE_ROM_1260:

@@ -30,9 +30,10 @@ SHOWRAMは走れ!セコイラインのコンパイルしたプログラム、PRI
 56C4、03版では5673。ROMなしの本体は7FFF番地が00なので00版の番地を呼ぶ。働きはF0版で確かめた)、
 NOISEはPC-1245用のもぐらたたきが呼ぶ入口。
 
-PC-1260/1261/1262の入口(ROUTINES_1261)は、ゲームのFENSCERとコンパイラLC-3が呼ぶ入口を、PC-1350の入口
-(ROUTINES_1350)は、PiO 1986年6月号のCHANGER mkIIと、けいくん＠ちたの漢字表示システム
-(kanji-system)が呼ぶ入口を、ROMのある本体で呼んで働きを確かめたもの。「J+1バイト」と書いたものは、Jが1なら2バイトを写す。
+PC-1260/1261/1262の入口(ROUTINES_1261)は、ゲームのFENSCER、コンパイラLC-3、まうりさんの麻雀ゲーム
+『M・MON KITT』が呼ぶ入口を、PC-1350の入口(ROUTINES_1350)は、PiO 1986年6月号のCHANGER mkIIと、
+けいくん＠ちたの漢字表示システム(kanji-system)が呼ぶ入口を、ROMのある本体で呼んで働きを確かめたもの。
+「J+1バイト」と書いたものは、Jが1なら2バイトを写す。
 """
 
 # 名前と番地(働きは messages の rom.系統.名前)
@@ -143,6 +144,13 @@ ROUTINES_1261: dict[str, int] = {
     "BA2XM": 0x022E,
     "BA2YM": 0x0242,
     "LCDYM": 0x0248,
+    "Y664F": 0x1BE0,
+    "X664F": 0x1C05,
+    "B66Y": 0x1BE2,
+    "BA2RP": 0x0226,
+    "EXRPR0C": 0x13A4,
+    "RCSLBA": 0x1559,
+    "SLBA": 0x155A,
     "R382X": 0x133B,
     "X2R38": 0x134E,
     "R3A2X": 0x1A19,
@@ -170,12 +178,14 @@ ROUTINES_1261: dict[str, int] = {
     "MV6619": 0x1B6A,
     "FILL67B0": 0x1BA7,
     "FILL6650": 0x1B31,
+    "CLR6650": 0x1B2F,
     "LDX66E1": 0x13BD,
     "STYDP": 0x156E,
     "PEEKBA": 0x0F30,
     "SKIPLINE": 0xC2CF,
     "SET662B": 0x19EE,
     "WAIT2MS": 0x08CF,
+    "WAIT2MSZ": 0x08D5,
     "INC66E1": 0x07C0,
     # 液晶と字の形
     "DISPOFF": 0x0437,

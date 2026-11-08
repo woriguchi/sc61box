@@ -9,7 +9,8 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from . import keytype, workbench
+from . import basic, keytype, workbench
+from .basic import dialect
 from .i18n import tr
 from .machine import PC1251
 from .programs import Program
@@ -88,10 +89,12 @@ def open_problem(prog: Program, m: PC1251, encode: Callable[[str], bytes | None]
 
 
 def _password_problem(prog: Program, m: PC1251) -> Problem | None:
-    """ROMなしのBASICで、プログラムをパスワードで保護しているとき。NEWでプログラムを消せない
-    機種(PC-1245、PC-1261系、PC-1350)では、BASICの行を打ち込んでも登録されないので断る"""
-    b = m.basic
-    if b is None or not needs_new(prog) or b.dialect.new_when_locked or not b.PASSWORD.locked(m):
+    """プログラムをパスワードで保護しているとき。NEWでプログラムを消せない機種(PC-1245、
+    PC-1261系、PC-1350)では断る(BASICの行を打ち込んでも登録されないか、ROMのある本体では
+    保護したまま置き換わる)。保護のフラグの番地は、ROMのある本体もROMなしのBASICと同じ"""
+    if m.model.name not in basic.MODELS or not needs_new(prog):
+        return None
+    if dialect.of(m).new_when_locked or not basic.password_of(m).locked(m):
         return None
     return tr("load.password_locked"), 8
 

@@ -12,7 +12,7 @@
 from ... import charset
 from ...machine import SYMBOLS_1350
 from ..screen import UNDERLINE
-from . import screen
+from . import font, screen
 from .screen import Screen
 
 ROWS = 4
@@ -24,12 +24,12 @@ HIDDEN = {
 }  # fmt: skip
 
 
-CHARS = {0xFB: "π", 0xFC: "√"}  # PC-1261系にない字(観察)
+CHARS = {0x60: "`", 0xFB: "π", 0xFC: "√"}  # PC-1261系の液晶にない字(観察)
 
 
 def glyph(code: int) -> bytes:
     ch = CHARS.get(code)
-    return charset.glyph(ch) if ch else screen.glyph(code)
+    return (font.glyph(ch) or charset.glyph(ch)) if ch else screen.glyph(code)
 
 
 class Console(Screen):

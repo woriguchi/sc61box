@@ -19,7 +19,7 @@ PC-1260/1261/1262の配置は次のとおり。キー、モードスイッチ、
     4000-67FF  RAM(PC-1261・1262は10KB、PC-1260は5800-67FFの4KB)。6600-67FFはBASICの作業域
     8000-FFFF  BASIC ROM(32KB)
 
-PC-1260/1261/1262の水晶は768kHz(PC-1251は576kHz)。ROMのテープを読むルーチンの待ちの回数が
+PC-1260/1261/1262のクロックは768kHz(PC-1251は576kHz)。ROMのテープを読むルーチンの待ちの回数が
 PC-1251の約4/3倍で、576kHzとして動かすとROMが自分で書いたテープを読めない。
 PC-1350はクラスPC1350(このファイルの後半)。
 """
@@ -41,7 +41,7 @@ from .sc61860 import SC61860, Bus
 if TYPE_CHECKING:
     from .basic.system import Basic
 
-CLOCK = 192_000  # 命令サイクルの周波数(水晶576kHzの1/3)
+CLOCK = 192_000  # 命令サイクルの周波数(クロック576kHzの1/3)
 TICK_2MS = CLOCK // 500  # 2msごとに反転するタイマ
 LCD_LO, LCD_HI = 0xF800, 0xF900
 
@@ -830,6 +830,9 @@ class PC1251(Bus):
         state["mem"] = base64.b64encode(bytes(self.mem)).decode("ascii")
         if self.basic is not None:  # ROMなしのBASICの、RAMの外の状態
             state["basic"] = self.basic.save()
+        from . import routines
+
+        state["waits"] = routines.save_waits(self)  # 待っている代替ROMルーチンの様子
         return state
 
     def save_state(self, path: str, extra: dict | None = None) -> None:
@@ -896,6 +899,12 @@ class PC1251(Bus):
                 basic = self.basic.prepare(state.get("basic"))
             except ValueError as e:
                 raise ValueError(tr("machine.bad_basic_state")) from e
+        from . import routines
+
+        try:
+            waits = routines.prepare_waits(self, state.get("waits"))
+        except ValueError as e:
+            raise ValueError(tr("machine.bad_wait_state")) from e
         # ここから先は失敗しない
         self.set_ram_top(top)
         for lo, hi in self._writable_ranges():
@@ -905,6 +914,7 @@ class PC1251(Bus):
         self.cpu.set_state(cpu)
         if basic is not None:  # ROMなしのBASICは、保存したところから続ける
             basic()
+        waits()
         self.held.clear()
         self.brk = self.reset_key = False
         self.tape = None

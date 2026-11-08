@@ -1,10 +1,12 @@
 """ROMなしのPC-1260/1261/1262で、代替ROMルーチン(norom1261.ROUTINES)と文字の形の表が、
 ROMのある本体と同じに働くか"""
 
+import json
+
 import pytest
 from basic_diff import basic_machine
 from conftest import HAVE_ROM_1260
-from helpers import boot, finish
+from helpers import boot, finish, make_app
 
 from sc61box import charset, norom, norom1261, romsyms, routinecheck, routines
 from sc61box.autotype import Typer
@@ -72,6 +74,8 @@ def test_glyph_table_is_drawn():
     at = norom1261.FONT_TOP + 5 * (0xF1 - 0x55)
     assert bytes(m.mem[at : at + 5]) == bytes(reversed(norom1261.glyph(0xF1)))
     assert norom1261.glyph(0xB1) == font.glyph("ｱ") and norom1261.glyph(0xF1) == font.glyph("年")
+    at = norom1261.FONT_TOP + 5 * (0x60 - 0x20)
+    assert bytes(m.mem[at : at + 5]) == bytes(5)  # 60hは何も描かない(PC-1350では`の形)
 
 
 def test_copy_and_glyph_without_rom():
@@ -96,13 +100,16 @@ def pair():
     return routinecheck.machines("1261")
 
 
-def _wait2ms(m, t2: int, flag: int, frac: int) -> tuple[int, int, int, int]:
-    """本当の速さで、タイマを刻みのt2、刻みの印をflag、時刻の端数をfracにしてWAIT2MSを呼ぶ。
-    (サイクル数, 戻ったときのt2, 印, 端数)"""
+def _wait2ms(
+    m, t2: int, flag: int, frac: int, name: str = "WAIT2MS", z: int = 0
+) -> tuple[int, int, int, int, int]:
+    """本当の速さで、タイマを刻みのt2、刻みの印をflag、時刻の端数をfrac、Zをzにしてnameを呼ぶ。
+    (サイクル数, 戻ったときのt2, 印, 端数, Z)"""
     m.cpu.ram[1] = 1
+    m.cpu.z = z
     m.t2, m.t2ms, m.cpu._frac = t2, flag, frac
-    cycles = _call(m, A["WAIT2MS"], ratio=(3, 4))
-    return cycles, m.t2, m.t2ms, m.cpu._frac
+    cycles = _call(m, A[name], ratio=(3, 4))
+    return cycles, m.t2, m.t2ms, m.cpu._frac, m.cpu.z
 
 
 def test_wait2ms_counts_time_fraction():
@@ -124,6 +131,20 @@ def test_wait2ms_like_rom_at_real_speed(pair):
             for frac in range(4):
                 got = _wait2ms(hle, t2, flag, frac)
                 assert got == _wait2ms(rom, t2, flag, frac), (t2, flag, frac)
+
+
+def test_wait2msz_like_rom_at_real_speed(pair):
+    """WAIT2MSZも、本当の速さで刻みのどこで呼んでも、Zが0でも1でも、ROMのある本体と同じ
+    (刻みの直前に呼ぶと、戻るまでに来た次の刻みの印が残る)"""
+    from sc61box.machine import TICK_2MS
+
+    rom, hle = pair
+    for t2 in range(TICK_2MS):
+        for flag in (0, 1):
+            for z in (0, 1):
+                frac = t2 % 4
+                got = _wait2ms(hle, t2, flag, frac, "WAIT2MSZ", z)
+                assert got == _wait2ms(rom, t2, flag, frac, "WAIT2MSZ", z), (t2, flag, z)
 
 
 @pytest.mark.parametrize("name", [n for n in romsyms.ROUTINES_1261 if n != "INKEY"])
@@ -191,6 +212,86 @@ def test_inkey_like_rom(presses):
     rom, hle = _inkey_rom_and_hle(presses)
     assert rom[:4] == hle[:4]
     assert abs(rom[4] - hle[4]) < 0.003
+
+
+def _inkey_held(m, held) -> int | None:
+    """速さ1対1でINKEYを呼ぶ。held(入ってからのCPUのサイクル数)が押しているキー。戻るまでの
+    サイクル数(2秒で戻らなければNone)"""
+    cpu = m.cpu
+    cpu.ram[1] = 1
+    cpu.r = 0x5C
+    cpu.push(RET >> 8)
+    cpu.push(RET & 0xFF)
+    cpu.pc = A["INKEY"]
+    m.halted = False
+    guard = bytearray(0x10000)
+    guard[RET] = 1
+    c0 = cpu.cycles
+    while cpu.pc != RET and cpu.cycles - c0 < CLOCK * 2:
+        m.held.clear()
+        m.held.update(held(cpu.cycles - c0))
+        if m.norom:
+            routines.call(m, cpu.pc)
+        else:
+            m.run(16, guard)
+    return cpu.cycles - c0 if cpu.pc == RET else None
+
+
+def _repeat(rom: bool, key: str, count: int, release: int | None = None, then: str = ""):
+    """FENSCERのように、keyを受け付けたあと662Eをcountにし、662Bのビット1を立てて、keyを押した
+    ままもう一度INKEYを呼ぶ。releaseがあれば、そのサイクルで離し、2万サイクルのちにthenを押す。
+    (戻るまでのサイクル数, I, A, B, Yの下位, キャリー, Z, 662E, 662B, 512msのタイマの印)"""
+    m = boot("1261")[0] if rom else _hle()
+    if rom:
+        m.mode = "RUN"
+        m.run(CLOCK)
+    m.cpu.ratio = (1, 1)
+    m.mem[0x66E8], m.mem[0x66E9], m.mem[0x662B] = 0x46, 0x85, 0x17
+    _inkey_held(m, lambda t: {key} if t > 20000 else set())
+    assert not m.mem[0x662B] & 0x02  # 受け付けると662Bのビット1を消す
+    m.mem[0x662E], m.mem[0x662F] = count & 0xFF, count >> 8
+    m.mem[0x662B] |= 0x17
+    if release is None:
+        n = _inkey_held(m, lambda t: {key})
+    else:
+        n = _inkey_held(
+            m, lambda t: {key} if t < release else {then} if t > release + 20000 else set()
+        )
+    cpu = m.cpu
+    return (n, cpu.ram[0], cpu.ram[2], cpu.ram[3], cpu.ram[6], cpu.c, cpu.z,
+            m.mem[0x662E] | m.mem[0x662F] << 8, m.mem[0x662B], m.t512)  # fmt: skip
+
+
+def test_inkey_repeats_held_key():
+    """前に返したキーを押したまま呼ぶと、662Eの数が0になるまで、決まった間隔で1を足し、0なら
+    662EをFFFEにして同じ字を返す(FENSCERは0.5秒ほど待ってから繰り返す)"""
+    got = _repeat(False, "RIGHT", 0xFFCE)
+    line = norom1261.KEY_NUMBERS["RIGHT"][1]
+    cycles = norom1261.REPEAT_FIRST + 38 * line + 1 + 50 * (norom1261.REPEAT_EVERY + 38 * line)
+    assert got[:8] == (cycles, 0xFB, 0x0E, 0, 0x0E, 0, 1, 0xFFFE)
+
+
+@pytest.mark.parametrize("key", ["RIGHT", "1", "A", "SPC", "Z"])
+@pytest.mark.parametrize("count", [0x0000, 0xFFFF, 0xFFFE, 0xFFF0, 0xFFCE])
+def test_inkey_repeat_like_rom(key, count):
+    """押し続けたキーの繰り返しで、戻るまでのサイクル数、レジスタ、662E・662B、512msのタイマの印
+    (繰り返しを待つあいだは見ない)が、ROMのある本体と同じ"""
+    if not HAVE_ROM_1260:
+        pytest.skip("ROMがない")
+    assert _repeat(True, key, count) == _repeat(False, key, count)
+
+
+@pytest.mark.parametrize(("release", "then"), [(30000, "LEFT"), (30000, "RIGHT"), (60000, "A")])
+def test_inkey_repeat_stops_when_released_like_rom(release, then):
+    """繰り返しを待つ途中で離すと、すべて離したあとのキーを受け付ける待ちに戻る。返す字と、
+    数えた662Eの値がROMのある本体と同じ(時間は1%以内)"""
+    if not HAVE_ROM_1260:
+        pytest.skip("ROMがない")
+    rom = _repeat(True, "RIGHT", 0xFFCE, release, then)
+    hle = _repeat(False, "RIGHT", 0xFFCE, release, then)
+    assert (rom[2], rom[3], rom[7]) == (hle[2], hle[3], hle[7])
+    assert rom[0] is not None and hle[0] is not None
+    assert abs(rom[0] - hle[0]) <= rom[0] // 100
 
 
 def _entry(m, typed: str, lines=()) -> tuple[int, bytes, int]:
@@ -267,3 +368,82 @@ def test_app_runs_code_in_extended_ram():
         app.frame()
     assert m.mem[0x6000] == 0x5A and app.bench.state != "pause"
     app.close()
+
+
+def _start_inkey(m) -> None:
+    cpu = m.cpu
+    cpu.ram[1] = 1
+    cpu.r = 0x5C
+    cpu.push(RET >> 8)
+    cpu.push(RET & 0xFF)
+    cpu.pc = A["INKEY"]
+    m.halted = False
+
+
+def _run_inkey(m, cycles: int, held) -> bool:
+    """INKEYをcyclesだけ動かす(held(経過サイクル)が押しているキー)。戻ったらTrue"""
+    cpu = m.cpu
+    c0 = cpu.cycles
+    while cpu.pc != RET and cpu.cycles - c0 < cycles:
+        m.held.clear()
+        m.held.update(held(cpu.cycles - c0))
+        routines.call(m, cpu.pc)
+    return cpu.pc == RET
+
+
+def test_inkey_wait_survives_restore():
+    """繰り返しを待つINKEYの様子は本体の状態と一緒に保存し、戻す。保存してから先へ進めて戻したあと
+    に短く押したキーを受け付ける(待ちの様子が先へ進んだままだと、取りこぼす)"""
+    m = _hle()
+    m.cpu.ratio = (1, 1)
+    m.mem[0x66E8], m.mem[0x66E9], m.mem[0x662B] = 0x46, 0x85, 0x17
+    _inkey_held(m, lambda t: {"RIGHT"} if t > 20000 else set())
+    m.mem[0x662E], m.mem[0x662F] = 0xCE, 0xFF
+    m.mem[0x662B] |= 0x17
+    _start_inkey(m)
+    assert not _run_inkey(m, 30000, lambda t: {"RIGHT"})
+    state = m.snapshot()
+    assert "1261" in state["waits"]
+    assert not _run_inkey(m, 60000, lambda t: {"RIGHT"})
+    m.restore(state)
+    assert _run_inkey(m, CLOCK, lambda t: {"A"} if 20000 < t < 30000 else set())
+    assert m.cpu.ram[2] == 0x41
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [("pc", -1), ("r", 0x80), ("seen", "x"), ("armed", 1), ("key", "NOKEY"), ("repeat", 5),
+     ("reset", -2), ("checks", None), ("sampled", "no"), ("extra", 0), ("repeat", []),
+     ("key", {}), ("key", ["A"])],
+)  # fmt: skip
+def test_bad_inkey_wait_state_is_refused(key, value):
+    """壊れた待ちの様子の状態は断り、いまの状態には手を付けない"""
+    m = _hle()
+    m.cpu.ratio = (1, 1)
+    m.mem[0x66E8], m.mem[0x66E9], m.mem[0x662B] = 0x46, 0x85, 0x17
+    _start_inkey(m)
+    _run_inkey(m, 20000, lambda t: set())
+    state = m.snapshot()
+    state["waits"]["1261"][key] = value
+    before = m.snapshot()
+    with pytest.raises(ValueError):
+        m.restore(state)
+    assert m.snapshot() == before
+    del state["waits"]  # 前の版の状態(待ちの様子がない)は読み、待ちを捨てる
+    m.restore(state)
+    assert norom1261.save_wait(m) is None
+
+
+def test_app_names_broken_state_file(tmp_path):
+    """壊れた状態ファイルを読むと、読み込めないことと、どのファイルかを出す"""
+    app = make_app("1261", frames=5, norom=True)
+    norom1261._inputs[app.m] = norom1261._Input(0x1138, 0x5A, app.m.cpu.cycles, repeat="A")
+    path = str(tmp_path / "state.json")
+    app.m.save_state(path)
+    with open(path, encoding="utf-8") as f:
+        state = json.load(f)
+    state["waits"]["1261"]["repeat"] = []
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(state, f)
+    app.load_state(path)
+    assert app.status == f"状態を読み込めません({path}): 状態ファイルが破損しています"

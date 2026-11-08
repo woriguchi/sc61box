@@ -778,8 +778,8 @@ MESSAGES: dict[str, dict[str, str | tuple[str, str]]] = {
         "en": "No saved state",
     },
     "app.cannot_load_state": {
-        "ja": "状態を読み込めません: {error}",
-        "en": "Cannot load state: {error}",
+        "ja": "状態を読み込めません({path}): {error}",
+        "en": "Cannot load state ({path}): {error}",
     },
     "app.cannot_save_screenshot": {
         "ja": "画面の画像を保存できません: {error}",
@@ -2018,6 +2018,10 @@ MESSAGES: dict[str, dict[str, str | tuple[str, str]]] = {
         "ja": "BASICの状態が正しくありません",
         "en": "Bad BASIC state",
     },
+    "machine.bad_wait_state": {
+        "ja": "状態ファイルが破損しています",
+        "en": "The state file is corrupted",
+    },
     "machine.bad_value_machine": {
         "ja": "本体の{name}の値が正しくありません",
         "en": "Bad value for machine {name}",
@@ -2409,6 +2413,34 @@ MESSAGES: dict[str, dict[str, str | tuple[str, str]]] = {
         "ja": "Bを20にしてBA2YMと同じ(Jが1ならYが2000+A−1)",
         "en": "B ← 20, then as BA2YM (Y = 2000+A−1 when J is 1)",
     },
+    "rom.1261.y664f": {
+        "ja": "BAを664FにしてBA2Yと同じ(Jが1ならYが664F)",
+        "en": "BA ← 664F, then as BA2Y (Y = 664F when J is 1)",
+    },
+    "rom.1261.x664f": {
+        "ja": "BAを664FにしてBA2Xと同じ(Jが1ならXが664F)",
+        "en": "BA ← 664F, then as BA2X (X = 664F when J is 1)",
+    },
+    "rom.1261.b66y": {
+        "ja": "Bを66にしてBA2Yと同じ(Jが1ならYが6600+A)",
+        "en": "B ← 66, then as BA2Y (Y = 6600+A when J is 1)",
+    },
+    "rom.1261.ba2rp": {
+        "ja": "AからJ+1バイトを、Pの指す内部RAMへ",
+        "en": "copy J+1 bytes from A to the internal RAM at P",
+    },
+    "rom.1261.exrpr0c": {
+        "ja": "Pの指す内部RAMからと内部RAMの0C番地からのJ+1バイトを入れ替える",
+        "en": "exchange J+1 bytes at P with those from internal RAM 0C",
+    },
+    "rom.1261.rcslba": {
+        "ja": "BAを2倍にする(あふれたビットはキャリーへ。Zは1)",
+        "en": "BA × 2 (the bit shifted out goes to carry; Z ← 1)",
+    },
+    "rom.1261.slba": {
+        "ja": "BAをキャリーを通して左へ1ビット回す",
+        "en": "rotate BA left by 1 bit through carry",
+    },
     "rom.1261.r382x": {
         "ja": "内部RAMの38番地からJ+1バイトをXへ",
         "en": "copy J+1 bytes from internal RAM 38 to X",
@@ -2547,6 +2579,10 @@ MESSAGES: dict[str, dict[str, str | tuple[str, str]]] = {
         "ja": "6650〜667F(液晶の2行の字)をAで埋める",
         "en": "fill 6650-667F (the two lines of LCD text) with A",
     },
+    "rom.1261.clr6650": {
+        "ja": "Aを60にしてFILL6650と同じ",
+        "en": "A ← 60, then as FILL6650",
+    },
     "rom.1261.ldx66e1": {
         "ja": "66E1からJ+1バイトをXへ",
         "en": "copy J+1 bytes from 66E1 to X",
@@ -2570,6 +2606,10 @@ MESSAGES: dict[str, dict[str, str | tuple[str, str]]] = {
     "rom.1261.wait2ms": {
         "ja": "2msのタイマの次の刻みまで待つ",
         "en": "wait for the next 2 ms timer tick",
+    },
+    "rom.1261.wait2msz": {
+        "ja": "Zが1なら、2msのタイマの刻みを待ってZを0にする",
+        "en": "if Z is 1, wait for the 2 ms timer tick and clear Z",
     },
     "rom.1261.glyphx": {
         "ja": "Aの文字が表の何番目かから、Xに5×(番目+1)を足す",

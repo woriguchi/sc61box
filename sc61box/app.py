@@ -2546,13 +2546,14 @@ class App:
 
     def load_state(self, path: str | None = None) -> None:
         """保存した状態に戻す。pathがなければsave_stateの保存先から"""
+        path = path or self.state_file
         try:
-            extra = self.m.load_state(path or self.state_file)
+            extra = self.m.load_state(path)
         except FileNotFoundError:
             self.say(tr("app.no_saved_state"))
             return
         except (OSError, ValueError) as e:
-            self.say(tr("app.cannot_load_state", error=e), 5)
+            self.say(tr("app.cannot_load_state", path=_short(path), error=e), 5)
             return
         self._set_prog_info(extra)
         self._restored(tr("common.state_loaded"))

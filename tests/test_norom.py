@@ -1,4 +1,4 @@
-"""ROMなしで、PC-1251系の代替ROMルーチン(norom.py)が入口と出口の約束どおりに働くか"""
+"""ROMなしで、PC-1251系の代替ROMルーチン(norom.py)が入口と出口の仕様どおりに働くか"""
 
 import os
 import re
@@ -611,3 +611,24 @@ def test_rom_bytes_as_random_table():
     while cpu.pc != 0xC4F0:
         cpu.step()
     assert set(m.mem[0xC000:0xC040]) == {0, 1, 2, 3}
+
+
+def test_keywait_state_saved_and_restored():
+    """キーを待つルーチンの待ちの様子は、本体の状態と一緒に保存して戻す。壊れたものは断る"""
+    m = new_machine("1251", rom=False)
+    norom.install(m)
+    norom._waits[m] = norom._Wait(0x1D17, 0x5A, 1234, {"A"})
+    state = m.snapshot()
+    assert state["waits"] == {"1251": {"pc": 0x1D17, "r": 0x5A, "seen": 1234, "old": ["A"]}}
+    norom._waits[m] = norom._Wait(0x1D17, 0x5A, 9999, set())
+    m.restore(state)
+    assert norom.save_wait(m) == state["waits"]["1251"]
+    for key, value in (("pc", 0x10000), ("seen", -1), ("old", ["NOKEY"]), ("old", "A"),
+                       ("old", [[]]), ("old", [{}]), ("old", {"A": 1})):  # fmt: skip
+        bad = m.snapshot()
+        bad["waits"]["1251"][key] = value
+        with pytest.raises(ValueError):
+            m.restore(bad)
+    del state["waits"]
+    m.restore(state)
+    assert norom.save_wait(m) is None

@@ -106,7 +106,7 @@ class SC61860:
     def __init__(self, bus: Bus, ratio: tuple[int, int] = (1, 1)):
         self.bus = bus
         self.ram = bytearray(0x80)  # 内部RAM(96バイト+Pが指せる残り)
-        # cyclesは周辺(タイマ、音、カセット)と共通の時刻で、1秒が192000。水晶の速い機種
+        # cyclesは周辺(タイマ、音、カセット)と共通の時刻で、1秒が192000。クロックの速い機種
         # (PC-1261などは768kHz)では、命令のサイクル数をratio(分子, 分母)倍して足す
         self.ratio = ratio
         self._frac = 0

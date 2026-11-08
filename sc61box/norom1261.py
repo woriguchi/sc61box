@@ -13,7 +13,7 @@ ROMの形は使っていない。
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields
 from weakref import WeakKeyDictionary
 
 from . import charset
@@ -51,6 +51,8 @@ def glyph(code: int) -> bytes:
     """文字コードの形(5列、左から)"""
     if code in SHAPES:
         return SHAPES[code]
+    if code in pc1261_screen.BLANK:
+        return bytes(5)
     ch = EXTRA.get(code) or pc1261_screen.char(code)
     if not ch:
         return bytes(5)
@@ -82,6 +84,32 @@ def copy_to(src: int, dst: int, base: int):
     def run(m) -> int:
         _copy(m.cpu, src, dst)
         return base + 2 * m.cpu.ram[1]
+
+    return run
+
+
+def _preset(values: dict[int, int], run: Callable, extra: int):
+    """内部RAMにvaluesを置いてから、runと同じにする(extraは置くのにかかるサイクル数)"""
+
+    def go(m) -> int:
+        for k, v in values.items():
+            m.cpu.ram[k] = v
+        return run(m) + extra
+
+    return go
+
+
+def _shift_ba(clear: bool):
+    """BAをキャリーを通して左へ1ビット回す。clearなら先にキャリーを0、Zを1にする(観察)"""
+
+    def run(m) -> int:
+        cpu = m.cpu
+        if clear:
+            cpu.c, cpu.z = 0, 1
+        ba = cpu.ram[3] << 8 | cpu.ram[2]
+        v = ba << 1 | cpu.c
+        cpu.ram[2], cpu.ram[3], cpu.c = v & 0xFF, v >> 8 & 0xFF, ba >> 15
+        return 16 if clear else 14
 
     return run
 
@@ -341,18 +369,36 @@ def _set_662b(m) -> int:
     return _set_662e(m) + 46
 
 
+def _to_tick(m, wait: int) -> int:
+    """時刻でwaitのちの刻みまでの、CPUのサイクル数。時刻はサイクル×num/denの端数(_frac)を
+    持ち越して進むので、その端数のぶん早く刻みに届く"""
+    num, den = m.cpu.ratio
+    return -(-(wait * den - m.cpu._frac) // num)
+
+
 def _wait_tick(m) -> int:
     """2msのタイマの刻みの印を待って消し、次の刻みの印を待って消す(印は11サイクルごとに見る。
     入ったときに印がなければ、刻みを2つ待つ。観察)"""
-    num, den = m.cpu.ratio
-    wait = TICK_2MS - m.t2 + (0 if m.t2ms else TICK_2MS)
-    # 待つ刻みまでのCPUのサイクル数。時刻はサイクル×num/denの端数(_frac)を持ち越して進むので、
-    # その端数のぶん早く刻みに届く
-    left = -(-(wait * den - m.cpu._frac) // num)
+    left = _to_tick(m, TICK_2MS - m.t2 + (0 if m.t2ms else TICK_2MS))
     cycles = 31 + 11 * -(-(left - 19) // 11)
     m.cpu.z = 0
     spend(m, cycles)
     m.t2ms = 0
+    return 0
+
+
+def _wait_tick_if_z(m) -> int:
+    """Zが1なら、2msのタイマの刻みの印を待って消し、Zを0にする。Zが0なら何もしない。印は
+    入ってから7サイクルたったときと、そのあと11サイクルごとに見て、見つけたら消して12サイクルで
+    戻る(戻るまでに次の刻みが来れば、その印は残る。観察)"""
+    cpu = m.cpu
+    if not cpu.z:
+        return 8
+    looks = 0 if m.t2ms else max(0, -(-(_to_tick(m, TICK_2MS - m.t2) - 7) // 11))
+    cpu.z = 0
+    spend(m, 7 + 11 * looks)
+    m.t2ms = 0
+    spend(m, 12)
     return 0
 
 
@@ -555,6 +601,13 @@ SHIFT_MARK, DEF_MARK = 0x20, 0x40  # 203D番地の、SHIFTとDEFの記号のビ�
 # 離したキーや、ほかのキーと一緒に押したキーは数えない
 INKEY_ACCEPT, INKEY_TIME = 1408, 2586
 INKEY_BLINK = 1920  # 入ってから512msのタイマを始めから数えるまで(CPUのサイクル。観察)
+# 押し続けたキーの繰り返し(観察)。呼んだときに662Cの字のキーを押したままで、662Bのビット1が
+# 立っていれば、入ってからREPEAT_FIRST+38×(走査の線)サイクルのところと、そのあと
+# REPEAT_EVERY+38×(線)サイクルごとに662E・662Fの数を見る。0なら662EをFFFEにして同じ字を返し、
+# 0でなければ1を足す。2回目からは1サイクル遅れる
+REPEAT_FIRST, REPEAT_EVERY = 2751, 2699
+REPEAT_BLINK = 18  # 繰り返しのとき、入ってから512msのタイマを始めから数えるまで
+REPEAT_KEY = 887  # 662Eを見る何サイクル前にキーを読むか(さらに走査の線ごとに約80。観察)
 
 
 @dataclass
@@ -568,9 +621,51 @@ class _Input:
     key: str | None = None  # 1つだけ押しているキー
     since: int = 0  # keyを押し始めたサイクル
     reset: int | None = None  # 512msのタイマを始めから数えるサイクル(数えたらNone)
+    repeat: str | None = None  # 押し続けて繰り返すキー(繰り返しでなければNone)
+    start: int = 0  # 入ったサイクル
+    checks: int = 0  # 繰り返しで662Eを見て1を足した回数
+    sampled: bool = False  # 次に662Eを見る前に、キーを読んだか
 
 
 _inputs: WeakKeyDictionary[object, _Input] = WeakKeyDictionary()
+_INPUT_INTS = ("pc", "r", "seen", "since", "start", "checks")
+
+
+def save_wait(m) -> dict | None:
+    """INKEYが待っているあいだの様子(状態の保存用)。待っていなければNone"""
+    w = _inputs.get(m)
+    return None if w is None else asdict(w)
+
+
+def prepare_wait(m, d: object) -> Callable[[], None]:
+    """save_waitの値を調べ、待ちの様子を戻す関数を返す(Noneなら待ちを捨てる)。おかしければ
+    ValueError"""
+    if d is None:
+        return lambda: _forget(m)
+    if not isinstance(d, dict) or set(d) != {f.name for f in fields(_Input)}:
+        raise ValueError("INKEY")
+    ok = all(type(d[k]) is int and d[k] >= 0 for k in _INPUT_INTS)
+    ok = ok and d["pc"] <= 0xFFFF and d["r"] <= 0x7F
+    ok = ok and all(type(d[k]) is bool for k in ("armed", "sampled"))
+    ok = ok and all(d[k] is None or _key_name(d[k], KEY_NUMBERS) for k in ("key", "repeat"))
+    ok = ok and (d["reset"] is None or type(d["reset"]) is int and d["reset"] >= 0)
+    if not ok:
+        raise ValueError("INKEY")
+    w = _Input(**d)
+
+    def apply() -> None:
+        _inputs[m] = w
+
+    return apply
+
+
+def _forget(m) -> None:
+    _inputs.pop(m, None)
+
+
+def _key_name(v: object, names) -> bool:
+    """vがキーの名前(文字列でnamesにある)か。状態のファイルの配列や辞書を照合しないように"""
+    return type(v) is str and v in names
 
 
 def _blink(m) -> None:
@@ -581,48 +676,112 @@ def _blink(m) -> None:
     m.write(0x662B, flags & ~0x10 | (0x10 if block else 0))
 
 
+def _prefix(m) -> str | None:
+    marks = m.read(0x203D)
+    return "SHIFT" if marks & SHIFT_MARK else "DEF" if marks & DEF_MARK else None
+
+
+def _code(m, k: str) -> int | None:
+    """キーkの文字コード(SHIFT・DEFの記号とカナの入力で決まる)。字を返さないキーはNone"""
+    prefix = _prefix(m)
+    if k in ("SHIFT", "DEF") or k not in KEY_NUMBERS:
+        return None
+    if prefix == "SHIFT" and k == "8" or prefix == "DEF" and k in ("=", "SPC"):
+        return None
+    kana_at, kana_bit = m.model.symbols["KANA"]
+    kana = bool(m.read(kana_at) & kana_bit)
+    if prefix == "SHIFT":
+        return (KANA_SHIFTED if kana else SHIFTED)[k]
+    return (KANA if kana else PLAIN)[k]
+
+
 def _accept(m, k: str) -> tuple[int, int] | None:
     """1つだけ押したキーkを受け付ける。SHIFT・DEFは記号を点けて次のキーの字を変え、SHIFTの
     あと8はカナの入力を切り替える。DEFのあと=と空白は、ROMのある本体はBASICへ移るが、ここ
     では数えない。返すキーなら(文字コード, キーの番号)"""
     kana_at, kana_bit = m.model.symbols["KANA"]
     marks = m.read(0x203D)
-    prefix = "SHIFT" if marks & SHIFT_MARK else "DEF" if marks & DEF_MARK else None
     if k in ("SHIFT", "DEF"):
         mark = SHIFT_MARK if k == "SHIFT" else DEF_MARK
         m.write(0x203D, marks & ~(SHIFT_MARK | DEF_MARK) | (0 if marks & mark else mark))
         return None
-    if prefix == "SHIFT" and k == "8":
+    if _prefix(m) == "SHIFT" and k == "8":
         m.write(0x203D, marks & ~SHIFT_MARK)
         m.write(kana_at, m.read(kana_at) ^ kana_bit)
         return None
-    if prefix == "DEF" and k in ("=", "SPC") or k not in KEY_NUMBERS:
+    code = _code(m, k)
+    if code is None:
         m.write(0x203D, marks & ~DEF_MARK)
         return None
-    kana = bool(m.read(kana_at) & kana_bit)
-    if prefix == "SHIFT":
-        table = KANA_SHIFTED if kana else SHIFTED
-    else:
-        table = KANA if kana else PLAIN
-    return table[k], KEY_NUMBERS[k][0]
+    return code, KEY_NUMBERS[k][0]
+
+
+def _repeat(m, w: _Input) -> bool:
+    """押し続けたキーの繰り返し。同じ字を返すならTrue(レジスタを置いた)。662Eを見る時刻にキーを
+    離していたか変えていたら、w.repeatをNoneにして、すべて離したあとのキーを受け付ける待ちに戻す"""
+    cpu = m.cpu
+    key = w.repeat
+    if key is None:
+        return False
+    line = KEY_NUMBERS[key][1]
+    num, den = cpu.ratio
+    while True:
+        n = w.checks
+        cycles = REPEAT_FIRST + 38 * line + (n > 0) + n * (REPEAT_EVERY + 38 * line)
+        if not w.sampled:
+            due = w.start + (cycles - REPEAT_KEY - 80 * line) * num // den
+            if due - cpu.cycles > TICK_2MS - m.t2:
+                return False
+            m.pass_time(max(due - cpu.cycles, 0))
+            if {k for k in m.held if k in KEY_NUMBERS} != {key}:
+                w.repeat = None
+                m.write(0x662B, m.read(0x662B) & ~0x03)
+                return False
+            w.sampled = True
+        due = w.start + cycles * num // den
+        if due - cpu.cycles > TICK_2MS - m.t2:
+            return False
+        m.pass_time(max(due - cpu.cycles, 0))
+        w.sampled = False
+        count = m.read(0x662E) | m.read(0x662F) << 8
+        if count == 0:
+            break
+        count = count + 1 & 0xFFFF
+        m.write(0x662E, count & 0xFF)
+        m.write(0x662F, count >> 8)
+        w.checks += 1
+    m.write(0x662E, 0xFE)
+    m.write(0x662F, 0xFF)
+    code = m.read(0x662C)
+    cpu.ram[0], cpu.ram[2], cpu.ram[3], cpu.ram[6] = 0xFB, code, 0, code
+    cpu.c, cpu.z, cpu.p, cpu.q, cpu.dp = 0, 1, 4, 5, 0x662F
+    return True
 
 
 def _inkey(m) -> int | None:
-    """すべてのキーを離したあとに1つだけ押したキーを待ち、Aに文字コードを返す。待つあいだ
-    512msごとにカーソルを点滅させる(観察)"""
+    """すべてのキーを離したあとに1つだけ押したキーを待ち、Aに文字コードを返す。前に返したキーを
+    押し続けていれば、決まった間隔で同じ字を返す(REPEAT_FIRST)。待つあいだ512msごとにカーソルを
+    点滅させる(観察)"""
     cpu = m.cpu
     w = _inputs.get(m)
     if w is None or (w.pc, w.r) != (cpu.pc, cpu.r) or cpu.cycles - w.seen > 2 * TICK_2MS:
-        w = _inputs[m] = _Input(cpu.pc, cpu.r, cpu.cycles)
-        w.reset = cpu.cycles + cpu._ticks(INKEY_BLINK)
-        m.write(0x662B, m.read(0x662B) & ~0x03)
+        w = _inputs[m] = _Input(cpu.pc, cpu.r, cpu.cycles, start=cpu.cycles)
+        held = [k for k in m.held if k in KEY_NUMBERS]
+        if m.read(0x662B) & 0x02 and len(held) == 1 and _code(m, held[0]) == m.read(0x662C):
+            w.repeat = held[0]
+        else:
+            m.write(0x662B, m.read(0x662B) & ~0x03)
+        w.reset = cpu.cycles + cpu._ticks(REPEAT_BLINK if w.repeat else INKEY_BLINK)
     if w.reset is not None and cpu.cycles >= w.reset:
         w.reset = None
         m.out_c(0x03)  # 液晶をつけ、512msのタイマを始めから数える
     found: tuple[int, int] | None = None  # (文字コード, キーの番号)
     if m.brk:
         found = (0x07, BRK_NUMBER)
-    else:
+    elif w.repeat is not None and _repeat(m, w):
+        del _inputs[m]
+        return 0
+    elif w.repeat is None:
         held = {k for k in m.held if k in KEY_NUMBERS}
         if not held:
             w.armed, w.key = True, None
@@ -638,7 +797,7 @@ def _inkey(m) -> int | None:
                 found = _accept(m, next(iter(held)))
                 w.seen = cpu.cycles
     if found is None:
-        if m.t512:
+        if m.t512 and w.repeat is None:  # 繰り返しを待つあいだは、512msのタイマの印を見ない(観察)
             m.t512 = 0
             if w.reset is None:
                 _blink(m)
@@ -662,7 +821,7 @@ def _inkey(m) -> int | None:
     m.write(0x6628, 0x01)
     m.write(0x6680, 0x00)
     m.write(0x6681, 0xFB)
-    m.write(0x662B, m.read(0x662B) | 0x01)
+    m.write(0x662B, m.read(0x662B) & ~0x02 | 0x01)
     return 563 if m.brk else INKEY_TIME - INKEY_ACCEPT
 
 
@@ -674,6 +833,13 @@ ROUTINES: dict[str, Callable[..., int | None]] = {
     "BA2XM": copy_minus(4, 32),
     "BA2YM": copy_minus(6, 39),
     "LCDYM": copy_minus(6, 50, b=0x20),
+    "Y664F": _preset({2: 0x4F, 3: 0x66}, copy_to(2, 6, 22), 19),
+    "X664F": _preset({2: 0x4F, 3: 0x66}, copy_to(2, 4, 15), 19),
+    "B66Y": _preset({3: 0x66}, copy_to(2, 6, 22), 15),
+    "BA2RP": _to_p(2, 13),
+    "EXRPR0C": _swap_p(0x0C, 14),
+    "RCSLBA": _shift_ba(True),
+    "SLBA": _shift_ba(False),
     "B67XM": copy_minus(4, 36, b=0x67),
     "B67YM": copy_minus(6, 43, b=0x67),
     "Y2RP": _to_p(6, 13),
@@ -699,12 +865,14 @@ ROUTINES: dict[str, Callable[..., int | None]] = {
     "MV6619": _move_6619,
     "FILL67B0": _fill_67b0,
     "FILL6650": _fill_6650,
+    "CLR6650": _preset({2: 0x60}, _fill_6650, 4),
     "LDX66E1": _load_66e1,
     "STYDP": _store_y,
     "PEEKBA": _peek_ba,
     "SKIPLINE": _skip_line,
     "SET662B": _set_662b,
     "WAIT2MS": _wait_tick,
+    "WAIT2MSZ": _wait_tick_if_z,
     "INC66E1": _inc_66e1,
     "DISPOFF": _port_c(0x00, 24),
     "DISPON": _port_c(0x01, 17),
@@ -751,7 +919,7 @@ def _check_inputs(name: str):
             case.ram[1] = rnd.randrange(2)  # Jが2以上は、スタックの上のポート(5Ch〜)まで書き換える
         elif name == "STYDP":
             case.ram[1] = rnd.randrange(6)  # Jが6以上は、写す元と先が重なる(まねていない)
-        elif name in ("Y2RP", "R3A2RP", "EXYRP"):
+        elif name in ("Y2RP", "R3A2RP", "EXYRP", "BA2RP", "EXRPR0C"):
             case.p = rnd.randrange(0x10, 0x30)  # 写す元とスタックに重ならない所
         elif name == "KEYNUM":
             case.held = set(rnd.sample(sorted(KEY_NUMBERS), rnd.choice((0, 1))))

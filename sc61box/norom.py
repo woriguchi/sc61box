@@ -317,6 +317,39 @@ class _Wait:
 _waits: WeakKeyDictionary[object, _Wait] = WeakKeyDictionary()
 
 
+def save_wait(m) -> dict | None:
+    """キーを待つルーチンが待っているあいだの様子(状態の保存用)。待っていなければNone"""
+    w = _waits.get(m)
+    return None if w is None else {"pc": w.pc, "r": w.r, "seen": w.seen, "old": sorted(w.old)}
+
+
+def prepare_wait(m, d: object) -> Callable[[], None]:
+    """save_waitの値を調べ、待ちの様子を戻す関数を返す(Noneなら待ちを捨てる)。おかしければ
+    ValueError"""
+    if d is None:
+        return lambda: _forget(m)
+    if not isinstance(d, dict) or set(d) != {"pc", "r", "seen", "old"}:
+        raise ValueError("KEYWAIT")
+    limits = {"pc": 0xFFFF, "r": 0x7F, "seen": None}
+    for k, top in limits.items():
+        v = d[k]
+        if type(v) is not int or v < 0 or top is not None and v > top:
+            raise ValueError("KEYWAIT")
+    old = d["old"]
+    if not isinstance(old, list) or not all(type(k) is str and k in KEY_CODES for k in old):
+        raise ValueError("KEYWAIT")
+    w = _Wait(d["pc"], d["r"], d["seen"], set(old))
+
+    def apply() -> None:
+        _waits[m] = w
+
+    return apply
+
+
+def _forget(m) -> None:
+    _waits.pop(m, None)
+
+
 def _keywait(m) -> bool:
     """呼んだあとに押したキーを待ち、Aに本体の文字コード、ENTERとCLならCを1にする。
     SHIFT・DEFは数えない(続けて押したキーの文字コードも変えない)。BRKは、待ち始めから
