@@ -11,3 +11,4 @@ doc/*.out
 doc/*.toc
 dist/
 *.egg-info/
+web/pyodide-cache/

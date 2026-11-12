@@ -10,9 +10,16 @@ PadMapは画面を持たず、試験から直接使える。パッドのイベ�
 
 import json
 import os
+from typing import TYPE_CHECKING
 
 import pygame
-from pygame._sdl2 import controller
+
+try:
+    from pygame._sdl2 import controller
+except ImportError:  # ブラウザ(Pyodide)のpygame-ceにはない
+    controller = None
+if TYPE_CHECKING:
+    from pygame._sdl2.controller import Controller
 
 from . import machine
 from .i18n import Text
@@ -150,10 +157,12 @@ class Pads:
     押している元(ボタンか、どの軸か)を覚え、すべて離れたときに離す"""
 
     def __init__(self) -> None:
-        self.devices: dict[int, controller.Controller] = {}  # instance_id: 開いたコントローラ
+        self.devices: dict[int, Controller] = {}  # instance_id: 開いたコントローラ
         # (instance_id, 入力の名前): 押している元の集合("button"か軸の番号)
         self.held: dict[tuple[int, str], set[int | str]] = {}
         self.axis_on: dict[tuple[int, int], str] = {}  # (instance_id, 軸): 倒している向きの入力
+        if controller is None:
+            return
         try:
             controller.init()
             if hasattr(controller, "set_eventstate"):  # pygame-ceはinit()で有効になる
@@ -164,7 +173,7 @@ class Pads:
             pass
 
     def _open(self, index: int) -> None:
-        if not controller.is_controller(index):
+        if controller is None or not controller.is_controller(index):
             return
         try:
             c = controller.Controller(index)

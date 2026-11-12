@@ -92,6 +92,8 @@ class Typer:
         # 本体のキーになることがある。最後の1つが離されたときに本体のキーを離す)
         self.sources: dict[str, set[object]] = {}
         self.mouse_keys: set[str] = set()  # マウスで押している本体のキー
+        self.mouse_at: dict[str, int] = {}  # マウスで押したキーと、押し始めたサイクル
+        self.mouse_off: dict[str, int] = {}  # マウスを離したが、まだ押しておくキーと離すサイクル
         self.live = False
         self.quick = False
         self.mode_shown: str | None = None  # 液晶に出るのを待っているモードの記号
@@ -161,18 +163,25 @@ class Typer:
     def press_mouse(self, name: str) -> None:
         """本体のキーをマウスで押した(キューを通さず、すぐ押す)"""
         self.mouse_keys.add(name)
+        self.mouse_at[name] = self.m.cpu.cycles
+        self.mouse_off.pop(name, None)
         self.m.held.add(name)
 
     def release_mouse(self, name: str) -> None:
-        """マウスを離した。パソコンのキーボードで同じキーを押していれば、押したままにする"""
+        """マウスを離した。パソコンのキーボードで同じキーを押していれば、押したままにする。
+        押し始めからLIVE_DOWNたつまでは押しておく(画面を指で軽く叩くと、押してから離すまでが
+        1フレームに収まり、ROMがキーを読む間隔より短くなる)"""
         self.mouse_keys.discard(name)
-        if not self._kept(name):
+        start = self.mouse_at.pop(name, None)
+        if start is not None and self.m.cpu.cycles - start < self.LIVE_DOWN:
+            self.mouse_off[name] = start + self.LIVE_DOWN
+        elif not self._kept(name):
             self.m.held.discard(name)
 
     def _kept(self, name: str) -> bool:
         """本体のキーnameを、マウス、すぐ押したパソコンのキー、キューから押しているもののどれかが
         まだ押しているか"""
-        if name in self.mouse_keys or name in self.direct:
+        if name in self.mouse_keys or name in self.mouse_off or name in self.direct:
             return True
         return self.cur is not None and name in self.cur and self.phase != 1
 
@@ -238,7 +247,7 @@ class Typer:
     def clear(self) -> None:
         """打ちかけのものを捨て、押しているキーを離す"""
         if self.cur:
-            self.m.held.difference_update(set(self.cur) - self.mouse_keys)
+            self.m.held.difference_update(set(self.cur) - self.mouse_keys - set(self.mouse_off))
         for name in list(self.direct):
             self._lift(name)
         self.queue.clear()
@@ -255,6 +264,12 @@ class Typer:
         c = self.m.cpu.cycles
         self.wait_seen = c if self.m.waiting_for_key() else c - self.WAIT_SPAN - 1
         self.until = self.ready_at = c
+        # マウスを離したあと押しておくキーは離し、押しているキーは押し始めを今にする
+        for name in list(self.mouse_off):
+            del self.mouse_off[name]
+            if not self._kept(name):
+                self.m.held.discard(name)
+        self.mouse_at = dict.fromkeys(self.mouse_at, c)
 
     @property
     def busy(self) -> bool:
@@ -267,6 +282,11 @@ class Typer:
         for name, at in list(self.direct_off.items()):
             if c >= at:
                 self._lift(name)
+        for name, at in list(self.mouse_off.items()):
+            if c >= at:
+                del self.mouse_off[name]
+                if not self._kept(name):
+                    self.m.held.discard(name)
         if self.cur == ["@IDLE"]:
             if self.m.waiting_for_key() or c >= self.until:
                 self.cur = None
@@ -380,6 +400,7 @@ class Typer:
         self.m.held.difference_update(self.cur)
         self.m.held.update(self.direct)
         self.m.held.update(self.mouse_keys)
+        self.m.held.update(self.mouse_off)
         if self.cur in (["ENTER"], ["MODE"]):
             self.until = c + self.AFTER_ENTER
             self.ready_at = c + self.LIVE_UP

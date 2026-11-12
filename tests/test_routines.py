@@ -5,7 +5,7 @@ import re
 import pytest
 from conftest import HAVE_ROM, HAVE_ROM_1245, HAVE_ROM_1260
 
-from sc61box import app, norom, romsyms, routinecheck, routines, workbench
+from sc61box import cli, norom, romsyms, routinecheck, routines, workbench
 from sc61box.machine import new_machine
 from sc61box.routines import routine
 
@@ -175,13 +175,13 @@ def test_template_is_a_routine(folder):
 
 def test_new_routine_option(folder, monkeypatch, capsys):
     monkeypatch.setattr(routines, "user_folder", lambda: str(folder))
-    app._routine_tool("1261", None, "&5F10:Blink")
+    cli._routine_tool("1261", None, "&5F10:Blink")
     assert (folder / "blink.py").exists()
     assert capsys.readouterr().out.strip().endswith("blink.py")
-    with pytest.raises(app.typer.Exit):
-        app._routine_tool("1261", None, "5F10:Blink")
-    with pytest.raises(app.typer.Exit):
-        app._routine_tool("1100", None, "5F10")
+    with pytest.raises(cli.typer.Exit):
+        cli._routine_tool("1261", None, "5F10:Blink")
+    with pytest.raises(cli.typer.Exit):
+        cli._routine_tool("1100", None, "5F10")
 
 
 @pytest.mark.skipif(not HAVE_ROM_1260, reason="PC-1260のROMがない")
@@ -286,7 +286,7 @@ def test_fallback_gives_way_to_builtin(folder):
     table = routines.for_model("1261")
     assert table[0x0225].builtin and table[0x0222].name == "MINE2" and table[0x0500].name == "NEW"
     assert routines.by_name("1261", "BA2Y") is table[0x0222]
-    text = app.routine_list_text("1261")
+    text = cli.routine_list_text("1261")
     assert "OK  0222 MINE2 override" in text and "--  0225 MINE fallback" in text
 
 

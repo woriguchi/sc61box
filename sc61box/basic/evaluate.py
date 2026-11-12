@@ -5,6 +5,8 @@
 """
 
 import math
+from collections.abc import Generator
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from decimal import ROUND_FLOOR, ROUND_HALF_UP, Decimal
 from typing import TypeVar
@@ -21,7 +23,7 @@ from ..number import (
     to_dms,
     trig_value,
 )
-from . import dialect, timing, variables
+from . import dialect, timing, variables, workarea
 from .errors import BasicError
 from .timing import Meter
 
@@ -138,6 +140,7 @@ class Evaluator:
     FUNCTION_TIME: dict = {}
     VARS: variables.Variables  # 変数の置き方
     TIMES: timing.Timing  # かかる時間
+    WORK: workarea.Layout | None = None  # 計算に使うRAM(Noneなら書かない)
     ZERO_DIVISOR_BACK = 0  # 0で割ったエラーの位置を、割る数の終わりから戻す字の数
 
     @staticmethod
@@ -199,6 +202,48 @@ class Evaluator:
         self.pos = pos
         self.meter = Meter() if meter is None else meter  # 計算にかかった時間をためる
         self.array_refs = 0  # 読んだ配列の要素(A(n)を除く)の数
+        self.stacks = None if self.WORK is None else workarea.Stacks(m, self.WORK)
+
+    @contextmanager
+    def waiting(
+        self, token: int, value: "Value | None" = None, kind: int | None = None
+    ) -> Generator[None]:
+        """中の計算のあいだ、演算子・関数tokenと待たせている値valueを作業領域に積んでおく。
+        kindは配列の名前の種類。エラーのときは積んだまま(観察)"""
+        if self.stacks is None:
+            yield
+            return
+        try:
+            self.stacks.push(token, value, kind)
+        except BasicError as e:
+            # 位置は、ERROR 1なら文の終わり、ERROR 5なら積もうとした演算子・関数・括弧(観察)
+            raise e.at(self._statement_end() if e.number == 1 else self.pos - 1) from None
+        yield
+        self.stacks.pop(value is not None)
+
+    def _statement_end(self) -> int:
+        """いまの位置から先の、文字列の外の文の区切りか、行の終わりの位置"""
+        assert self.WORK is not None
+        i, quoted = self.pos, False
+        while i < len(self.code) and (quoted or self.code[i] != self.WORK.colon):
+            quoted ^= self.code[i] == self.QUOTE
+            i += 1
+        return i
+
+    def _array_name(self, name: int, string: bool) -> tuple[int, int | None]:
+        """式の中で配列を読むときに積む(名前の字, 名前の種類)。PC-1251系は名前の英字で、
+        文字列の配列はビットを重ねる(観察)"""
+        w = self.WORK
+        return (name | w.string_array if string and w else name), None
+
+    def _place(self, s: bytes, at: int | None = None) -> bytes:
+        """文字列sを作業場所のat(なければ空いている所)に置く"""
+        return s if self.WORK is None else workarea.place(self.m, self.WORK, s, at)
+
+    def _release(self, s: "Value") -> None:
+        """作業場所の文字列sを使い終えた"""
+        if self.WORK is not None and isinstance(s, bytes):
+            workarea.release(self.m, self.WORK, s)
 
     def spend(self, cycles: int) -> None:
         self.meter.add(cycles)
@@ -228,14 +273,18 @@ class Evaluator:
     def _or(self) -> Value:
         v = self._and()
         while self.take(self.T_OR):
-            v = signed16(int16(v) | int16(self._and()))
+            with self.waiting(self.T_OR, v):
+                w = self._and()
+            v = signed16(int16(v) | int16(w))
             self.spend(self._logic_time())
         return v
 
     def _and(self) -> Value:
         v = self._relation()
         while self.take(self.T_AND):
-            v = signed16(int16(v) & int16(self._relation()))
+            with self.waiting(self.T_AND, v):
+                w = self._relation()
+            v = signed16(int16(v) & int16(w))
             self.spend(self._logic_time())
         return v
 
@@ -246,19 +295,24 @@ class Evaluator:
 
     def _relation(self) -> Value:
         v = self._add()
-        while (op := self._relation_op()) is not None:
-            w = self._add()
+        while (token := self.peek()) is not None and (op := self._relation_op()) is not None:
+            with self.waiting(token, v):
+                w = self._add()
             self.spend(self.TIMES.RELATION + self.TIMES.routine(COMPARE[op][isinstance(w, bytes)]))
+            self._release(v)
             v = Decimal(int(_compare(op, v, w)))
         return v
 
     def _add(self) -> Value:
         v = self._mul()
         while (op := self.peek()) in (self.PLUS, self.MINUS):
+            assert op is not None
             self.pos += 1
-            w = self._mul()
+            with self.waiting(op, v):
+                w = self._mul()
             if op == self.PLUS and isinstance(v, bytes):
-                v = v + string(w)
+                # つないだ文字列は、左の文字列の番地に置く(観察)
+                v = self._place(v + string(w), getattr(v, "at", None))
                 self.spend(self.TIMES.OPERATOR)
             elif op == self.PLUS:
                 v = calc(lambda a, b: a + b, number(v), number(w))
@@ -272,10 +326,11 @@ class Evaluator:
         v = self._unary()
         while True:
             op = self.peek()
-            if op not in (self.MUL, self.DIV):
+            if op is None or op not in (self.MUL, self.DIV):
                 return v
             self.pos += 1
-            w = number(self._unary())
+            with self.waiting(op, v):
+                w = number(self._unary())
             f = (lambda a, b: a / b) if op == self.DIV else (lambda a, b: a * b)
             try:
                 v = calc(f, number(v), w)
@@ -291,22 +346,30 @@ class Evaluator:
     def _unary(self) -> Value:
         if self.take(self.MINUS):
             self.spend(self.TIMES.MINUS)
-            return calc(lambda a: -a, number(self._unary()))
+            return calc(lambda a: -a, number(self._negated(self._unary)))
         if self.take(self.PLUS):
             return number(self._unary())
         v = self._power()
         while self._implicit():
             # 2A・2πのように並べた変数とπは掛け算で、*・/より先に計算する(6/2Aは
             # 6/(2*A)。観察)
-            w = number(self._power())
+            with self.waiting(self.MUL, v):
+                w = number(self._power())
             v = calc(lambda a, b: a * b, number(v), w)
             self.spend(self.TIMES.MUL + self.TIMES.MUL_PER_DIGIT * timing.digit_sum(w))
         return v
 
+    def _negated(self, read) -> Value:
+        """符号の−の後ろの項をread()で読む(そのあいだ−を積んでおく)"""
+        with self.waiting(self.WORK.unary_minus if self.WORK else 0):
+            return read()
+
     def _power(self) -> Value:
         v = self._operand()
         if self.take(self.POW):
-            v = calc(power, number(v), number(self._exponent()))
+            with self.waiting(self.POW, v):
+                w = self._exponent()
+            v = calc(power, number(v), number(w))
             self.spend(self.TIMES.OPERATOR + self.TIMES.routine("FPOW"))
         return v
 
@@ -314,12 +377,14 @@ class Evaluator:
         """^の右(右から順に計算する。符号を付けられる。並べた変数とπは、指数の中で掛ける:
         2^2Aは2^(2*A)。観察)"""
         if self.take(self.MINUS):
-            return calc(lambda a: -a, number(self._exponent()))
+            return calc(lambda a: -a, number(self._negated(self._exponent)))
         if self.take(self.PLUS):
             return number(self._exponent())
         v = self._product()
         if self.take(self.POW):
-            v = calc(power, number(v), number(self._exponent()))
+            with self.waiting(self.POW, v):
+                w = self._exponent()
+            v = calc(power, number(v), number(w))
             self.spend(self.TIMES.OPERATOR + self.TIMES.routine("FPOW"))
         return v
 
@@ -328,7 +393,7 @@ class Evaluator:
         """関数の引数。符号を付けた項(^を含まない)。2A・2πのように並べた変数とπは、
         引数の中で掛ける(SIN 30AはSIN(30*A)。観察)"""
         if self.take(self.MINUS):
-            return calc(lambda a: -a, number(self._argument()))
+            return calc(lambda a: -a, number(self._negated(self._argument)))
         if self.take(self.PLUS):
             return number(self._argument())
         return self._product()
@@ -337,7 +402,8 @@ class Evaluator:
         """項と、そのあとに掛け算の記号なしに並べた変数とπ"""
         v = self._operand()
         while self._implicit():
-            w = number(self._power())  # 並べた変数には^が付けられる(SIN 2A^2はSIN(2*A^2)。観察)
+            with self.waiting(self.MUL, v):
+                w = number(self._power())  # 並べた変数には^が付けられる(SIN 2A^2はSIN(2*A^2)。観察)
             v = calc(lambda a, b: a * b, number(v), w)
             self.spend(self.TIMES.MUL + self.TIMES.MUL_PER_DIGIT * timing.digit_sum(w))
         return v
@@ -358,30 +424,39 @@ class Evaluator:
         if c == self.AMP:
             return self._hex()
         if c == self.QUOTE:
-            return self.string_literal()
+            return self._place(self.string_literal())
         if self.is_letter(c):
             return self._variable()
         if c == self.LPAREN:
             self.pos += 1
-            v = self.expression()
-            self.expect(self.RPAREN)
+            with self.waiting(self.LPAREN):
+                v = self.expression()
+                self.expect(self.RPAREN)
             self.spend(self.TIMES.PAREN)
             return v
         self.pos += 1
         if c in (self.T_PI, self.PI_CHAR):  # πの字もPIと同じ(観察)
             return PI
         if c == self.T_INKEY:
-            return self._inkey()
+            return self._place(self._inkey())
         if c == self.T_MEM:
             return Decimal(self._mem())
         if c in (self.T_LEFT, self.T_RIGHT, self.T_MID):
-            return self._substring(c)
+            with self.waiting(c):
+                return self._substring(c)
         if c == self.ROOT_CHAR:  # √の字はSQRと同じ(観察)
             c = self.T_SQR
         f = self.FUNCTIONS.get(c)
         if f is None:
             raise BasicError(1)
-        v = f(self, self._argument())
+        with self.waiting(c):
+            arg = self._argument()
+        v = f(self, arg)
+        self._release(arg)
+        if isinstance(v, bytes):
+            v = self._place(v)
+            if self.WORK is not None and f is FUNCTIONS_BY_NAME["STR$"]:
+                workarea.put_number_text(self.m, self.WORK, v, self.CODES)
         self.spend(self.TIMES.FUNCTION + self.FUNCTION_TIME.get(c, 0))
         return v
 
@@ -434,7 +509,9 @@ class Evaluator:
         return s
 
     def _variable(self) -> Value:
-        return self.VARS.read(self.m, self.reference())
+        """式の中の変数。文字列は作業場所に写す(観察)"""
+        v = self.VARS.read(self.m, self.resolve(self.target(reading=True)))
+        return self._place(v) if isinstance(v, bytes) else v
 
     def name(self) -> int:
         """変数の名前の字(PC-1251系は英字1字)を読む"""
@@ -444,21 +521,26 @@ class Evaluator:
         self.pos += 1
         return c
 
-    def target(self) -> Target:
-        """変数の名前(A、A$、B(1)、C$(1,2)など)を読む"""
+    def target(self, reading: bool = False) -> Target:
+        """変数の名前(A、A$、B(1)、C$(1,2)など)を読む。readingなら式の中で読む変数で、
+        添字を計算するあいだ配列の名前を作業領域に積む(観察)"""
         c = self.name()
         string = self.take(self.DOLLAR)
         if not self.take(self.LPAREN):
             return Target(c, string)
-        subs = [self.integer()]
-        quirk = False
-        if self.take(self.COMMA):
-            before = self.array_refs
-            subs.append(self.integer())
-            # PC-1251: 2つ目の添字に配列の要素があると、入れるときは1つ目の添字が0になる
-            # (読むときはならない。観察)
-            quirk = self.array_refs != before and dialect.of(self.m).subscript_quirk
-        self.expect(self.RPAREN)
+        token, kind = self._array_name(c, string)
+        with self.waiting(token, kind=kind) if reading else nullcontext():
+            first = self.expression()
+            subs = [self._whole(first)]
+            quirk = False
+            if self.take(self.COMMA):
+                before = self.array_refs
+                with self.waiting(self.COMMA, first) if reading else nullcontext():
+                    subs.append(self.integer())
+                # PC-1251: 2つ目の添字に配列の要素があると、入れるときは1つ目の添字が0になる
+                # (読むときはならない。観察)
+                quirk = self.array_refs != before and dialect.of(self.m).subscript_quirk
+            self.expect(self.RPAREN)
         if not (c == self.VARS.EXTRA and len(subs) == 1):
             self.array_refs += 1
         return Target(c, string, subs, self.pos - 1, quirk)
@@ -485,7 +567,9 @@ class Evaluator:
 
     def integer(self) -> int:
         """式を計算して、小数を切り捨てた整数にする"""
-        v = self.expression()
+        return self._whole(self.expression())
+
+    def _whole(self, v: Value) -> int:
         try:
             return int(number(v))
         except BasicError as e:
@@ -509,24 +593,31 @@ class Evaluator:
         """LEFT$・RIGHT$の字数は0〜80、MID$の始めは1〜80、字数は0〜80。小数は下の整数にして
         から見て、外れればERROR 3(観察)"""
         self.expect(self.LPAREN)
-        s = string(self.expression())
-        self.expect(self.COMMA)
-        a = _floor(self.expression())
-        b = None
-        if which == self.T_MID:
+        with self.waiting(self.LPAREN):
+            s = string(self.expression())
             self.expect(self.COMMA)
-            b = _floor(self.expression())
-        low = 1 if which == self.T_MID else 0
-        if not low <= a <= SUBSTRING_MAX or b is not None and not 0 <= b <= SUBSTRING_MAX:
-            raise BasicError(3)  # 位置は閉じる括弧(観察)
-        self.expect(self.RPAREN)
+            with self.waiting(self.COMMA, s):
+                first = self.expression()
+                a = _floor(first)
+                b = None
+                if which == self.T_MID:
+                    self.expect(self.COMMA)
+                    with self.waiting(self.COMMA, first):
+                        b = _floor(self.expression())
+            low = 1 if which == self.T_MID else 0
+            if not low <= a <= SUBSTRING_MAX or b is not None and not 0 <= b <= SUBSTRING_MAX:
+                raise BasicError(3)  # 位置は閉じる括弧(観察)
+            self.expect(self.RPAREN)
         c = self.chars(s)
         if which == self.T_LEFT:
-            return b"".join(c[: max(a, 0)])
-        if which == self.T_RIGHT:
-            return b"".join(c[len(c) - a :]) if a > 0 else b""
-        assert b is not None
-        return b"".join(c[max(a - 1, 0) : max(a - 1, 0) + max(b, 0)])
+            part = c[: max(a, 0)]
+        elif which == self.T_RIGHT:
+            part = c[len(c) - a :] if a > 0 else []
+        else:
+            assert b is not None
+            part = c[max(a - 1, 0) : max(a - 1, 0) + max(b, 0)]
+        # 答えは元の文字列の番地に置く(観察)
+        return self._place(b"".join(part), getattr(s, "at", None))
 
 
 SUBSTRING_MAX = 80  # LEFT$・RIGHT$・MID$の字数と位置の上限(観察)

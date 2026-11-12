@@ -1,19 +1,9 @@
-"""PC-1251/PC-1245/PC-1261/PC-1350エミュレータの画面とキー操作
-
-uv run sc61box          # 起動
-uv run sc61box --model 1245  # PC-1245として起動する
-uv run sc61box --model 1261  # PC-1261として起動する(1260、1262も選べる)
-uv run sc61box --model 1350 --card 16  # PC-1350として、16KBのRAMカードを差して起動する
-uv run sc61box --type prog.bas # 起動後にファイルの中身をキー入力する
-uv run sc61box --load dump.txt # 16進ダンプをRAMへ書き込む
-uv run sc61box primes --run  # プログラムのフォルダのprimes.basを読み込んで実行する
-"""
+"""PC-1251/PC-1245/PC-1261/PC-1350エミュレータの画面とキー操作(起動の引数はcli.py)"""
 
 import json
 import math
 import os
 import re
-import subprocess
 import sys
 import time
 import wave
@@ -22,7 +12,6 @@ from dataclasses import dataclass
 from functools import partial
 
 import pygame
-import typer
 
 from . import (
     audio,
@@ -30,6 +19,7 @@ from . import (
     benchview,
     display,
     gamepad,
+    host,
     i18n,
     keytype,
     loading,
@@ -37,7 +27,6 @@ from . import (
     paths,
     programs,
     recorder,
-    routinecheck,
     routines,
     tape,
     workbench,
@@ -59,6 +48,7 @@ from .i18n import Text, tr
 from .keytype import keys_for, keys_for_program
 from .lcdtext import lcd_text
 from .machine import CLOCK, MODELS, RomNotFound, new_machine
+from .number import reset_seed
 from .overlay import (
     BAR_H,
     SEPARATOR,
@@ -158,6 +148,8 @@ def open_machine(
             pass
     m = new_machine(model, card, overseas, rom=False)
     norom_hle.fill_data(m)
+    if m.model.name in norom_basic.MODELS:
+        reset_seed(m)  # 電源を入れたときの乱数の種(FRNDも使う)
     if basic and m.model.name in norom_basic.MODELS:  # ROMなしのBASIC
         norom_hle.install(m)
         norom_basic.attach(m)
@@ -232,10 +224,11 @@ PAD_EVENTS = (
     pygame.CONTROLLERBUTTONUP, pygame.CONTROLLERAXISMOTION,
 )  # fmt: skip
 
-MAC = sys.platform == "darwin"
+MAC = host.MAC
 CMD = "⌘" if MAC else "Ctrl+"  # 画面に出すショートカットの修飾キー
 SHIFT = "⇧" if MAC else "Shift+"
 MIN_SCALE = 0.35  # 拡大率のいちばん小さい値(画面に合わせて縮めるときも、これより縮めない)
+BODY_MIN_SCALE = 0.1  # 本体だけ(ブラウザ)のときの、拡大率のいちばん小さい値
 # 録画の形(recorder.SHAPES)の名前
 REC_SHAPE_NAMES = {
     "both": Text("app.rec_lcd_and_body"),
@@ -284,7 +277,7 @@ def help_lines(norom: bool = False, is1350: bool = False) -> list[str]:
             tr("app.e_export_hex_e",
                c=c, s=s),
             tr("app.click_range_line_type", c=c),
-            tr("app.while_running_keys_go"),
+            tr("app.web_while_running_keys_go") if host.WEB else tr("app.while_running_keys_go"),
         ]  # fmt: skip
     head = tr("app.keys_differ_pocket_computer")
     arrows = tr("app.k_arrow_keys_press", c=c)
@@ -292,7 +285,7 @@ def help_lines(norom: bool = False, is1350: bool = False) -> list[str]:
     if is1350:
         return [
             head,
-            tr("app.tab_shift_option_alt"),
+            tr("app.web_tab_shift_option_alt") if host.WEB else tr("app.tab_shift_option_alt"),
             tr("app.delete_del_insert_ins"),
             tr("app.f1_f2_run_pro",
                c=c),
@@ -301,7 +294,11 @@ def help_lines(norom: bool = False, is1350: bool = False) -> list[str]:
         ]  # fmt: skip
     return [
         head,
-        tr("app.tab_shift_option_alt_windows"),
+        (
+            tr("app.web_tab_shift_option_alt_windows")
+            if host.WEB
+            else tr("app.tab_shift_option_alt_windows")
+        ),
         tr("app.backspace_delete_character_shift"),
         tr("app.f1_f4_mode_switch", c=c),
         arrows,
@@ -419,6 +416,17 @@ class App:
         # 指定された拡大率(画面に入らなければ、これより縮める)。0や負の数、NaNなら、画面に
         # 合わせて縮めるときのいちばん小さい率にする(ウィンドウが作れずに落ちないように)
         self.want_scale = args.scale if args.scale >= MIN_SCALE else MIN_SCALE
+        # ブラウザで、本体と操作欄などを置けるページの大きさ(fit_page。なければ拡大率どおり)
+        self.page_size: tuple[int, int] | None = None
+        # 本体だけ(ブラウザ)。操作欄・作業欄・紙を隠し、まわりの机を切り詰めた本体の絵だけを
+        # ページいっぱいに出す
+        self.body_only = False
+        self.pane_before_body = False  # 本体だけにする前に作業欄を出していたか
+        # リンクで渡されたファイルの(名前, サイト, RAMを置き換えるか, 読み込む関数)。ブラウザで
+        # 読み込むかを確かめるメニューに出す
+        self.link_offer: tuple[str, bool, Callable[[], object]] | None = None
+        # ブラウザで、オフラインで使うためのファイルを持てなかった(「本体」のメニューで試し直す)
+        self.offline_failed = False
         self.scale = self._fit(self.want_scale, self.out_w, self.out_h, pane, BAR_H)
         self.body_size = (int(self.out_w * self.scale), int(self.out_h * self.scale))
         self.font: pygame.font.Font | None = None
@@ -451,6 +459,7 @@ class App:
         self.panel.set_fps(FPS, args.persist)
         self.panel.set_packed(self._view_pref("packed_lcd") is True)
         self.scaled_body: pygame.Surface | None = None  # 拡大・縮小の結果を置く独立した面
+        self.scaled_from: tuple | None = None  # scaled_bodyにした本体の絵の見え方(Panel.shown)
         self.lcd_only = False  # 本体の絵を隠して、液晶だけを見せているか
         self.pane_before_lcd = False  # 液晶だけにする前に作業欄を出していたか
         self.free_size: tuple[int, int] | None = (
@@ -514,6 +523,8 @@ class App:
         self.help = 0  # キーの説明を出しておく残りのフレーム
         if self.bench_only:
             self.say(tr("app.no_rom_found_so"), 8)
+        elif norom and host.WEB:  # ブラウザではいつもROMなし
+            self.say(tr("app.rom_less_basic_running"), 8)
         elif norom:
             self.say(tr("app.no_rom_so_running"), 8)
         else:
@@ -562,8 +573,8 @@ class App:
         self.held_key: tuple[object, float] | None = None
         pygame.key.start_text_input()
 
-    @staticmethod
     def _fit(
+        self,
         scale: float,
         out_w: int = display.OUT_W,
         out_h: int = display.OUT_H,
@@ -571,7 +582,13 @@ class App:
         below: int = 0,
     ) -> float:
         """拡大率。画面に収まらなければ縮める(paneは右に足す作業欄の幅、belowは本体の下に
-        足す操作欄などの高さ。どちらも拡大率によらない画素数)"""
+        足す操作欄などの高さ。どちらも拡大率によらない画素数)。ブラウザでは、ページの大きさを
+        知らされていれば、その中いっぱいにする(広ければ拡大する)"""
+        if host.WEB:
+            if self.page_size is None:
+                return scale
+            pw, ph = self.page_size
+            return max(MIN_SCALE, min((pw - pane) / out_w, (ph - below) / out_h))
         try:
             dw, dh = pygame.display.get_desktop_sizes()[0]
         except (pygame.error, IndexError):
@@ -580,10 +597,15 @@ class App:
         return min(scale, max(MIN_SCALE, room))
 
     LCD_MARGIN = 26  # 液晶だけのとき、液晶の枠のまわりに見せる本体の絵(拡大前の画素)
+    BODY_ROOM = 4  # 本体だけのとき、本体のまわりに残す机の幅(拡大前の画素)
 
     def view_box(self) -> pygame.Rect:
         """本体の絵のうちウィンドウに出す範囲。液晶だけのときは、録画で拡大するのと同じ液晶の枠に、
-        まわりの本体の絵を少し足したもの(ウィンドウの縁に液晶がくっつかないように)"""
+        まわりの本体の絵を少し足したもの(ウィンドウの縁に液晶がくっつかないように)。本体だけの
+        ときは、まわりの机をBODY_ROOMまで切り詰めたもの"""
+        if self.body_only:
+            cut = display.MARGIN - self.BODY_ROOM
+            return pygame.Rect(cut, cut, self.out_w - 2 * cut, self.out_h - 2 * cut)
         if not self.lcd_only:
             return pygame.Rect(0, 0, self.out_w, self.out_h)
         x0, y0, x1, y1 = self.panel.lcd_box()
@@ -603,6 +625,17 @@ class App:
         want = self.want_scale * self.out_w / vw
         free = self.free_size
         panel_h = 0
+        if self.body_only:  # 本体の下にも右にも何も足さない
+            if self.page_size is not None:
+                # 本体の絵だけなので、縦に持ったスマートフォンの幅にも入るように、MIN_SCALEより
+                # 縮めてもよい
+                pw, ph = self.page_size
+                self.scale = max(BODY_MIN_SCALE, min(pw / vw, ph / vh))
+            else:
+                self.scale = self._fit(want, vw, vh)
+            self.body_size = (int(vw * self.scale), int(vh * self.scale))
+            self._open_window()
+            return
         for _ in range(10):
             below = BAR_H + panel_h
             if self.paper_open:
@@ -630,13 +663,17 @@ class App:
     def _open_window(self, room: bool | None = None) -> None:
         """ウィンドウを中身の大きさ(利用者が変えていればその大きさ)で作り直す。液晶だけのときは
         大きさを変えられるウィンドウにし、一覧やメニューを開いているあいだ(room)は、入るだけの高さに
-        広げる。中身より大きければ、中身はまんなかに描く"""
+        広げる(本体だけのときも)。中身より大きければ、中身はまんなかに描く"""
         content = self._window_size()
         size = self.free_size if self.free_size is not None else content
         if room is None:
             room = self.menu is not None or self.popup is not None or bool(self.help)
         if self.lcd_only and room:
             size = (size[0], max(size[1], self.MENU_ROOM))
+        elif self.body_only and room:
+            # 本体だけ(縦に持ったスマートフォンでは本体がとても低い)。ページの高さまでで広げる
+            page_h = self.page_size[1] if self.page_size is not None else self.MENU_ROOM
+            size = (size[0], max(size[1], min(self.MENU_ROOM, page_h)))
         flags = pygame.RESIZABLE if self.lcd_only else 0
         if self.window_stale or size != self.window.get_size() or flags != self.win_flags:
             # 大きさが外から変わったあと(全画面から戻ったときなど)は、同じ大きさでも作り直す。
@@ -646,6 +683,13 @@ class App:
             self.window_stale = False
         self.laid_out, self.laid_content = size, content
         self.origin = (max(0, (size[0] - content[0]) // 2), max(0, (size[1] - content[1]) // 2))
+
+    def fit_page(self, w: int, h: int) -> None:
+        """ブラウザのページの、本体と操作欄などを置ける大きさが変わった。その中いっぱいに置き直す
+        (本体だけを拡大・縮小し、操作欄やメニューの大きさは変えない)"""
+        if (w, h) != self.page_size:
+            self.page_size = (w, h)
+            self._refit()
 
     def _min_size(self, below: int | None = None) -> tuple[int, int]:
         """ウィンドウの大きさの下限(操作欄のボタン、作業欄、本体の下に足したものが入る大きさ)。
@@ -661,7 +705,7 @@ class App:
     def toggle_lcd(self, on: bool | None = None) -> None:
         """本体の絵を隠して液晶だけにする・本体を出す"""
         on = not self.lcd_only if on is None else on
-        if on == self.lcd_only:
+        if on == self.lcd_only or self.body_only:
             return
         self.release_all()
         if on:
@@ -675,6 +719,33 @@ class App:
         self.lcd_only = on
         self.free_size = None
         self._refit()
+
+    def toggle_body_only(self, on: bool | None = None) -> None:
+        """本体だけにする・元に戻す(ブラウザ)。本体だけのあいだは作業欄も割り当ての欄も出さない。
+        作業欄は、戻るときに元に戻す"""
+        on = not self.body_only if on is None else on
+        if on == self.body_only:
+            return
+        self.release_all()
+        if on:
+            self.toggle_lcd(False)
+            self.pane_before_body = self.pane_open
+            self.pane_open = False
+            self.pad_panel = None
+            self.bench_view.focus = False
+        else:
+            self.pane_open = self.pane_before_body
+        self.body_only = on
+        self._refit()
+
+    def _body_point(self, pos) -> tuple[float, float]:
+        """中身の中の位置を、机を除いた本体の絵の中の位置(Panel.key_atの座標)に直す。
+        出している範囲(view_box)の左上をずらす"""
+        box = self.view_box()
+        return (
+            pos[0] / self.scale + box.x - display.MARGIN,
+            pos[1] / self.scale + box.y - display.MARGIN,
+        )
 
     def _track_window(self) -> None:
         """表示面を取り直す(pygameが作り直していれば、そちらに描く)"""
@@ -741,7 +812,9 @@ class App:
             self.cancel_loading()
             return
         if ev.key == pygame.K_ESCAPE:
-            self.press_brk("key")
+            # ブラウザでは、Escは全画面を抜けるのに使う(BRKは本体のキーを押す)
+            if not host.WEB:
+                self.press_brk("key")
             return
         if ev.key == pygame.K_F5:
             self.press_reset()
@@ -908,7 +981,7 @@ class App:
     def toggle_pad_panel(self, on: bool | None = None) -> None:
         """割り当ての画面を本体の下に出す・しまう(ウィンドウの高さが変わる)"""
         on = self.pad_panel is None if on is None else on
-        if on == (self.pad_panel is not None):
+        if on == (self.pad_panel is not None) or (on and self.body_only):
             return
         self.release_all()
         self.pad_panel = padmenu.PadPanel() if on else None
@@ -1018,8 +1091,7 @@ class App:
             return True
         if pos[1] >= self.body_size[1] or panel.selected is None or self.lcd_only:
             return False
-        x = pos[0] / self.scale - display.MARGIN
-        y = pos[1] / self.scale - display.MARGIN
+        x, y = self._body_point(pos)
         name = self.panel.key_at(x, y)
         if name is None:
             return False
@@ -1027,19 +1099,7 @@ class App:
         return True
 
     def set_clipboard(self, text: str) -> None:
-        try:
-            if not pygame.scrap.get_init():
-                pygame.scrap.init()
-            pygame.scrap.put(pygame.SCRAP_TEXT, text.encode("utf-8"))
-            return
-        except (pygame.error, NotImplementedError):
-            pass
-        cmds = {"darwin": ["pbcopy"], "win32": ["clip"]}
-        cmd = cmds.get(sys.platform, ["xclip", "-selection", "clipboard"])
-        try:
-            subprocess.run(cmd, input=text, text=True, check=False)
-        except OSError:
-            pass
+        host.copy_text(text)
 
     # ---- ショートカットと右クリックのメニュー ----
     # Fキーはほかのアプリに取られることがあるので、同じ操作を⌘(Windows・LinuxはCtrl)との
@@ -1091,9 +1151,9 @@ class App:
             # 使わず、⌘Zは欄に打った字を消す。ほかのショートカットは、欄をやめてから
             if key == pygame.K_v:
                 if b.start_buf is not None:
-                    self.bench_said(b.paste_start(self.clipboard()))
+                    self.with_clipboard(lambda text: self.bench_said(b.paste_start(text)))
                 else:
-                    self.bench_said(b.paste_span(self.clipboard()))
+                    self.with_clipboard(lambda text: self.bench_said(b.paste_span(text)))
                 return True
             if key == pygame.K_z:
                 if b.start_buf is not None:
@@ -1420,11 +1480,15 @@ class App:
 
     def bench_paste(self) -> None:
         """クリップボードのダンプ(本のダンプリストか.hexの行)を書く"""
-        b, v = self.bench, self.bench_view
+        b = self.bench
         if b.state == "run" and not b.live:
             return
+        self.with_clipboard(self._bench_paste)
+
+    def _bench_paste(self, text: str) -> None:
+        b, v = self.bench, self.bench_view
         start = b.start
-        res = b.paste(self.clipboard())
+        res = b.paste(text)
         if not res.written:
             v.say(tr("app.no_dump_lines_pasted"), 4)
             return
@@ -1468,27 +1532,31 @@ class App:
             return
         size = sum(hi - lo for lo, hi in ranges)
         name = os.path.basename(path)
+        if host.WEB:
+            host.deliver(path)
+            v.say(tr("app.downloaded", name=name), 8)
+            return
         v.say(
             tr("app.exported_bytes_folder",
                name=name, n=size, folder=_short(folder)), 8
         )  # fmt: skip
 
     def clipboard(self) -> str:
-        text = ""
-        try:
-            if not pygame.scrap.get_init():
-                pygame.scrap.init()
-            raw = pygame.scrap.get(pygame.SCRAP_TEXT)
-            if raw:
-                text = raw.decode("utf-8", "ignore").rstrip("\x00")
-        except (pygame.error, NotImplementedError):
-            pass
-        if not text:
-            try:
-                text = subprocess.run(["pbpaste"], capture_output=True, text=True).stdout
-            except OSError:
-                text = ""
-        return text
+        return host.paste_text()
+
+    def with_clipboard(self, use: Callable[[str], None]) -> None:
+        """クリップボードの文字をuseに渡す。ブラウザでは、読めたときに(あとのフレームで)渡す"""
+        if not host.WEB:
+            use(self.clipboard())
+            return
+
+        def got(text: str | None) -> None:
+            if text is None:
+                self.say(tr("app.cannot_read_clipboard", c=CMD), 6)
+            else:
+                use(text)
+
+        host.read_clipboard(got)
 
     SPEEDS = (0.5, 1, 2, 4, 8)
 
@@ -1519,8 +1587,11 @@ class App:
 
     # ---- 操作欄とプリンタ ----
     def _window_size(self) -> tuple[int, int]:
-        """ウィンドウの大きさ。本体の下に、プリンタの紙(印字したとき)と操作欄を足す"""
+        """ウィンドウの大きさ。本体の下に、プリンタの紙(印字したとき)と操作欄を足す(本体だけの
+        ときは足さない)"""
         w, h = self.body_size
+        if self.body_only:
+            return w, h
         if self.paper_open:
             h += self.paper.height
         h += self._pad_panel_height() + BAR_H
@@ -1573,6 +1644,8 @@ class App:
         label = tr("app.speed", speed=speed)
         buttons.append(BarButton(label, menu("speed"), "", speed, tip, True, "speed"))
         rec = self.recorder
+        if host.WEB:  # ブラウザでは録画できない(ffmpegがない)
+            return buttons
         if rec is None:
             tip = tr("app.start_recording_r", c=c, s=s)
             buttons.append(BarButton(tr("app.record"), menu("recstart"), "rec", tr("app.record"),
@@ -1703,14 +1776,18 @@ class App:
             self.say(tr("app.cannot_save_printout", error=e), 5)
             out.file = None
             return
-        if saved and out.file is not None:
+        if saved and out.file is not None and not host.WEB:  # ブラウザでは紙の横の表示から渡す
             self.say(tr("app.printout_saved", path=_short(out.file)), 5)
 
     def reveal_printout(self) -> None:
-        """印字を保存したフォルダを開く"""
+        """印字を保存したフォルダを開く。ブラウザでは、印字のファイルをダウンロードで渡す"""
         self.save_printout()
         out = self.printout
         file = out.file if out is not None else None
+        if host.WEB:
+            if file:
+                self.deliver(file, "")
+            return
         self.reveal(os.path.dirname(file) if file else programs.user_dir())
 
     def scroll_paper(self, step: int) -> None:
@@ -1759,12 +1836,18 @@ class App:
                 export = item(tr("app.export_program_file"), f"{c}E", self.export_program)
                 listing = None
                 paste = item(tr("app.type_clipboard"), f"{c}V", self.paste)
+            folder = tr("app.load_from_file") if host.WEB else tr("app.open_program_folder")
+            share = None
+            if host.WEB and not self.bench_only:
+                share = item(tr("app.web_copy_program_link"), "", self.share_program,
+                             tr("app.web_copy_program_link_note"))  # fmt: skip
             items = [
                 item(tr("app.program_list"), f"{c}O", self.open_menu),
                 export,
                 *([listing] if listing else []),
+                *([share] if share else []),
                 paste,
-                item(tr("app.open_program_folder"), "", lambda: self.reveal(programs.user_dir())),
+                item(folder, "", self.open_folder),
             ]
             if self.bench_only or self.pane_open:
                 # 作業欄の書き込みの取り消しとやり直し。下に、何を取り消すか(できなければ理由)
@@ -1793,7 +1876,22 @@ class App:
             for name, _y in self.sw_stops:
                 key = f"{c}↑↓" if self.m.mode == name else ""
                 items.append(item(switch_label(name), key, lambda n=name: self.set_mode(n)))
-            return items + [sep, item(tr("app.press_reset_button"), f"{c}R", self.press_reset)]
+            items += [sep, item(tr("app.press_reset_button"), f"{c}R", self.press_reset)]
+            if host.WEB:  # パソコン版の--freshにあたる
+                items.append(item(tr("app.web_erase_ram"), "", self.ask_erase_ram,
+                                  tr("app.web_erase_ram_note")))  # fmt: skip
+            if host.WEB and self.offline_failed:
+                items.append(item(tr("app.web_retry_offline"), "", self.retry_offline))
+            return items
+        if kind == "erase":
+            return [
+                item(tr("app.web_erase_ram_now"), "", self.erase_ram),
+                item(tr("app.cancel"), "", lambda: None),
+            ]
+        if kind == "link" and self.link_offer is not None:
+            label, replaces, load = self.link_offer
+            note = tr("app.web_link_replaces_ram") if replaces else ""
+            return [item(label, "", load, note), item(tr("app.cancel"), "", lambda: None)]
         if kind == "view":
             if self.numpad_arrows:
                 arrows = tr("app.arrow_keys_back")
@@ -1865,7 +1963,8 @@ class App:
                 return []
             items = [item(tr("app.put_paper_away"), "", self.close_paper)]
             if out.file:
-                items.insert(0, item(tr("app.open_printout_folder"), "", self.reveal_printout))
+                label = tr("app.download_printout") if host.WEB else tr("app.open_printout_folder")
+                items.insert(0, item(label, "", self.reveal_printout))
             return items
         return [  # 右クリック(場所によらない、よく使うものだけ)
             pause,
@@ -1873,6 +1972,61 @@ class App:
             item(tr("app.save_screenshot"), f"{c}S", self.screenshot),
             item(tr("app.key_help"), f"{c}/", self.toggle_help),
         ]
+
+    def ask_link(self, label: str, replaces: bool, load: Callable[[], object]) -> None:
+        """ブラウザで、リンクで渡されたものを読み込むかを、「プログラム」のボタンの上に出した
+        メニュー(labelと「やめる」)で確かめる。replacesなら、今のRAMが置き換わることも書く"""
+        self.link_offer = (label, replaces, load)
+        self.open_bar_popup("link", button="program")
+
+    def share_program(self) -> None:
+        """ブラウザで、RAMにあるBASICのプログラムを入れたリンクを作ってコピーする(開くと
+        読み込んで実行する)。最後に読み込んだプログラムの題も入れる"""
+        m = self.m
+        body = basictext.program_text(
+            m.mem, basic_keywords(m), start=m.program_start(), pc1261=pc1261_basic(m)
+        )
+        if not body:
+            self.say(tr("app.web_no_program_link"))
+            return
+        title = self.last_prog.title if self.last_prog else ""
+        text = (f"# title: {title}\n" if title else "") + body
+
+        def done(copied: bool, size: int) -> None:
+            if copied:
+                self.say(tr("app.web_link_copied", n=size), 5)
+            else:
+                self.say(tr("app.web_link_in_address", n=size), 8)
+
+        host.share_program(text, m.model.name, m.card, done)
+
+    def retry_offline(self) -> None:
+        """オフラインで使うためのファイルの保存を試し直す。結果はページが知らせる"""
+        self.offline_failed = False
+        self.say(tr("app.web_retrying_offline"), 5)
+        host.keep_offline()
+
+    def ask_erase_ram(self) -> None:
+        """RAMを消すかを、「本体」のボタンの上に出したメニューで確かめる"""
+        self.open_bar_popup("erase", button="machine")
+
+    def erase_ram(self) -> None:
+        """ブラウザで、保存したこの機種のRAMを消し、ページを読み直して初期状態から始める。
+        読み直す前の保存で書き戻さないように、RAMの保存をやめておく。ブラウザの保存に
+        反映できなければ、保存を戻して知らせる(本体のRAMはそのままなので、次の保存で書き直す)"""
+        self.save_ram = False
+        paths = [self.ram_file, bench_file(self.ram_file)]
+        for path in paths:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+        def failed() -> None:
+            self.save_ram = True
+            self.say(tr("app.web_cannot_erase_ram"), 8)
+
+        host.restart(paths, failed)
 
     def popup_mark(self) -> str:
         """いま出しているメニューで●をつける項目(スイッチの位置か、いまの速さ)"""
@@ -1964,15 +2118,19 @@ class App:
         self.undo_state = None
         self._restored(done)
 
-    def open_bar_popup(self, kind: str) -> None:
-        """操作欄のボタンのメニューを、そのボタンのすぐ上に出す"""
-        i = next((i for i, b in enumerate(self.bar.buttons) if b.menu == kind), -1)
+    def open_bar_popup(self, kind: str, button: str | None = None) -> None:
+        """操作欄のボタンのメニューを、そのボタンのすぐ上に出す。buttonを渡せば、kindのメニューを
+        そのボタン(menuがbuttonのもの)の上に出す(メニューから続けて出す確認など。左右の隣の
+        メニューへは移らない)"""
+        at = kind if button is None else button
+        i = next((i for i, b in enumerate(self.bar.buttons) if b.menu == at), -1)
         r = self.bar.rects[i] if 0 <= i < len(self.bar.rects) else None
         if r is None or not r.width:
             r = pygame.Rect(8, self.body_size[1], 0, 0)
         self._make_room()
         ox, oy = self.origin
-        self.popup = Popup((r.x + ox, r.y + oy), kind, above=True, source=i)
+        source = i if button is None else -1
+        self.popup = Popup((r.x + ox, r.y + oy), kind, above=True, source=source)
 
     def next_bar_popup(self, step: int) -> None:
         """開いている操作欄のメニューから、左右の隣のメニューのボタンへ移る(←→)"""
@@ -2148,8 +2306,7 @@ class App:
             return
         if self.lcd_only:  # 液晶だけなので、押せるキーもスイッチもない
             return
-        x = pos[0] / self.scale - display.MARGIN
-        y = pos[1] / self.scale - display.MARGIN
+        x, y = self._body_point(pos)
         sx0, sy0, sx1, sy1 = self.panel.switch_area
         if sx0 <= x <= sx1 and sy0 <= y <= sy1:
             self.dragging_switch = True
@@ -2381,17 +2538,19 @@ class App:
             return (got if len(got) > len(exp) else exp)[min(len(got), len(exp))][0]
         return None
 
-    def insert_tape(self, path: str) -> None:
-        """wavのテープをセットする。ROMがカセットの入力を読み始めたときに再生が始まる"""
+    def insert_tape(self, path: str) -> bool:
+        """wavのテープをセットする。ROMがカセットの入力を読み始めたときに再生が始まる。
+        読めなければ知らせてFalse(前にセットしたテープはそのまま)"""
         try:
             self.m.tape = tape.TapeIn(path)
         except (OSError, EOFError, wave.Error) as e:
             self.say(tr("app.cannot_read", name=os.path.basename(path), error=e), 5)
-            return
+            return False
         self.say(
             tr("app.tape_inserted_load_cload",
                name=os.path.basename(path)), 6
         )  # fmt: skip
+        return True
 
     def open_file(self, path: str) -> None:
         if path.lower().endswith(".wav"):
@@ -2418,10 +2577,15 @@ class App:
         ROMなしのBASICでプログラムを保護していれば、そのことも出す(何も表示されない理由が
         分かるように)"""
         basic = self.m.basic
-        if basic is not None and basic.PASSWORD.locked(self.m):
-            text, seconds = tr("app.ram_loaded_locked"), 8.0
+        locked = basic is not None and basic.PASSWORD.locked(self.m)
+        if host.WEB:  # ブラウザでは、ページに保存したRAM。--freshもない
+            text = tr("app.web_ram_loaded_locked") if locked else tr("app.web_ram_loaded")
         else:
-            text, seconds = tr("app.ram_loaded"), 4.0
+            text = tr("app.ram_loaded_locked") if locked else tr("app.ram_loaded")
+        self.say_also(text, 8.0 if locked else 4.0)
+
+    def say_also(self, text: str, seconds: float = 3.0) -> None:
+        """出ているメッセージがあれば、そのあとに続けて出す(消さない)"""
         left = self.status_until - time.monotonic()
         if self.status and left > 0:
             text, seconds = f"{self.status}\n{text}", max(seconds, left)
@@ -2460,7 +2624,7 @@ class App:
         elif menu.query is not None:  # 探す字はtext_inputで受ける
             return
         elif ev.key == pygame.K_o:
-            self.reveal(programs.user_dir())
+            self.open_folder()
         elif ev.key == pygame.K_r:
             self.open_menu()
 
@@ -2490,7 +2654,7 @@ class App:
             self.menu = None
             self.open_program(menu.items[menu.sel], run=act == "run")
         elif act == "folder":
-            self.reveal(programs.user_dir())
+            self.open_folder()
         elif act == "reload":
             self.open_menu()
         elif act == "close":
@@ -2499,14 +2663,24 @@ class App:
     @staticmethod
     def reveal(path: str) -> None:
         """プログラムのフォルダをFinder(など)で開く"""
-        cmd = {"darwin": ["open"], "win32": ["explorer"]}.get(sys.platform, ["xdg-open"])
-        try:
-            subprocess.Popen(cmd + [path])
-        except OSError:
-            pass
+        host.reveal(path)
+
+    def open_folder(self) -> None:
+        """プログラムのフォルダを開く。ブラウザでは、読み込むファイルを選んでもらう"""
+        if host.WEB:
+            host.choose_files()
+        else:
+            self.reveal(programs.user_dir())
+
+    def deliver(self, path: str, message: str, seconds: float = 5.0) -> None:
+        """書いたファイルを知らせる。ブラウザでは、ダウンロードで渡したことを知らせる"""
+        if host.WEB:
+            host.deliver(path)
+            message = tr("app.downloaded", name=os.path.basename(path))
+        self.say(message, seconds)
 
     def paste(self) -> None:
-        self.typer.add_text(self.clipboard())
+        self.with_clipboard(self.typer.add_text)
 
     def export_program(self) -> None:
         """RAMにあるBASICのプログラムを、プログラムのフォルダに.basのファイルとして書き出す"""
@@ -2520,9 +2694,9 @@ class App:
             self.say(tr("app.cannot_export", error=e), 5)
             return
         if path is None:
-            self.say(tr("app.no_program_export"))
+            self.say(tr("common.no_program_export"))
         else:
-            self.say(tr("app.exported_path", path=_short(path)), 5)
+            self.deliver(path, tr("app.exported_path", path=_short(path)))
 
     def save_tape(self, samples) -> None:
         """CSAVEの音を、プログラムのフォルダに「tape-日時.wav」として書き出す"""
@@ -2532,7 +2706,7 @@ class App:
         except OSError as e:
             self.say(tr("app.cannot_write_tape_audio", error=e), 5)
             return
-        self.say(tr("app.tape_audio_written", path=_short(path)), 6)
+        self.deliver(path, tr("app.tape_audio_written", path=_short(path)), 6)
 
     def save_state(self) -> None:
         """いまの状態(RAM、CPU、ポート、タイマ)を保存する"""
@@ -2642,7 +2816,9 @@ class App:
         except (OSError, pygame.error) as e:
             self.say(tr("app.cannot_save_screenshot", error=e), 5)
             return
-        self.say(tr("app.saved_path", path=_short(path)))
+        self.deliver(path, tr("app.saved_path", path=_short(path)), 3)
+        if host.WEB:  # ダウンロードで渡したので、ブラウザの保存領域には残さない
+            os.remove(path)
 
     # ---- 録画 ----
     def toggle_recording(self) -> None:
@@ -2774,7 +2950,7 @@ class App:
                 self.bench_view.why_at = hit[1] if hit and hit[0] == "why" else -1
                 self.bench_view.span_hover = bool(hit and hit[0] == "span")
         elif ev.type == pygame.MOUSEMOTION and self.dragging_switch:
-            self.set_switch_from(self._in_content(ev.pos)[1] / self.scale - display.MARGIN)
+            self.set_switch_from(self._body_point(self._in_content(ev.pos))[1])
         elif ev.type == pygame.VIDEORESIZE:
             self.resized(ev.w, ev.h)
         elif ev.type == pygame.WINDOWSIZECHANGED:
@@ -3084,31 +3260,41 @@ class App:
             out = pygame.Surface(content) if copy else win.subsurface((ox, oy, *content))
         w, h = self.body_size
         body = out.subsurface((0, 0, w, h))
-        if self.lcd_only:
+        if self.lcd_only or self.body_only:
             surf = surf.subsurface(self.view_box())
         if self.scale == 1.0:
             body.blit(surf, (0, 0))
         else:
             # pygame 2.6.1のGENERICの縦拡大は、描画先の行の余白(pitch)を飛ばさない。
             # ウィンドウの一部へ直接書くと絵が斜めに流れるので、独立した面に拡大してから貼る。
+            # 本体の絵が前のフレームと同じ見え方なら、前に縮めたものを使う(ブラウザでは重い)
+            shown = (self.panel.shown, self.view_box())
             if self.scaled_body is None or self.scaled_body.get_size() != (w, h):
                 self.scaled_body = pygame.transform.smoothscale(surf, (w, h))
                 # 本体の絵は不透明。Cocoaの未使用alpha=0をsmoothscaleが透明として
                 # 引き継ぐことがあるので、貼るときは透明度を使わない。
                 self.scaled_body.set_alpha(None)
-            else:
+            elif (
+                self.scaled_from is None
+                or self.scaled_from[0] is not shown[0]
+                or self.scaled_from[1] != shown[1]
+            ):
                 pygame.transform.smoothscale(surf, (w, h), self.scaled_body)
+            self.scaled_from = shown
             body.blit(self.scaled_body, (0, 0))
         top = h
-        if self.printout is not None:
+        if self.printout is not None and not self.body_only:
             rows = self.paper_rows()
             where = []
             if self.printout.file:
                 folder, name = os.path.split(_short(self.printout.file))
-                where = [tr("app.saved_click_open"), folder + os.sep, name]
+                if host.WEB:
+                    where = [tr("app.click_download"), name]
+                else:
+                    where = [tr("app.saved_click_open"), folder + os.sep, name]
             self.paper.draw(out, top, rows[: len(rows) - self.paper_back], where)
             top += self.paper.height
-        self.bar.buttons = self.bar_buttons()
+        self.bar.buttons = [] if self.body_only else self.bar_buttons()
         left = out.subsurface((0, 0, w, out.get_height())) if self.pane_open else out
         if self.pad_panel is not None:
             pressed = self.pads.pressed()
@@ -3123,7 +3309,8 @@ class App:
                 *self._pad_target(), self.pad_dirty,
             )  # fmt: skip
             top += self.pad_panel.height
-        self.bar.draw(left, font, top, self.bar_info())
+        if not self.body_only:
+            self.bar.draw(left, font, top, self.bar_info())
         notice = body  # メッセージを出す場所
         if self.pane_open:
             # 作業欄は右に置き、本体と操作欄の下のあいたところにメッセージを出す
@@ -3157,7 +3344,8 @@ class App:
             self.help -= 1
             draw_help(win, font, help_lines(self.bench_only, self.is1350))
         if self.menu is not None:
-            self.menu.draw(win, font, self.m.model.name, _short(programs.user_dir()))
+            folder = "" if host.WEB else _short(programs.user_dir())  # ブラウザには見せる場所がない
+            self.menu.draw(win, font, self.m.model.name, folder)
         if self.popup is not None:
             self.popup.draw(win, font, self.popup_items(), self.popup_mark())
         pygame.display.flip()
@@ -3224,7 +3412,7 @@ class App:
         if self.bench_only:
             return
         on = not self.pane_open if on is None else on
-        if on == self.pane_open or (on and self.lcd_only):
+        if on == self.pane_open or (on and (self.lcd_only or self.body_only)):
             return
         self.pane_open = on
         self.bench_view.focus = False
@@ -3245,26 +3433,34 @@ class App:
     def close(self) -> None:
         self._finish_paper()
         if self.save_ram:
-            if self.m.power and not self.norom:
-                self.m.power_off()
-            elif self.m.basic is not None:
-                self.m.basic.mark_off()  # ROMのある本体でも、このRAMを読めるように
-            # 作業欄の開始番地、ブレークポイント、書いた範囲も、RAMと一緒に覚えておく。保存
-            # できなくても(プログラムのフォルダに同じ名前のファイルがあるなど)、録画の保存と
-            # 後始末は続ける
-            try:
-                os.makedirs(STATE_DIR, exist_ok=True)
-                self.m.save_ram(self.ram_file)
-                with open(bench_file(self.ram_file), "w", encoding="utf-8") as f:
-                    info = {**self.bench.save(), "state": "edit", "ram_top": self.m.model.ram[1]}
-                    json.dump(info, f)
-            except OSError as e:
-                print(tr("app.cannot_save_ram", error=e), file=sys.stderr)
+            self.store_ram()
         if self.recorder is not None:
             self.toggle_recording()  # 録画中に閉じたら、そこまでを保存する
         if self.speaker is not None:
             self.speaker.close()
         pygame.quit()
+
+    def store_ram(self, running: bool = False) -> None:
+        """RAMを保存する。作業欄の開始番地、ブレークポイント、書いた範囲も、RAMと一緒に覚えておく。
+        保存できなくても(プログラムのフォルダに同じ名前のファイルがあるなど)、知らせて続ける。
+        runningなら動かし続けるので(ブラウザでページを隠したとき)、電源を切らず、内部RAMも
+        元に戻す"""
+        iram = bytes(self.m.cpu.ram)
+        if self.m.power and not self.norom:
+            if not running:
+                self.m.power_off()
+        elif self.m.basic is not None:
+            self.m.basic.mark_off()  # ROMのある本体でも、このRAMを読めるように
+        try:
+            os.makedirs(STATE_DIR, exist_ok=True)
+            self.m.save_ram(self.ram_file)
+            with open(bench_file(self.ram_file), "w", encoding="utf-8") as f:
+                info = {**self.bench.save(), "state": "edit", "ram_top": self.m.model.ram[1]}
+                json.dump(info, f)
+        except OSError as e:
+            print(tr("app.cannot_save_ram", error=e), file=sys.stderr)
+        if running:
+            self.m.cpu.ram[:] = iram
 
     def run(self) -> None:
         clock = pygame.time.Clock()
@@ -3282,6 +3478,24 @@ class App:
         finally:  # 予期しない例外で止まっても、RAMと印字は保存する
             self.close()
 
+    async def run_async(self) -> None:
+        """ブラウザでのrun。1フレームごとにブラウザに戻って(描画とイベントのため)、時計に
+        合わせて待つ。ブラウザはPythonが戻るまでイベントを渡さないので、本体の実行の合間には
+        イベントを受け取らない"""
+        import asyncio
+
+        self.closing = False
+        due = time.perf_counter()
+        try:
+            while not self.closing:
+                self._pump()
+                self.frame()
+                now = time.perf_counter()
+                due = max(due + 1 / FPS, now - 1 / FPS)  # 大きく遅れた分は取り戻さない
+                await asyncio.sleep(max(0.0, due - now))
+        finally:
+            self.close()
+
     def _pump(self) -> None:
         """たまっているイベントを本体に届ける。閉じる操作があればclosingにする"""
         try:
@@ -3292,235 +3506,3 @@ class App:
         for ev in events:
             if not self.handle(ev):
                 self.closing = True
-
-
-def _show_version(value: bool) -> None:
-    if value:
-        typer.echo(f"sc61box {_version()}")
-        raise typer.Exit()
-
-
-def make_cli() -> typer.Typer:
-    """コマンドラインの入口。オプションの説明は、作ったときの言語で書く(cliは、--langと
-    SC61BOX_LANGなどで言語を決めてから作る)"""
-    app = typer.Typer(add_completion=False, help=tr("app.sharp_pc_1251_pc"))
-
-    @app.command()
-    def main(
-        program: str | None = typer.Argument(None, help=tr("app.program_load_path_bas")),
-        run: bool = typer.Option(False, "--run", help=tr("app.run_after_loading")),
-        scale: float = typer.Option(1.0, help=tr("app.window_scale")),
-        type_: str | None = typer.Option(None, "--type", help=tr("app.type_contents_file_after")),
-        load: str | None = typer.Option(None, help=tr("app.write_hex_dump_address")),
-        fresh: bool = typer.Option(False, help=tr("app.do_not_load_saved")),
-        mute: bool = typer.Option(False, help=tr("app.no_sound")),
-        persist: float = typer.Option(1.0, help=tr("app.strength_lcd_afterglow_0")),
-        export: str | None = typer.Option(
-            None,
-            help=tr("app.export_basic_program_saved"),
-        ),
-        model: str = typer.Option(
-            "1251",
-            help=tr("app.model_1250_1251_1255"),
-        ),
-        card: int = typer.Option(0, help=tr("app.size_pc_1350_ram")),
-        overseas: bool = typer.Option(
-            False,
-            help=tr("app.run_pc_1350_wired"),
-        ),
-        numpad: bool = typer.Option(False, help=tr("app.arrow_keys_press_number")),
-        lcd: bool = typer.Option(
-            False,
-            "--lcd",
-            help=tr("app.show_only_lcd_without"),
-        ),
-        tape_: str | None = typer.Option(None, "--tape", help=tr("app.insert_cassette_audio_wav")),
-        state: str | None = typer.Option(None, help=tr("app.start_saved_state_written")),
-        norom: bool = typer.Option(
-            False,
-            "--norom",
-            help=tr("app.run_without_rom_rom"),
-        ),
-        no_basic: bool = typer.Option(
-            False,
-            "--no-basic",
-            help=tr("app.without_rom_run_only"),
-        ),
-        lang: str | None = typer.Option(
-            None,
-            "--lang",
-            help=tr("app.display_language_ja_en"),
-        ),
-        check_routines: str | None = typer.Option(
-            None,
-            "--check-routines",
-            help=tr("app.compare_rom_routine_stand"),
-        ),
-        list_routines: bool = typer.Option(
-            False,
-            "--list-routines",
-            help=tr("app.list_rom_routine_stand"),
-        ),
-        new_routine: str | None = typer.Option(
-            None,
-            "--new-routine",
-            help=tr("app.create_file_start_rom"),
-        ),
-        version_: bool = typer.Option(
-            False,
-            "--version",
-            callback=_show_version,
-            is_eager=True,
-            help=tr("app.print_version_exit"),
-        ),
-    ) -> None:
-        args = Options(
-            model=model,
-            card=card,
-            overseas=overseas,
-            norom=norom,
-            basic=not no_basic,
-            scale=scale,
-            persist=persist,
-            fresh=fresh,
-            mute=mute,
-            numpad=numpad,
-            lcd=lcd,
-            lang=lang,
-            program=program,
-            run=run,
-            type=type_,
-            load=load,
-            tape=tape_,
-            state=state,
-        )
-        start(args, export, check_routines, new_routine, list_routines)
-
-    return app
-
-
-def start(
-    args: Options,
-    export: str | None = None,
-    check_routines: str | None = None,
-    new_routine: str | None = None,
-    list_routines: bool = False,
-) -> None:
-    """オプションを確かめて起動する。exportがあれば、保存したRAMのBASICを書き出して終わる。
-    check_routinesとnew_routineは、代替ROMルーチンを比べるか書き始めて終わる(_routine_tool)。
-    前の名前のデータのフォルダ(~/.pc1251)があれば、新しい名前(~/.sc61box)に移す"""
-    global STATE_DIR
-    old = paths.old_data_dir()
-    if old is not None and paths.migrate():
-        args.moved_data = "~/" + os.path.basename(old)
-    STATE_DIR = paths.data_dir()
-    if args.lang is not None and args.lang not in i18n.LANGUAGES:
-        typer.echo(tr("app.language_must_ja_en"), err=True)
-        raise typer.Exit(2)
-    i18n.set_language(i18n.choose(args.lang, App._view_prefs().get("lang")))
-    model, card = args.model, args.card
-    if model not in MODELS:
-        typer.echo(
-            tr("app.model_must_one", models=tr("common.ideographic_comma").join(sorted(MODELS))),
-            err=True,
-        )
-        raise typer.Exit(2)
-    if card not in (0, 8, 16):
-        typer.echo(tr("app.ram_card_size_must"), err=True)
-        raise typer.Exit(2)
-    if MODELS[model].family != "1350":
-        args.card = card = 0
-    for line in routines.load_user():
-        typer.echo(line, err=True)
-    if check_routines is not None or new_routine is not None or list_routines:
-        _routine_tool(model, check_routines, new_routine, list_routines)
-        return
-    if export is not None:
-        # 起動のときと同じにROMを使うかを決め、そのときに保存するRAMのファイルを読む
-        m, norom = open_machine(model, card, args.overseas, args.norom, args.basic)
-        saved = ram_file(model, card, norom)
-        apply_ram_top(m, saved_info(saved))
-        if not m.load_ram(saved):
-            typer.echo(tr("app.does_not_exist", path=saved), err=True)
-            raise typer.Exit(1)
-        path = export_program(m, export)
-        typer.echo(path or tr("app.no_program_export"))
-        return
-    try:
-        App(args).run()
-    except (RomNotFound, FileNotFoundError, DumpError) as e:
-        typer.echo(str(e), err=True)
-        raise typer.Exit(1) from e
-
-
-def _routine_tool(model: str, check: str | None, new: str | None, show: bool = False) -> None:
-    """--list-routinesで一覧を出すか、--new-routineでファイルを作るか、--check-routinesでROMの
-    ある本体と比べる"""
-    if routines.family_of(model) is None:
-        typer.echo(tr("common.model_has_no_rom", model=model), err=True)
-        raise typer.Exit(2)
-    if show:
-        typer.echo(routine_list_text(model))
-        return
-    if new is not None:
-        at, _, name = new.partition(":")
-        try:
-            addr = int(at.strip().removeprefix("&").removeprefix("0x"), 16)
-            path = routines.write_template(model, addr, name.strip())
-        except FileExistsError as e:
-            typer.echo(tr("app.already_exists", path=e.filename), err=True)
-            raise typer.Exit(1) from e
-        except ValueError as e:
-            typer.echo(tr("app.write_address_hex_name", text=new), err=True)
-            raise typer.Exit(2) from e
-        typer.echo(path)
-        return
-    assert check is not None
-    try:
-        reports = routinecheck.check(model, check)
-    except ValueError as e:
-        typer.echo(str(e), err=True)
-        raise typer.Exit(2) from e
-    except RomNotFound as e:
-        typer.echo(str(e), err=True)
-        raise typer.Exit(1) from e
-    if not reports:
-        typer.echo(tr("app.no_stand_ins_compare", folder=routines.user_folder()))
-        return
-    typer.echo(routinecheck.report_text(reports))
-    if not all(r.ok for r in reports):
-        raise typer.Exit(1)
-
-
-def routine_list_text(model: str) -> str:
-    """--list-routinesの一覧(番地、名前、使うか、書いたファイル、使わない理由)"""
-    lines = []
-    for r, why in routines.listing(model):
-        where = tr("common.builtin") if r.builtin else r.source
-        mode = f" {r.mode}" if r.mode else ""
-        if why:
-            lines.append(tr("app.addr_name_mode_where", addr=r.addr, name=r.name,
-                            mode=mode, where=where, why=why))  # fmt: skip
-        else:
-            lines.append(f"OK  {r.addr:04X} {r.name}{mode} {where}")
-    return "\n".join(lines)
-
-
-def _asked_language(argv: list[str]) -> str | None:
-    """コマンドの引数の--lang(--helpの説明の言語を決めるため、typerが読む前に見る)"""
-    for i, arg in enumerate(argv):
-        if arg == "--lang" and i + 1 < len(argv):
-            return argv[i + 1]
-        if arg.startswith("--lang="):
-            return arg.split("=", 1)[1]
-    return None
-
-
-def cli() -> None:
-    asked = _asked_language(sys.argv[1:])
-    i18n.set_language(i18n.choose(asked, App._view_prefs().get("lang")))
-    make_cli()()
-
-
-if __name__ == "__main__":
-    cli()

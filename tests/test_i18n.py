@@ -319,7 +319,7 @@ def test_export_hex_in_english_reads_back(tmp_path, monkeypatch):
 def test_cli_help_follows_language():
     from typer.testing import CliRunner
 
-    from sc61box.app import make_cli
+    from sc61box.cli import make_cli
 
     def plain(output: str) -> str:
         # GitHub ActionsではTyperが端末でなくても色を付ける(--langは-と-langに分かれる)
@@ -337,11 +337,11 @@ def test_cli_help_follows_language():
 
 
 def test_cli_reads_lang_before_typer(monkeypatch):
-    from sc61box import app
+    from sc61box import cli
 
-    assert app._asked_language(["--scale", "2", "--lang", "en"]) == "en"
-    assert app._asked_language(["--lang=ja"]) == "ja"
-    assert app._asked_language(["prog.bas"]) is None
+    assert cli._asked_language(["--scale", "2", "--lang", "en"]) == "en"
+    assert cli._asked_language(["--lang=ja"]) == "ja"
+    assert cli._asked_language(["prog.bas"]) is None
 
 
 def _draw_everything(app) -> None:
@@ -398,7 +398,7 @@ def test_english_screens(model, norom, have, tmp_path, monkeypatch):
 def test_cli_language_from_environment():
     """コマンドの説明は、SC61BOX_LANGで英語になる(ロケールによらない)"""
     env = {**os.environ, "SC61BOX_LANG": "en", "PYTHONIOENCODING": "utf-8"}
-    code = "import sys; sys.argv = ['pc1251', '--help']; from sc61box.app import cli; cli()"
+    code = "import sys; sys.argv = ['pc1251', '--help']; from sc61box.cli import cli; cli()"
     out = subprocess.run(
         [sys.executable, "-c", code],
         capture_output=True,

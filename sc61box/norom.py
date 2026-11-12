@@ -49,6 +49,7 @@ from .number import (
     number_text,
     power,
     put_num,
+    put_str_work,
     random_value,
     to_degrees,
     to_dms,
@@ -282,8 +283,9 @@ def _chr(m) -> None:
 
 def _str(m) -> None:
     """STR$。演算Xの数を字にした文字列"""
-    text = number_text(get_num(m.cpu.ram, FX))
-    _put_string(m, bytes(CODES[ch] for ch in text))
+    text = bytes(CODES[ch] for ch in number_text(get_num(m.cpu.ram, FX)))
+    _put_string(m, text)
+    put_str_work(m, 0xF800, 0x10, 0xF820, text, CODES)  # F800〜F80Fは計算の積み場所で、戻す
 
 
 def _keyscan(m) -> None:

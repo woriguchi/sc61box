@@ -51,6 +51,10 @@ MESSAGES: dict[str, dict[str, str | tuple[str, str]]] = {
         "ja": "・",
         "en": ", ",
     },
+    "common.no_program_export": {
+        "ja": "書き出すプログラムがありません",
+        "en": "No program to export",
+    },
     # ---- アプリ(app.py) ----
     "app.undo_program_load_menu": {
         "ja": "メニューの「プログラムを読み込む前に戻す」で元に戻せます",
@@ -129,6 +133,10 @@ MESSAGES: dict[str, dict[str, str | tuple[str, str]]] = {
             "While running, keys go to the machine (Tab: SHIFT  Option: DEF  Delete: CL  Esc: BRK)"
         ),
     },
+    "app.web_while_running_keys_go": {
+        "ja": "実行中はキー入力を本体に送ります(Tab: SHIFT  Option: DEF  Delete: CL)",
+        "en": "While running, keys go to the machine (Tab: SHIFT  Option: DEF  Delete: CL)",
+    },
     "app.keys_differ_pocket_computer": {
         "ja": "パソコンのキーとポケコンのキーの対応(ここにないキーはそのまま打てます)",
         "en": "Keys that differ from the pocket computer (other keys type as they are)",
@@ -147,6 +155,10 @@ MESSAGES: dict[str, dict[str, str | tuple[str, str]]] = {
     "app.tab_shift_option_alt": {
         "ja": "Tab: SHIFT   Option(WindowsはAlt): DEF   F8: カナ   Esc: BRK(電源が切れていればON)",
         "en": "Tab: SHIFT   Option (Alt on Windows): DEF   F8: カナ   Esc: BRK (ON when off)",
+    },
+    "app.web_tab_shift_option_alt": {
+        "ja": "Tab: SHIFT   Option(WindowsはAlt): DEF   F8: カナ",
+        "en": "Tab: SHIFT   Option (Alt on Windows): DEF   F8: カナ",
     },
     "app.delete_del_insert_ins": {
         "ja": (
@@ -169,6 +181,10 @@ MESSAGES: dict[str, dict[str, str | tuple[str, str]]] = {
         ),
         "en": "Tab: SHIFT   Option (Alt on Windows): DEF   Delete: CL   Esc: BRK (ON when off)",
     },
+    "app.web_tab_shift_option_alt_windows": {
+        "ja": "Tab: SHIFT   Option(WindowsはAlt): DEF   Delete: CL",
+        "en": "Tab: SHIFT   Option (Alt on Windows): DEF   Delete: CL",
+    },
     "app.backspace_delete_character_shift": {
         "ja": "Backspace: 1字削除(◀とSHIFT+◀を押します)   \\(バックスラッシュ): ¥",
         "en": "Backspace: delete a character (◀ and SHIFT+◀)   \\ (backslash): ¥",
@@ -188,6 +204,10 @@ MESSAGES: dict[str, dict[str, str | tuple[str, str]]] = {
     "app.no_rom_so_running": {
         "ja": "ROMがないため、ROMなしのBASICで動かします(未対応の命令もあります)",
         "en": "No ROM, so running on the ROM-less BASIC (some commands are not made yet)",
+    },
+    "app.rom_less_basic_running": {
+        "ja": "ROMなしのBASICで動いています(未対応の命令もあります)",
+        "en": "Running on the ROM-less BASIC (some commands are not made yet)",
     },
     "app.use_buttons_bar_below": {
         "ja": "操作は下の操作欄のボタンで行います。キーの説明は{c}/で表示します",
@@ -503,6 +523,10 @@ MESSAGES: dict[str, dict[str, str | tuple[str, str]]] = {
         "ja": "プログラムのフォルダを開く",
         "en": "Open program folder",
     },
+    "app.load_from_file": {
+        "ja": "ファイルから読み込む",
+        "en": "Load from file",
+    },
     "app.undo_dump_edit": {
         "ja": "ダンプの書き込みを取り消す",
         "en": "Undo dump edit",
@@ -614,6 +638,10 @@ MESSAGES: dict[str, dict[str, str | tuple[str, str]]] = {
     "app.open_printout_folder": {
         "ja": "印字の保存先を開く",
         "en": "Open printout folder",
+    },
+    "app.download_printout": {
+        "ja": "印字をダウンロード",
+        "en": "Download printout",
     },
     "app.language_english": {
         "ja": "表示を日本語にしました",
@@ -749,10 +777,6 @@ MESSAGES: dict[str, dict[str, str | tuple[str, str]]] = {
         "ja": "打ち込みが終わってから書き出してください",
         "en": "Export after typing in has finished",
     },
-    "app.no_program_export": {
-        "ja": "書き出すプログラムがありません",
-        "en": "No program to export",
-    },
     "app.exported_path": {
         "ja": "{path}に書き出しました",
         "en": "Exported to {path}",
@@ -788,6 +812,14 @@ MESSAGES: dict[str, dict[str, str | tuple[str, str]]] = {
     "app.saved_path": {
         "ja": "{path}に保存しました",
         "en": "Saved to {path}",
+    },
+    "app.cannot_read_clipboard": {
+        "ja": "クリップボードを読めません。{c}Vで貼り付けてください",
+        "en": "Cannot read the clipboard. Paste with {c}V",
+    },
+    "app.downloaded": {
+        "ja": "{name}をダウンロードしました",
+        "en": "Downloaded {name}",
     },
     "app.cannot_start_recording": {
         "ja": "録画を始められません: {error}",
@@ -856,6 +888,10 @@ MESSAGES: dict[str, dict[str, str | tuple[str, str]]] = {
         "ja": "保存先(クリックで開く)",
         "en": "Saved in (click to open)",
     },
+    "app.click_download": {
+        "ja": "クリックでダウンロード",
+        "en": "Click to download",
+    },
     "app.typing_esc_stops": {
         "ja": "{name}を打ち込み中… {pct}%(Escで中止)",
         "en": "Typing in {name}… {pct}% (Esc stops)",
@@ -872,30 +908,6 @@ MESSAGES: dict[str, dict[str, str | tuple[str, str]]] = {
         "ja": "RAMを保存できません: {error}",
         "en": "Cannot save RAM: {error}",
     },
-    "app.sharp_pc_1251_pc": {
-        "ja": "SHARP PC-1251/PC-1245/PC-1261/PC-1350エミュレータ",
-        "en": "SHARP PC-1251/PC-1245/PC-1261/PC-1350 emulator",
-    },
-    "app.program_load_path_bas": {
-        "ja": "読み込むプログラム(.bas/.hexのパスか、プログラムのフォルダにある名前)",
-        "en": "Program to load (path to a .bas/.hex, or a name in the program folder)",
-    },
-    "app.run_after_loading": {
-        "ja": "読み込んだあと実行する",
-        "en": "Run it after loading",
-    },
-    "app.window_scale": {
-        "ja": "拡大率",
-        "en": "Window scale",
-    },
-    "app.type_contents_file_after": {
-        "ja": "起動後にこのファイルの中身をキー入力する",
-        "en": "Type in the contents of this file after starting",
-    },
-    "app.write_hex_dump_address": {
-        "ja": "16進ダンプ(番地 データ)をRAMに書き込む",
-        "en": "Write a hex dump (address data) into RAM",
-    },
     "app.ram_loaded": {
         "ja": "前回終了時のRAMを読み込みました(--freshで初期状態から起動できます)",
         "en": "Loaded the RAM saved on the last exit "
@@ -905,73 +917,137 @@ MESSAGES: dict[str, dict[str, str | tuple[str, str]]] = {
         "ja": "前回終了時のRAMを読み込みました。プログラムはパスワードで保護されています",
         "en": "Loaded the RAM saved on the last exit. The program is protected by a password",
     },
-    "app.do_not_load_saved": {
-        "ja": "保存したRAMを読まず、終了時にも保存しない",
-        "en": "Do not load the saved RAM, and do not save it on exit",
+    "app.web_cannot_save": {
+        "ja": "ブラウザに保存できませんでした。空きが足りないか、保存が許可されていません",
+        "en": "Could not save in the browser. It may be out of space, or saving may not be allowed",
     },
-    "app.no_sound": {
-        "ja": "音を出さない",
-        "en": "No sound",
+    "app.web_erase_ram": {
+        "ja": "RAMを消して初期状態から始める…",
+        "en": "Erase RAM and start fresh…",
     },
-    "app.strength_lcd_afterglow_0": {
-        "ja": "液晶の残像の強さ(0で残像なし)",
-        "en": "Strength of the LCD afterglow (0 for none)",
+    "app.web_erase_ram_note": {
+        "ja": "この機種のプログラムと変数が消えます",
+        "en": "Clears this model's programs and variables",
     },
-    "app.export_basic_program_saved": {
-        "ja": "保存したRAMのBASICのプログラムを、このフォルダに.basで書き出して終わる",
-        "en": "Export the BASIC program in the saved RAM to this folder as .bas and exit",
+    "app.web_erase_ram_now": {
+        "ja": "消す(元に戻せません)",
+        "en": "Erase (cannot be undone)",
     },
-    "app.model_1250_1251_1255": {
+    "app.web_cannot_erase_ram": {
+        "ja": "ブラウザの保存を書き換えられなかったため、RAMを消せませんでした",
+        "en": "Could not erase the RAM because the browser storage could not be updated",
+    },
+    "app.web_load_link": {
+        "ja": "{site}の{name}を読み込む",
+        "en": "Load {name} from {site}",
+    },
+    "app.web_link_replaces_ram": {
+        "ja": "今のRAMの中身は置き換わります",
+        "en": "Replaces what is in RAM now",
+    },
+    "app.web_bad_link": {
+        "ja": "リンクのファイルの場所(URL)が正しくありません",
+        "en": "The file address (URL) in the link is not valid",
+    },
+    "app.web_link_types": {
+        "ja": "リンクで読み込めるのは.bas・.hex・.wavのファイルだけです",
+        "en": "Links can only load .bas, .hex and .wav files",
+    },
+    "app.web_fetching_link": {
+        "ja": "{name}を読み込んでいます",
+        "en": "Loading {name}",
+    },
+    "app.web_cannot_fetch": {
         "ja": (
-            "機種(1250、1251、1255、1245、1260、1261、1262、1350)。ROMはcpu-機種.romとbas-機種.rom"
-            "(1250と1255は1251の、1260〜1262はどれも1260のROMを使う)"
+            "{name}を読み込めませんでした。ファイルを保存してから「ファイルを読み込む」で"
+            "読み込んでください"
+        ),
+        "en": "Could not load {name}. Save the file, then open it with Load file",
+    },
+    "app.web_link_too_large": {
+        "ja": "{name}は空か、大きすぎるため読み込みません",
+        "en": "{name} is empty or too large to load",
+    },
+    "app.web_copy_program_link": {
+        "ja": "プログラムをリンクにしてコピー",
+        "en": "Copy program as a link",
+    },
+    "app.web_copy_program_link_note": {
+        "ja": "リンクを開くと、このプログラムを読み込んで実行します",
+        "en": "Opening the link loads and runs this program",
+    },
+    "app.web_no_program_link": {
+        "ja": "リンクにするプログラムがありません",
+        "en": "No program to make a link of",
+    },
+    "app.web_link_copied": {
+        "ja": "プログラムのリンクをコピーしました({n}字)",
+        "en": "Copied the program link ({n} characters)",
+    },
+    "app.web_link_in_address": {
+        "ja": (
+            "クリップボードにコピーできなかったため、ページのアドレスをこのリンクにしました({n}字)"
         ),
         "en": (
-            "Model (1250, 1251, 1255, 1245, 1260, 1261, 1262, 1350). The ROMs are cpu-MODEL.rom "
-            "and bas-MODEL.rom (1250 and 1255 use the 1251 ROM, 1260 to 1262 the 1260 ROM)"
+            "Could not copy to the clipboard, so the page address is now the link ({n} characters)"
         ),
     },
-    "app.size_pc_1350_ram": {
-        "ja": "PC-1350に差すRAMカードの大きさ(KB)。0、8、16",
-        "en": "Size of the PC-1350 RAM card in KB: 0, 8 or 16",
+    "app.web_load_shared": {
+        "ja": "リンクのプログラムを読み込む",
+        "en": "Load the program in the link",
     },
-    "app.run_pc_1350_wired": {
-        "ja": "PC-1350を輸出向けの配線で動かす(カナの代わりに英小文字、¥の代わりに\\)",
+    "app.web_bad_shared": {
+        "ja": "リンクのプログラムを読めませんでした",
+        "en": "Could not read the program in the link",
+    },
+    "app.web_offline_ready": {
+        "ja": "次からは、ネットにつながっていなくても開けます",
+        "en": "From now on, this page opens even without a network connection",
+    },
+    "app.web_offline_failed": {
+        "ja": (
+            "オフラインで使うためのファイルを保存できませんでした。「本体」の「オフライン用に"
+            "保存し直す」か、ページを開き直すと、もう一度試します"
+        ),
         "en": (
-            "Run the PC-1350 wired as the export model (lowercase instead of kana, \\ instead of ¥)"
+            "Could not keep the files for offline use. Try again with Keep for offline use "
+            "again in Machine, or reopen the page"
         ),
     },
-    "app.arrow_keys_press_number": {
+    "app.web_retry_offline": {
+        "ja": "オフライン用に保存し直す",
+        "en": "Keep for offline use again",
+    },
+    "app.web_retrying_offline": {
+        "ja": "オフラインで使うためのファイルを保存しています",
+        "en": "Keeping the files for offline use",
+    },
+    "app.cancel": {
+        "ja": "やめる",
+        "en": "Cancel",
+    },
+    "app.web_ram_loaded": {
+        "ja": "前回のRAMを読み込みました",
+        "en": "Loaded the RAM from your last visit",
+    },
+    "app.web_ram_loaded_locked": {
+        "ja": "前回のRAMを読み込みました。プログラムはパスワードで保護されています",
+        "en": "Loaded the RAM from your last visit. The program is protected by a password",
+    },
+    # ---- コマンドの引数(cli.py) ----
+    "cli.addr_name_mode_where": {
+        "ja": "--  {addr:04X} {name}{mode} {where}: {why}",
+        "en": "--  {addr:04X} {name}{mode} {where}: {why}",
+    },
+    "cli.already_exists": {
+        "ja": "{path}はもうあります",
+        "en": "{path} already exists",
+    },
+    "cli.arrow_keys_press_number": {
         "ja": "矢印キーを数字キーの8・2・4・6として押す(⌘K/Ctrl+Kで切り替え)",
         "en": "Arrow keys press the number keys 8, 2, 4, 6 (toggle with ⌘K/Ctrl+K)",
     },
-    "app.show_only_lcd_without": {
-        "ja": "本体の画像を隠し、液晶だけを表示(ウィンドウの大きさを変えられます)",
-        "en": "Show only the LCD without the calculator picture (the window can be resized)",
-    },
-    "app.insert_cassette_audio_wav": {
-        "ja": "カセットの音(wav)をセットする。CLOAD・CLOAD Mで読み込める",
-        "en": "Insert cassette audio (wav) to load with CLOAD or CLOAD M",
-    },
-    "app.start_saved_state_written": {
-        "ja": "保存した状態(⇧⌘S/Shift+Ctrl+Sで書いたもの)から始める",
-        "en": "Start from a saved state (written with ⇧⌘S/Shift+Ctrl+S)",
-    },
-    "app.run_without_rom_rom": {
-        "ja": "ROMを使わず、ROMなしのBASICで動かす(ROMがないときは指定しなくてもこの動作)",
-        "en": "Run without the ROM, on the ROM-less BASIC (automatic when the ROM is missing)",
-    },
-    "app.without_rom_run_only": {
-        "ja": "ROMなしのとき、BASICを付けずにマシン語の作業欄だけで動かす",
-        "en": "Without the ROM, run only the machine-code panel, with no BASIC",
-    },
-    "app.display_language_ja_en": {
-        "ja": "画面の言語(jaかen)。なければSC61BOX_LANG、メニューで選んだもの、ロケールの順",
-        "en": (
-            "Display language (ja or en). Otherwise SC61BOX_LANG, the menu choice, then the locale"
-        ),
-    },
-    "app.compare_rom_routine_stand": {
+    "cli.compare_rom_routine_stand": {
         "ja": (
             "代替ROMルーチンを、ROMのある本体と比べて終わる。user(データのフォルダのroutinesに書い"
             "たもの)、all、または名前をコンマで区切って書く"
@@ -981,13 +1057,7 @@ MESSAGES: dict[str, dict[str, str | tuple[str, str]]] = {
             "in routines in the data folder), all, or names separated by commas"
         ),
     },
-    "app.list_rom_routine_stand": {
-        "ja": "代替ROMルーチンの一覧(使うものと、使わないものと理由)を出して終わる",
-        "en": (
-            "list the ROM routine stand-ins (used ones, and unused ones with the reason), then exit"
-        ),
-    },
-    "app.create_file_start_rom": {
+    "cli.create_file_start_rom": {
         "ja": (
             "代替ROMルーチンを書き始めるファイルを、データのフォルダのroutinesに作って終わる。"
             "番地(16進)か「番地:名前」で書く"
@@ -997,41 +1067,125 @@ MESSAGES: dict[str, dict[str, str | tuple[str, str]]] = {
             "exit: an address (hex) or ADDRESS:NAME"
         ),
     },
-    "app.print_version_exit": {
-        "ja": "版を出して終わる",
-        "en": "Print the version and exit",
+    "cli.display_language_ja_en": {
+        "ja": "画面の言語(jaかen)。なければSC61BOX_LANG、メニューで選んだもの、ロケールの順",
+        "en": (
+            "Display language (ja or en). Otherwise SC61BOX_LANG, the menu choice, then the locale"
+        ),
     },
-    "app.language_must_ja_en": {
-        "ja": "言語はjaかenです",
-        "en": "The language must be ja or en",
+    "cli.do_not_load_saved": {
+        "ja": "保存したRAMを読まず、終了時にも保存しない",
+        "en": "Do not load the saved RAM, and do not save it on exit",
     },
-    "app.model_must_one": {
-        "ja": "機種は{models}のどれかです",
-        "en": "The model must be one of {models}",
-    },
-    "app.ram_card_size_must": {
-        "ja": "RAMカードの大きさは0、8、16のどれかです",
-        "en": "The RAM card size must be 0, 8 or 16",
-    },
-    "app.does_not_exist": {
+    "cli.does_not_exist": {
         "ja": "{path}がありません",
         "en": "{path} does not exist",
     },
-    "app.already_exists": {
-        "ja": "{path}はもうあります",
-        "en": "{path} already exists",
+    "cli.export_basic_program_saved": {
+        "ja": "保存したRAMのBASICのプログラムを、このフォルダに.basで書き出して終わる",
+        "en": "Export the BASIC program in the saved RAM to this folder as .bas and exit",
     },
-    "app.write_address_hex_name": {
-        "ja": "番地は16進で、名前は英字で書きます: {text}",
-        "en": "Write the address in hex and the name in letters: {text}",
+    "cli.insert_cassette_audio_wav": {
+        "ja": "カセットの音(wav)をセットする。CLOAD・CLOAD Mで読み込める",
+        "en": "Insert cassette audio (wav) to load with CLOAD or CLOAD M",
     },
-    "app.no_stand_ins_compare": {
+    "cli.language_must_ja_en": {
+        "ja": "言語はjaかenです",
+        "en": "The language must be ja or en",
+    },
+    "cli.list_rom_routine_stand": {
+        "ja": "代替ROMルーチンの一覧(使うものと、使わないものと理由)を出して終わる",
+        "en": (
+            "list the ROM routine stand-ins (used ones, and unused ones with the reason), then exit"
+        ),
+    },
+    "cli.model_1250_1251_1255": {
+        "ja": (
+            "機種(1250、1251、1255、1245、1260、1261、1262、1350)。ROMはcpu-機種.romとbas-機種.rom"
+            "(1250と1255は1251の、1260〜1262はどれも1260のROMを使う)"
+        ),
+        "en": (
+            "Model (1250, 1251, 1255, 1245, 1260, 1261, 1262, 1350). The ROMs are cpu-MODEL.rom "
+            "and bas-MODEL.rom (1250 and 1255 use the 1251 ROM, 1260 to 1262 the 1260 ROM)"
+        ),
+    },
+    "cli.model_must_one": {
+        "ja": "機種は{models}のどれかです",
+        "en": "The model must be one of {models}",
+    },
+    "cli.no_sound": {
+        "ja": "音を出さない",
+        "en": "No sound",
+    },
+    "cli.no_stand_ins_compare": {
         "ja": "比べる代替ROMルーチンがありません({folder})",
         "en": "No stand-ins to compare ({folder})",
     },
-    "app.addr_name_mode_where": {
-        "ja": "--  {addr:04X} {name}{mode} {where}: {why}",
-        "en": "--  {addr:04X} {name}{mode} {where}: {why}",
+    "cli.print_version_exit": {
+        "ja": "版を出して終わる",
+        "en": "Print the version and exit",
+    },
+    "cli.program_load_path_bas": {
+        "ja": "読み込むプログラム(.bas/.hexのパスか、プログラムのフォルダにある名前)",
+        "en": "Program to load (path to a .bas/.hex, or a name in the program folder)",
+    },
+    "cli.ram_card_size_must": {
+        "ja": "RAMカードの大きさは0、8、16のどれかです",
+        "en": "The RAM card size must be 0, 8 or 16",
+    },
+    "cli.run_after_loading": {
+        "ja": "読み込んだあと実行する",
+        "en": "Run it after loading",
+    },
+    "cli.run_pc_1350_wired": {
+        "ja": "PC-1350を輸出向けの配線で動かす(カナの代わりに英小文字、¥の代わりに\\)",
+        "en": (
+            "Run the PC-1350 wired as the export model (lowercase instead of kana, \\ instead of ¥)"
+        ),
+    },
+    "cli.run_without_rom_rom": {
+        "ja": "ROMを使わず、ROMなしのBASICで動かす(ROMがないときは指定しなくてもこの動作)",
+        "en": "Run without the ROM, on the ROM-less BASIC (automatic when the ROM is missing)",
+    },
+    "cli.sharp_pc_1251_pc": {
+        "ja": "SHARP PC-1251/PC-1245/PC-1261/PC-1350エミュレータ",
+        "en": "SHARP PC-1251/PC-1245/PC-1261/PC-1350 emulator",
+    },
+    "cli.show_only_lcd_without": {
+        "ja": "本体の画像を隠し、液晶だけを表示(ウィンドウの大きさを変えられます)",
+        "en": "Show only the LCD without the calculator picture (the window can be resized)",
+    },
+    "cli.size_pc_1350_ram": {
+        "ja": "PC-1350に差すRAMカードの大きさ(KB)。0、8、16",
+        "en": "Size of the PC-1350 RAM card in KB: 0, 8 or 16",
+    },
+    "cli.start_saved_state_written": {
+        "ja": "保存した状態(⇧⌘S/Shift+Ctrl+Sで書いたもの)から始める",
+        "en": "Start from a saved state (written with ⇧⌘S/Shift+Ctrl+S)",
+    },
+    "cli.strength_lcd_afterglow_0": {
+        "ja": "液晶の残像の強さ(0で残像なし)",
+        "en": "Strength of the LCD afterglow (0 for none)",
+    },
+    "cli.type_contents_file_after": {
+        "ja": "起動後にこのファイルの中身をキー入力する",
+        "en": "Type in the contents of this file after starting",
+    },
+    "cli.window_scale": {
+        "ja": "拡大率",
+        "en": "Window scale",
+    },
+    "cli.without_rom_run_only": {
+        "ja": "ROMなしのとき、BASICを付けずにマシン語の作業欄だけで動かす",
+        "en": "Without the ROM, run only the machine-code panel, with no BASIC",
+    },
+    "cli.write_address_hex_name": {
+        "ja": "番地は16進で、名前は英字で書きます: {text}",
+        "en": "Write the address in hex and the name in letters: {text}",
+    },
+    "cli.write_hex_dump_address": {
+        "ja": "16進ダンプ(番地 データ)をRAMに書き込む",
+        "en": "Write a hex dump (address data) into RAM",
     },
     # ---- マシン語の作業欄(workbench.py、benchview.py) ----
     "bench.executed_instruction": {
@@ -1345,6 +1499,10 @@ MESSAGES: dict[str, dict[str, str | tuple[str, str]]] = {
         "ja": "実行中です。キーは{model}へ(EscはBRK)。{c}.で一時停止",
         "en": "Running. Keys go to the {model} (Esc is BRK). {c}. pauses",
     },
+    "bench.web_running_keys_go": {
+        "ja": "実行中です。キーは{model}へ。{c}.で一時停止",
+        "en": "Running. Keys go to the {model}. {c}. pauses",
+    },
     "bench.g_continue_j_step_c_c": {
         "ja": "{c}Gで続行  {c}Jでステップ実行  Escで編集に戻る",
         "en": "{c}G continue  {c}J step  Esc back to editing",
@@ -1557,6 +1715,14 @@ MESSAGES: dict[str, dict[str, str | tuple[str, str]]] = {
     "overlay.folder": {
         "ja": "フォルダ",
         "en": "Folder",
+    },
+    "overlay.load_file_o": {
+        "ja": "ファイルを読み込む(O)",
+        "en": "Load file (O)",
+    },
+    "overlay.file": {
+        "ja": "ファイル",
+        "en": "File",
     },
     "overlay.reload_r": {
         "ja": "読み直す(R)",
@@ -1913,6 +2079,10 @@ MESSAGES: dict[str, dict[str, str | tuple[str, str]]] = {
     "load.needs_kb_ram_card": {
         "ja": "{name}には{n}KBのRAMカードが要ります。--card {n}をつけて起動してください",
         "en": "{name} needs a {n} KB RAM card. Start sc61box with --card {n}",
+    },
+    "load.web_needs_kb_ram_card": {
+        "ja": "{name}には{n}KBのRAMカードが要ります。ページの上でRAMカードを選んでください",
+        "en": "{name} needs a {n} KB RAM card. Choose the RAM card at the top of the page",
     },
     "load.not_loaded_ram_overlaps": {
         "ja": "{name}を読み込めません。# ram: の{lo:04X}-{hi:04X}がROMか液晶RAMに重なっています",

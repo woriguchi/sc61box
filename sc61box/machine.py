@@ -29,7 +29,7 @@ import hashlib
 import json
 import os
 import random
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
@@ -402,6 +402,9 @@ class PC1251(Bus):
         self.rnd_seed = random.getrandbits(64) | 1  # ROMなしでのRNDの乱数の種(norom)
         # ROMなしのBASIC(basic.attachで付ける。動いているあいだCPUの代わりに進む)
         self.basic: Basic | None = None
+        # ROMなしのBASICが、打ったCLOAD(MERGE・CLOAD?・CLOAD Mも)を終えたときに一度だけ呼ぶ
+        # 関数。読み終えたらTrue、エラーやBRKで止まったらFalseを渡す
+        self.on_cload: Callable[[bool], None] | None = None
         self.cold_start()
 
     # ---- 電源とリセット ----
@@ -827,6 +830,8 @@ class PC1251(Bus):
         state = {"format": self.STATE_FORMAT, **self._state_key(), "rom": self._rom_digest()}
         state["machine"] = {name: getattr(self, name) for name in self.STATE_FIELDS}
         state["cpu"] = self.cpu.state()
+        if self.basic is not None:
+            self.basic.settle()  # 文の作業領域を書き終えてからRAMを写す
         state["mem"] = base64.b64encode(bytes(self.mem)).decode("ascii")
         if self.basic is not None:  # ROMなしのBASICの、RAMの外の状態
             state["basic"] = self.basic.save()
@@ -918,6 +923,7 @@ class PC1251(Bus):
         self.held.clear()
         self.brk = self.reset_key = False
         self.tape = None
+        self.on_cload = None  # 戻す前に打とうとしていたCLOADの知らせ先は使わない
         self.sound_events.clear()
         self.lcd_dirty = True
 

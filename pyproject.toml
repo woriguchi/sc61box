@@ -1,6 +1,6 @@
 [project]
 name = "sc61box"
-version = "0.7.2"
+version = "0.7.3"
 description = "SHARPのポケコン(PC-1251/1245/1261/1350)のエミュレータ(ROMなしでBASICとマシン語が動き、ROMを置けばそのROMで動く)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
-sc61box = "sc61box.app:cli"
+sc61box = "sc61box.cli:cli"
 
 [dependency-groups]
 dev = [

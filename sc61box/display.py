@@ -157,6 +157,7 @@ class Panel:
         self.out = pygame.Surface((self.out_w, self.out_h))
         self.out.blit(_surface(self._desk()), (0, 0))
         self.rim = _surface(self._rim())
+        self.rim_parts = self._rim_parts()
         self.canvas = pygame.Surface((self.img_w, self.img_h))
         self.canvas.blit(_surface(self.body), (0, 0))
         kb_up = Image.open(path("keyboard_up.png")).convert("RGB")
@@ -237,6 +238,7 @@ class Panel:
         self.col_x = [dx + self._col_x(x, cell) for x in range(self.w)]
         self.row_y = [dy + self._row_y(y, line) for y in range(n)]
         self.grid = self._grid()
+        self.shown: tuple | None = None  # 最後に描いた見え方(draw)。並べ直したら描き直す
 
     def _col_x(self, x: int, cell: float) -> int:
         """左からx列目のドットの左端(マトリクスの左端から)。cellは桁の左端の間隔"""
@@ -295,6 +297,14 @@ class Panel:
         edge = Image.alpha_composite(edge, dark)
         edge.putalpha(ImageChops.multiply(edge.getchannel("A"), inside))
         return Image.alpha_composite(out, edge)
+
+    def _rim_parts(self) -> list[tuple[pygame.Surface, tuple[int, int]]]:
+        """縁の絵のうち、透明でない部分(四辺の帯)と、出す絵の中の位置。縁は角の丸みの内側には
+        何もないので、そこを毎フレーム重ねずに済ませる"""
+        w, h = self.rim.get_size()
+        c = min(self.corner + 1, w // 2, h // 2)
+        bands = [(0, 0, w, c), (0, h - c, w, c), (0, c, c, h - 2 * c), (w - c, c, c, h - 2 * c)]
+        return [(self.rim.subsurface(b).copy(), (MARGIN + b[0], MARGIN + b[1])) for b in bands]
 
     def _glass(self) -> Image.Image:
         mx, my = self.mat_x, self.mat_y
@@ -364,25 +374,13 @@ class Panel:
         (ビット0〜7)が点いていた時間の割合。その列のドットは、割合を目当てにして明るさを
         近づける(書き換えの途中の短い中身が、1フレームまるごと出ないように)。ほかの列は
         columnsで描く"""
-        dst = self.canvas
-        dst.blit(self.switch[mode], self.sw_xy)
         rects = self.key_rects
         pressed = {k for k in pressed if k in rects}
-        if pressed != self.shown_down:
-            for k in self.shown_down - pressed:
-                dst.blit(self.key_up[k], rects[k][:2])
-            for k in pressed - self.shown_down:
-                dst.blit(self.key_down[k], rects[k][:2])
-            self.shown_down = pressed
         mx, my = self.mat_x, self.mat_y
-        dst.blit(self.glass, (mx - 4, my - 4))
         rise, fall = self.rise, self.fall
         g = self.grid_level
         g = g + (1.0 - g) * rise if powered else g - g * fall
         self.grid_level = g = 0.0 if g < 0.01 else g
-        if g:
-            self.grid.set_alpha(int(255 * g + 0.5))
-            dst.blit(self.grid, (mx - 4, my - 4))
         opacity = OPACITY
         level = self.level
         todo = []
@@ -413,6 +411,34 @@ class Panel:
                 k = opacity[int(v * 255)]
                 if k:
                     todo.append((mx + col_x[x], py, k))
+        lit = []
+        for name in self.symbols:
+            v = self.sym_level[name]
+            if on and name in symbols:
+                v += (1.0 - v) * rise
+            else:
+                v -= v * fall
+            self.sym_level[name] = v
+            k = OPACITY[int(v * 255)]
+            if k:
+                lit.append((name, k))
+        # 前のフレームと同じ見え方なら描き直さない(ブラウザでは描くのに時間がかかる)
+        look = (mode, g, todo, lit)
+        if pressed == self.shown_down and look == self.shown:
+            return self.out
+        self.shown = look
+        dst = self.canvas
+        dst.blit(self.switch[mode], self.sw_xy)
+        if pressed != self.shown_down:
+            for k in self.shown_down - pressed:
+                dst.blit(self.key_up[k], rects[k][:2])
+            for k in pressed - self.shown_down:
+                dst.blit(self.key_down[k], rects[k][:2])
+            self.shown_down = pressed
+        dst.blit(self.glass, (mx - 4, my - 4))
+        if g:
+            self.grid.set_alpha(int(255 * g + 0.5))
+            dst.blit(self.grid, (mx - 4, my - 4))
         sh = self.shadows
         for px, py, k in todo:  # 影を先に、ドットを後に重ねる
             dst.blit(sh[k], (px - 3 + SHADOW_DX, py - 3 + SHADOW_DY))
@@ -422,24 +448,17 @@ class Panel:
 
         for bg, pos in self.sym_bg:
             dst.blit(bg, pos)
-        lit = []
-        for name, (x, y, imgs, shadows, ghost) in self.symbols.items():
-            v = self.sym_level[name]
-            if on and name in symbols:
-                v += (1.0 - v) * rise
-            else:
-                v -= v * fall
-            self.sym_level[name] = v
-            if g:
+        if g:
+            for x, y, _imgs, _shadows, ghost in self.symbols.values():
                 ghost.set_alpha(int(255 * g + 0.5))
                 dst.blit(ghost, (x, y))
-            k = OPACITY[int(v * 255)]
-            if k:
-                lit.append((x, y, imgs[k], shadows[k]))
-        for x, y, _img, shadow in lit:
-            dst.blit(shadow, (x - 3 + SHADOW_DX, y - 3 + SHADOW_DY))
-        for x, y, img, _shadow in lit:
-            dst.blit(img, (x, y))
+        for name, k in lit:
+            x, y, _imgs, shadows, _ghost = self.symbols[name]
+            dst.blit(shadows[k], (x - 3 + SHADOW_DX, y - 3 + SHADOW_DY))
+        for name, k in lit:
+            x, y, imgs, _shadows, _ghost = self.symbols[name]
+            dst.blit(imgs[k], (x, y))
         self.out.blit(dst, (MARGIN, MARGIN))
-        self.out.blit(self.rim, (MARGIN, MARGIN))
+        for part, pos in self.rim_parts:
+            self.out.blit(part, pos)
         return self.out

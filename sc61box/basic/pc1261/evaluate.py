@@ -12,7 +12,7 @@ from decimal import Decimal
 from typing import cast
 
 from ... import number
-from .. import evaluate
+from .. import evaluate, workarea
 from ..evaluate import Target, by_code
 from . import editor, timing, tokens, variables
 
@@ -59,6 +59,17 @@ class Evaluator(evaluate.Evaluator):
     T_LEFT, T_RIGHT, T_MID = _CODE["LEFT$"], _CODE["RIGHT$"], _CODE["MID$"]
     EQ, LT, GT = 0x3D, 0x3C, 0x3E
     VARS = variables.PC1261
+    WORK = workarea.Layout(
+        ops=0x2880, ops_size=16, ops_count=0x66F6, values=0x2080, values_size=8,
+        values_top=0x66F5, strings=0x6760, strings_end=0x67B0, strings_next=0x66F7,
+        copy=0x6648, copy_number=0x66B0, target=0x66EB, call=0x66DC, number_work=0x6694,
+        number_first=3, number_text=0x28A0, unary_minus=0x65, string_array=0,
+        array_kinds=True, dim_pushes=True, colon=0x3A,
+        for_at=0x6706, for_top=0x66F3, gosub_at=0x6683, gosub_top=0x66F4, int_limit=False,
+        last=0x6700, line_numbers=False, data=0x66FE, reading=0x6635, program_head=None,
+        flags=0x66D8, print_end=0x66E7, print_item=None, print_token=None, using=0x66F9,
+        print_copies=False, print_page=0x6650,
+    )  # 計算に使うRAM(観察)  # fmt: skip
     ZERO_DIVISOR_BACK = 1  # 0で割ったエラーは、割る数の最後の字の位置(観察: 1/0は0の上)
     FUNCTIONS = by_code(tokens.KEYWORDS, evaluate.FUNCTIONS_BY_NAME)
     TIMES = timing.PC1261
@@ -164,17 +175,13 @@ class Evaluator(evaluate.Evaluator):
                 self.pos += 1
         return c
 
-    def target(self) -> Target:
-        """変数の名前(2字まで)を読む。PC-1251系の添字の癖はない"""
-        c = self.name()
-        string = self.take(self.DOLLAR)
-        if not self.take(self.LPAREN):
-            return Target(c, string)
-        subs = [self.integer()]
-        if self.take(self.COMMA):
-            subs.append(self.integer())
-        self.expect(self.RPAREN)
-        return Target(c, string, subs, self.pos - 1)
+    def _array_name(self, name: int, string: bool) -> tuple[int, int | None]:
+        """名前の1字目(A(n)の続きの配列は@)と、変数の領域に置く名前の2バイト目(観察)"""
+        if name > 0xFF:
+            return name & 0xFF, (name >> 8) + variables.ADD[(string, False)] & 0xFF
+        if name == self.VARS.EXTRA:
+            return variables.EXTRA_MARK, variables.KINDS[string]
+        return name, variables.KINDS[string]
 
     @property
     def pc1261_vars(self) -> variables.Variables:
@@ -193,11 +200,14 @@ class Evaluator(evaluate.Evaluator):
         return super().resolve(target, create)
 
     def _variable(self):
-        """式の中で読む2字の名前の変数は、なければ作らずに0か空にする(観察)"""
-        target = self.target()
+        """式の中で読む2字の名前の変数は、なければ作らずに0か空にする(観察)。文字列は
+        作業場所に写す(観察)"""
+        target = self.target(reading=True)
         if target.subs is None and target.name > 0xFF:
             ref = self.pc1261_vars.simple(self.m, target.name, target.string, create=False)
             if ref is None:
-                return b"" if target.string else Decimal(0)
-            return self.VARS.read(self.m, ref)
-        return self.VARS.read(self.m, self.resolve(target))
+                return self._place(b"") if target.string else Decimal(0)
+            v = self.VARS.read(self.m, ref)
+        else:
+            v = self.VARS.read(self.m, self.resolve(target))
+        return self._place(v) if isinstance(v, bytes) else v

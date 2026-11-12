@@ -1,0 +1,671 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sc61box</title>
+<meta name="description" content="SHARPのポケコンPC-1245・PC-1250・PC-1251・PC-1255・PC-1260・PC-1261・PC-1262・PC-1350のエミュレータ(ブラウザ版)">
+<link rel="icon" href="favicon.ico" sizes="any">
+<link rel="icon" href="icon.png" type="image/png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#3a3b3f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="sc61box">
+<style>
+  /* ページの地は、本体の画像の机と同じ色(上が明るく下が暗い)。本体の画像の縁と地がつながる */
+  :root {
+    --desk-top: #3a3b3f; --desk-bottom: #2a2b2f;
+    --ink: #e4e4dd; --dim: #a1a3a9;
+    --key: #dddfdb; --key-shade: #b4b7b4; --key-edge: #7c7f83; --key-ink: #26272a;
+    --lcd: #c6ceb4; --lcd-ink: #263022; --lcd-dim: #4f5a47; --lcd-rule: #9ea58f;
+    --shift: #e8912a;
+  }
+  html { height: 100%; background: linear-gradient(var(--desk-top), var(--desk-bottom)) fixed;
+    color: var(--ink); }
+  body { margin: 0; height: 100%; display: flex; flex-direction: column;
+    font: 15px/1.6 "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP",
+      "Yu Gothic UI", "Yu Gothic", sans-serif; }
+  html[lang="ja"] .en, html[lang="en"] .ja { display: none; }
+
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px;
+    padding: 8px 16px; }
+  .name { margin-right: auto; line-height: 0; }
+  .name img { height: 32px; }
+
+  /* 操作のボタンは、本体の英字キーと同じ明るいキーの形 */
+  .key { appearance: none; font: inherit; font-size: 14px; color: var(--key-ink);
+    background: linear-gradient(var(--key), var(--key-shade)); border: 1px solid var(--key-edge);
+    border-radius: 5px; padding: 3px 12px; box-shadow: 0 2px 0 #1d1e21; cursor: pointer; }
+  .key:active { transform: translateY(1px); box-shadow: 0 1px 0 #1d1e21; }
+  select.key { padding-right: 28px; background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0h10L5 6z' fill='%2326272a'/%3E%3C/svg%3E")
+    no-repeat right 10px center, linear-gradient(var(--key), var(--key-shade)); }
+  :focus-visible { outline: 2px solid var(--shift); outline-offset: 2px; }
+  canvas:focus-visible, dialog h1:focus { outline: none; }
+
+  /* 本体はPythonがmainの大きさに合わせて拡大・縮小して描く。操作欄・メニュー・作業欄は
+     縮めず、入りきらないとき(小さな画面で作業欄を開いたときなど)はmainをスクロールする。
+     margin: autoで、入るときはまんなかに置き、入らないときは左上から見せる */
+  main { flex: 1; min-height: 0; display: flex; overflow: auto; }
+  canvas { margin: auto; outline: none;
+    /* 指で触ったときに、ページの拡大やスクロール、文字の選択をしない(スクロールはスクリプト) */
+    touch-action: none; user-select: none; -webkit-user-select: none;
+    -webkit-touch-callout: none; }
+  #status { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 14px;
+    align-items: center; justify-content: center; pointer-events: none; color: var(--dim); }
+  #status img { height: 96px; }
+  #status:empty, #status.done { display: none; }
+
+  /* 使い方は、液晶の色の紙に書く */
+  dialog { max-width: min(36em, calc(100vw - 32px)); max-height: calc(100vh - 48px);
+    box-sizing: border-box; padding: 22px 26px 18px; border: 0; border-radius: 10px;
+    background: var(--lcd); color: var(--lcd-ink);
+    box-shadow: inset 0 0 0 1px var(--lcd-rule), 0 18px 50px rgba(0, 0, 0, .5); }
+  dialog::backdrop { background: rgba(20, 21, 24, .55); }
+  dialog .logo { height: 56px; margin: 0 0 4px -6px; }
+  dialog h1 { font-size: 20px; margin: 0 0 6px; }
+  dialog h2 { font-size: 16px; margin: 20px 0 4px; }
+  dialog p, dialog ul { margin: 6px 0; }
+  dialog ul { padding-left: 1.2em; }
+  dialog li + li { margin-top: 3px; }
+  dialog a { color: inherit; }
+  dialog .fine { color: var(--lcd-dim); font-size: 13px; margin-top: 18px; }
+  dialog form { display: flex; justify-content: flex-end; margin-top: 14px; }
+  kbd { font: inherit; font-size: 13px; padding: 0 6px; border-radius: 4px;
+    background: linear-gradient(var(--key), var(--key-shade)); border: 1px solid var(--key-edge);
+    color: var(--key-ink); white-space: nowrap; }
+  table.keys { border-collapse: collapse; margin: 6px 0; }
+  table.keys td { padding: 2px 14px 2px 0; vertical-align: top; }
+
+  /* 横に持ったスマートフォンは高さが足りないので、見出しを低くして本体に回す */
+  @media (max-height: 500px) {
+    header { padding: 4px 12px; }
+    .name img { height: 24px; }
+    .key { font-size: 13px; padding: 1px 10px; }
+  }
+  /* 縦に持ったスマートフォンでは、本体の画像が小さいので横向きを勧める */
+  .turn { display: none; margin: 0 16px 16px; color: var(--dim); font-size: 13px; text-align: center; }
+  @media (max-width: 560px) {
+    header { display: grid; grid-template-columns: auto auto 1fr auto; padding: 8px 10px;
+      grid-template-areas: "name name bare help" "model card load load"; }
+    #bare { grid-area: bare; justify-self: end; }
+    #card { grid-area: card; }
+    .name { grid-area: name; }
+    #help { grid-area: help; justify-self: end; }
+    #model { grid-area: model; }
+    #load { grid-area: load; justify-self: start; }
+    .key { font-size: 13px; padding: 3px 10px; }
+    dialog { padding: 18px 18px 14px; }
+  }
+  /* 縦に持ったスマートフォンは、操作欄が幅に入らないので、ブラウザが全体を縮める */
+  @media (max-width: 560px) and (orientation: portrait) {
+    main { flex: 0 0 auto; padding-top: 16px; overflow: visible; }
+    canvas { max-width: 100%; }
+    .turn { display: block; }
+  }
+  /* 本体だけ。見出しを隠し、本体をページいっぱいに出す(Pythonが机を切り詰めて描く)。
+     画面の上の端に触れると、右上に小さいボタンが出る */
+  #zone { position: fixed; top: 0; left: 0; right: 0; height: 24px; display: none; }
+  #edge { position: fixed; top: 8px; right: 8px; display: none; gap: 6px; }
+  #edge .key { font-size: 12px; padding: 1px 9px; }
+  body.bare header, body.bare .turn { display: none; }
+  body.bare main { flex: 1 1 auto; min-height: 0; padding: 0; overflow: hidden; }
+  body.bare canvas { max-width: none; }
+  body.bare #zone { display: block; }
+  body.bare #edge.shown { display: flex; }
+  html.full #full { display: none; }  /* 全画面のあいだは出さない */
+  @media (prefers-reduced-motion: reduce) { .key:active { transform: none; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="name"><img src="logo-light.png" alt="sc61box"></div>
+  <select id="model" class="key" aria-label="機種">
+    <option value="1245">PC-1245</option>
+    <option value="1250">PC-1250</option>
+    <option value="1251">PC-1251</option>
+    <option value="1255">PC-1255</option>
+    <option value="1260">PC-1260</option>
+    <option value="1261">PC-1261</option>
+    <option value="1262">PC-1262</option>
+    <option value="1350">PC-1350</option>
+  </select>
+  <select id="card" class="key" aria-label="RAMカード" hidden>
+    <option value="0"></option><option value="8"></option><option value="16"></option>
+  </select>
+  <button id="bare" class="key" type="button">
+    <span class="ja">全画面</span><span class="en">Full screen</span></button>
+  <button id="load" class="key" type="button">
+    <span class="ja">ファイルを読み込む</span><span class="en">Load file</span></button>
+  <button id="help" class="key" type="button">
+    <span class="ja">使い方</span><span class="en">How to use</span></button>
+</header>
+<main><canvas id="canvas" tabindex="0" oncontextmenu="event.preventDefault()"></canvas></main>
+<p class="turn"><span class="ja">横向きにすると大きく表示されます</span><span class="en">Turn the phone sideways for a larger view</span></p>
+<div id="status"></div>
+<div id="zone"></div>
+<div id="edge">
+  <button id="menu" class="key" type="button">
+    <span class="ja">メニュー</span><span class="en">Menu</span></button>
+  <button id="full" class="key" type="button" hidden>
+    <span class="ja">全画面</span><span class="en">Full screen</span></button>
+  <button id="back" class="key" type="button">
+    <span class="ja">戻る</span><span class="en">Back</span></button>
+</div>
+
+<dialog id="guide">
+  <div class="ja">
+    <img class="logo" src="logo.png" alt="sc61box">
+    <h1 tabindex="-1">使い方</h1>
+    <p>SHARPのポケコンPC-1245・PC-1250・PC-1251・PC-1255・PC-1260・PC-1261・PC-1262・PC-1350のエミュレータです。ブラウザの中だけで動き、ROMは使いません。BASICはROMなしで動くように作り直したもので、未対応の命令もあります。</p>
+    <h2>キーを押す</h2>
+    <p>本体のキーをクリックするか、指で押します。パソコンのキーボードでは、英数字と記号をそのまま打てます。ポケコンにしかないキーは、次のキーで押します。</p>
+    <table class="keys">
+      <tr><td><kbd>Tab</kbd></td><td>SHIFT</td></tr>
+      <tr><td><kbd>Option</kbd>(Windowsは<kbd>Alt</kbd>)</td><td>DEF</td></tr>
+      <tr><td><kbd>F1</kbd>〜<kbd>F4</kbd></td><td>モードの切り替え</td></tr>
+    </table>
+    <p>キーの対応の一覧は、<kbd>⌘</kbd><kbd>/</kbd>(Windowsは<kbd>Ctrl</kbd><kbd>/</kbd>)で出ます。機種は、ページの上で切り替えます。PC-1350では、RAMカードもそこで選べます。</p>
+    <h2>プログラムを読み込む</h2>
+    <ul>
+      <li>本体の下の「プログラム」から、同梱のプログラムを読み込んで実行できます。</li>
+      <li>手元の.bas・.hexのファイルは、「ファイルを読み込む」で選ぶか、このページに落とすと読み込みます。読み込んだファイルは「プログラム」の一覧にも残ります。</li>
+      <li>ほかのサイトに置いた.bas・.hex・.wavのファイルは、このページのアドレスに<code>?load=</code>とファイルのURLを付けたリンクで読み込めます。<code>&amp;run</code>も付けると、実行まで進みます(.wavはCLOADしてRUN)。読み込めるのは、ほかのサイトからの読み込みを許しているサイト(GitHubなど)に置いたファイルだけです。</li>
+      <li>「プログラム」の「プログラムをリンクにしてコピー」で、RAMにあるBASICのプログラムをそのまま入れたリンクができます。リンクを開くと、そのプログラムを読み込んで実行します。</li>
+      <li>マシン語は、本体の下の「作業欄」で書いて実行できます。</li>
+    </ul>
+    <h2>全画面で表示する</h2>
+    <p>「全画面」を押すと、ページの上の欄と本体の下の操作欄を隠し、本体だけを画面いっぱいに出します。全画面表示に対応しているブラウザでは、ブラウザも全画面になります。画面の上の端に触れると、小さなボタンが出ます。「メニュー」はよく使う操作、「戻る」で元の表示に戻ります。<kbd>Esc</kbd>でブラウザの全画面を抜けたときは、「全画面」で戻せます。</p>
+    <h2>オフラインで使う</h2>
+    <p>一度開くと、ネットにつながっていなくても、このページで使えます(初めて開いたときに「次からは、ネットにつながっていなくても開けます」と出ます。保存できなかったと出たときは、「本体」の「オフライン用に保存し直す」で試し直せます)。iPhone・iPadでは、Safariの共有ボタンから「ホーム画面に追加」すると、アドレスバーのない画面で使えます。ほかのスマートフォンやパソコンでも、ブラウザのメニューの「ホーム画面に追加」や「インストール」で、アプリと同じように使えます。</p>
+    <h2>保存とダウンロード</h2>
+    <ul>
+      <li>RAMの中身は機種ごとにこのブラウザに保存され、次に開いたときに戻ります。初期状態に戻すときは、本体の下の「本体」から「RAMを消して初期状態から始める」を選びます。</li>
+      <li>書き出したプログラム、印字、画面の写しは、ダウンロードで受け取ります。</li>
+      <li>iPhoneとiPadのSafariは、7日間開かないサイトの保存を消すことがあります。ホーム画面に追加すると消えません。</li>
+    </ul>
+    <h2>ブラウザ版でできないこと</h2>
+    <p>録画、ゲームパッド、実機のROMを使った実行は、パソコン版でできます。パソコン版は<a href="https://github.com/woriguchi/sc61box">GitHubのsc61box</a>からインストールします。</p>
+    <p class="fine">MITライセンス。フォントはNoto Sans JPとSource Code Pro(SIL Open Font License)。</p>
+  </div>
+  <div class="en">
+    <img class="logo" src="logo.png" alt="sc61box">
+    <h1 tabindex="-1">How to use</h1>
+    <p>An emulator of the SHARP pocket computers PC-1245, PC-1250, PC-1251, PC-1255, PC-1260, PC-1261, PC-1262 and PC-1350. It runs entirely in your browser and uses no ROM. BASIC is a ROM-less reimplementation, and some commands are not made yet.</p>
+    <h2>Pressing keys</h2>
+    <p>Click or tap the keys on the calculator. On a computer keyboard, letters, digits and symbols type as they are. Keys that only the pocket computer has are on these keys.</p>
+    <table class="keys">
+      <tr><td><kbd>Tab</kbd></td><td>SHIFT</td></tr>
+      <tr><td><kbd>Option</kbd> (<kbd>Alt</kbd> on Windows)</td><td>DEF</td></tr>
+      <tr><td><kbd>F1</kbd>–<kbd>F4</kbd></td><td>Mode switch</td></tr>
+    </table>
+    <p><kbd>⌘</kbd><kbd>/</kbd> (<kbd>Ctrl</kbd><kbd>/</kbd> on Windows) shows every key. Change the model at the top of the page. For the PC-1350, choose the RAM card there too.</p>
+    <h2>Loading programs</h2>
+    <ul>
+      <li>Load and run the bundled programs from Programs below the calculator.</li>
+      <li>Load your own .bas and .hex files with Load file, or drop them on this page. They stay in the Programs list.</li>
+      <li>Load .bas, .hex and .wav files from other sites with a link to this page followed by <code>?load=</code> and the file's URL. Add <code>&amp;run</code> to run the program too (CLOAD and RUN for .wav). Only files on sites that allow loading from other sites (such as GitHub) can be loaded.</li>
+      <li>Copy program as a link in Programs makes a link that holds the BASIC program in RAM. Opening the link loads and runs the program.</li>
+      <li>Write and run machine code in the Workbench below the calculator.</li>
+    </ul>
+    <h2>Full screen</h2>
+    <p>Full screen hides the bar at the top of the page and the buttons below the calculator, and fills the screen with the calculator alone. Browsers that support full screen also go full screen. Touch the top edge of the screen to show small buttons: Menu for common actions and Back to return to the normal view. If <kbd>Esc</kbd> takes the browser out of full screen, Full screen goes back to it.</p>
+    <h2>Offline use</h2>
+    <p>Once opened, this page works without a network connection (the first time you open it, a message tells you so; if it says the files could not be kept, try again with Keep for offline use again in Machine). On iPhone and iPad, choose Add to Home Screen from Safari's share button to use it without the address bar. On other phones and computers, Add to Home Screen or Install in the browser menu lets you use it like an app.</p>
+    <h2>Saving and downloads</h2>
+    <ul>
+      <li>The RAM of each model is saved in this browser and comes back the next time you open the page. To start from the initial state, choose Erase RAM and start fresh in Machine below the calculator.</li>
+      <li>Exported programs, printouts and screenshots arrive as downloads.</li>
+      <li>Safari on iPhone and iPad may clear the saved data of a site you have not opened for 7 days. Add the page to the Home Screen to keep it.</li>
+    </ul>
+    <h2>Not in the browser version</h2>
+    <p>Recording, gamepads and running a real ROM are in the desktop version. Install it from <a href="https://github.com/woriguchi/sc61box">sc61box on GitHub</a>.</p>
+    <p class="fine">MIT License. Fonts: Noto Sans JP and Source Code Pro (SIL Open Font License).</p>
+  </div>
+  <form method="dialog"><button class="key" value="close">
+    <span class="ja">閉じる</span><span class="en">Close</span></button></form>
+</dialog>
+<script type="module">
+import { loadPyodide } from "{{PYODIDE}}pyodide.mjs";
+
+const params = new URLSearchParams(location.search);
+const MODELS = ["1245", "1250", "1251", "1255", "1260", "1261", "1262", "1350"];
+const model = MODELS.includes(params.get("model")) ? params.get("model") : "1251";
+// RAMカードはPC-1350だけ(KB)
+const card = model === "1350" && ["8", "16"].includes(params.get("card")) ? params.get("card") : "0";
+const lang = params.get("lang") || (navigator.language.startsWith("ja") ? "ja" : "en");
+// リンクで渡されたファイル(?load=ファイルのURL)か、リンクに入っていたプログラム(#bas=…)。
+// &run・#runを付ければ実行まで。Pythonが確かめてから読み込む。読み直したときや機種を変えた
+// ときにまた読まないように、ページのURLからは除く
+const shared = new URLSearchParams(location.hash.slice(1));
+const link = params.get("load") ? { url: params.get("load"), bas: null, run: params.has("run") }
+  : shared.get("bas") ? { url: null, bas: shared.get("bas"), run: shared.has("run") } : null;
+if (link) {
+  params.delete("load");
+  params.delete("run");
+  const rest = params.toString();
+  history.replaceState(null, "", rest ? `?${rest}` : location.pathname);
+}
+const DATA = "/home/pyodide/.sc61box";  // Pythonの~/.sc61box(データのフォルダ)
+document.documentElement.lang = lang;
+const status = document.getElementById("status");
+
+// 使い方。初めて開いたときにも出す。出しているあいだは、キーを本体に送らない
+const guide = document.getElementById("guide");
+const help = document.getElementById("help");
+const openGuide = () => {
+  guide.showModal();
+  guide.querySelector(`.${lang} h1`).focus();  // 下の方のリンクに移らず、先頭から見せる
+  guide.scrollTop = 0;
+};
+help.addEventListener("click", openGuide);
+guide.addEventListener("close", () => document.getElementById("canvas").focus());
+for (const type of ["keydown", "keyup"]) {
+  addEventListener(type, (e) => { if (guide.open) e.stopImmediatePropagation(); }, true);
+}
+try {
+  if (!localStorage.getItem("sc61box-guide")) {
+    openGuide();
+    localStorage.setItem("sc61box-guide", "1");
+  }
+} catch {}
+
+// 機種とRAMカードを変えると、そのRAMを保存してから、ページを開き直す
+const select = document.getElementById("model");
+const cards = document.getElementById("card");
+select.value = model;
+cards.value = card;
+cards.hidden = model !== "1350";
+const cardNames = lang === "ja" ? ["RAMカードなし", "8KBのRAMカード", "16KBのRAMカード"]
+  : ["No RAM card", "8 KB RAM card", "16 KB RAM card"];
+cardNames.forEach((name, i) => { cards.options[i].textContent = name; });
+const reopen = async () => {
+  // 書き終わる前にページを移ると、RAMが残らない。どこにも残せなければ、移らずに元に戻す
+  if (!(await sc61box.save())) {
+    select.value = model;
+    cards.value = card;
+    return;
+  }
+  params.set("model", select.value);
+  if (select.value === "1350" && cards.value !== "0") params.set("card", cards.value);
+  else params.delete("card");
+  location.search = params.toString();
+};
+select.addEventListener("change", reopen);
+// 機種かRAMカードの違うページへのリンク(ページに落としたもの)を開く。RAMを保存してから移る
+const navigate = async (url) => { if (await sc61box.save()) location.href = url; };
+cards.addEventListener("change", reopen);
+
+// 音。Pythonが16ビットのサンプルを積み、たまっている数を見て本体を進める速さを合わせる
+const RATE = 44100;
+const audio = {
+  ctx: null, end: 0, sources: new Set(),
+  open() {
+    try { this.ctx = new AudioContext({ sampleRate: RATE }); } catch { return false; }
+    return true;
+  },
+  // 積んでまだ鳴らしていないサンプルの数。音を出せないうち(利用者がまだ操作していない)は-1
+  queued() {
+    if (!this.ctx || this.ctx.state !== "running") return -1;
+    return Math.max(0, (this.end - this.ctx.currentTime) * RATE);
+  },
+  push(bytes) {
+    const n = bytes.length >> 1;
+    const pcm = new Int16Array(bytes.buffer, bytes.byteOffset, n);
+    const buf = this.ctx.createBuffer(1, n, RATE);
+    const ch = buf.getChannelData(0);
+    for (let i = 0; i < n; i++) ch[i] = pcm[i] / 32768;
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(this.ctx.destination);
+    const at = Math.max(this.end, this.ctx.currentTime);
+    src.start(at);
+    this.end = at + n / RATE;
+    this.sources.add(src);
+    src.onended = () => this.sources.delete(src);
+  },
+  clear() {
+    for (const s of this.sources) s.stop();
+    this.sources.clear();
+    this.end = 0;
+  },
+  close() { this.clear(); this.ctx?.close(); },
+};
+const resume = () => audio.ctx?.resume();
+addEventListener("pointerdown", resume);
+addEventListener("touchend", resume);
+addEventListener("keydown", resume);
+
+// ファイルの受け渡し。選んだファイルと、ページに落としたファイルはPythonに渡して開く
+const picker = Object.assign(document.createElement("input"),
+  { type: "file", multiple: true, accept: ".bas,.hex,.txt,.wav" });
+const send = async (files) => {
+  const items = [];
+  for (const f of files) items.push([f.name, new Uint8Array(await f.arrayBuffer())]);
+  if (items.length) sc61box.onFiles?.(items);
+};
+picker.addEventListener("change", async () => { await send(picker.files); picker.value = ""; });
+addEventListener("dragover", (e) => e.preventDefault());
+// ほかのページから落としたリンクは、そのURLをPythonに渡す(?load=のリンクと同じに確かめて読む)
+addEventListener("drop", (e) => {
+  e.preventDefault();
+  const url = e.dataTransfer.getData("text/uri-list").split(/\r?\n/).find((u) => u && !u.startsWith("#"))
+    || e.dataTransfer.getData("text/plain").trim();
+  if (e.dataTransfer.files.length) send(e.dataTransfer.files);
+  else if (/^https?:\/\//i.test(url)) sc61box.onLink?.(url);
+});
+const load = document.getElementById("load");
+load.addEventListener("click", () => { picker.click(); load.blur(); });  // キーは本体へ
+
+const header = document.querySelector("header");
+// 入りきらないとき(小さい画面で作業欄を開いたときなど)は、指でなぞってスクロールする。
+// 本体の側(SDL)がタッチの既定の動きを止めるので、ここで動かす。なぞり始めた所のキーを
+// 押さないように、指が触れても、動かずに少したつか指を離すまでは本体に渡さない
+// (入りきるときは、すぐに渡す)
+const main = document.querySelector("main");
+const canvas = document.getElementById("canvas");
+const HOLD = 120;  // ms。動かずにこれだけたったら、押したとみなして本体に渡す
+const SLOP = 8;  // px。これより動いたらスクロールする
+let touch = null;  // 本体に渡さずにいるタッチ
+const overflows = () =>
+  main.scrollWidth > main.clientWidth || main.scrollHeight > main.clientHeight;
+const pass = () => {  // 止めておいたtouchstartを本体に渡す
+  clearTimeout(touch.timer);
+  const { target, init } = touch;
+  touch = null;
+  target.dispatchEvent(new TouchEvent("touchstart", init));
+};
+main.addEventListener("touchstart", (e) => {
+  if (!e.isTrusted) return;  // passが渡したもの
+  if (touch?.scrolling) { e.stopPropagation(); return; }  // スクロール中の2本目の指
+  if (touch) { pass(); return; }
+  if (e.touches.length !== 1 || !overflows()) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const t = e.touches[0];
+  touch = {
+    x: t.clientX, y: t.clientY, left: main.scrollLeft, top: main.scrollTop, scrolling: false,
+    target: e.target, timer: setTimeout(pass, HOLD),
+    init: {
+      bubbles: true, cancelable: true, touches: [...e.touches],
+      targetTouches: [...e.targetTouches], changedTouches: [...e.changedTouches],
+    },
+  };
+}, { capture: true, passive: false });
+main.addEventListener("touchmove", (e) => {
+  if (!touch) return;
+  e.stopPropagation();
+  const t = e.touches[0];
+  const [dx, dy] = [t.clientX - touch.x, t.clientY - touch.y];
+  if (!touch.scrolling && Math.hypot(dx, dy) < SLOP) return;
+  clearTimeout(touch.timer);
+  touch.scrolling = true;
+  main.scrollLeft = touch.left - dx;
+  main.scrollTop = touch.top - dy;
+}, { capture: true, passive: true });
+const untouch = (e) => {
+  if (!touch) return;
+  if (!touch.scrolling) { pass(); return; }  // 軽く叩いた。押してから、離したことを渡す
+  e.stopPropagation();
+  if (!e.touches.length) touch = null;
+};
+main.addEventListener("touchend", untouch, true);
+main.addEventListener("touchcancel", untouch, true);
+// 本体だけ。bodyのbareで見出しを隠し、Pythonに知らせる(pageSizeは見出しの高さが0になって
+// ページ全体になる)。Pythonが動き出す前に選ばれていれば、Pythonがsc61box.bareを見て合わせる
+const BARE = "sc61box-bare";  // ページを開き直しても本体だけにする(sessionStorage)
+const edge = document.getElementById("edge");
+let edgeHide = 0;
+const showEdge = (ms = 3000) => {
+  edge.classList.add("shown");
+  clearTimeout(edgeHide);
+  edgeHide = setTimeout(() => { if (!edge.matches(":hover")) edge.classList.remove("shown"); }, ms);
+};
+edge.addEventListener("pointerleave", () => showEdge(1500));
+const zone = document.getElementById("zone");
+zone.addEventListener("pointerenter", () => showEdge());
+zone.addEventListener("pointerdown", (e) => { e.preventDefault(); showEdge(); });
+const fullscreen = () => document.fullscreenElement || document.webkitFullscreenElement;
+const leaveFullscreen = () => (document.exitFullscreen || document.webkitExitFullscreen)?.call(document);
+// 全画面は、利用者が押したときにだけ頼める(開き直したときは、本体だけの表示にだけ戻す)。
+// 使えないブラウザ(iPhoneのSafariなど)では頼まない
+const canFull = !!(document.fullscreenEnabled || document.webkitFullscreenEnabled);
+const enterFullscreen = async () => {
+  if (!canFull) return;
+  const page = document.documentElement;
+  try { await (page.requestFullscreen || page.webkitRequestFullscreen).call(page); } catch {}
+};
+const setBare = (on, full = false) => {
+  if (full) enterFullscreen();
+  document.body.classList.toggle("bare", on);
+  sc61box.bare = on;
+  try { on ? sessionStorage.setItem(BARE, "1") : sessionStorage.removeItem(BARE); } catch {}
+  sc61box.onBodyOnly?.(on, ...sc61box.pageSize());
+  if (on) showEdge();
+  else {
+    edge.classList.remove("shown");
+    if (fullscreen()) leaveFullscreen();
+  }
+  canvas.focus();
+};
+document.getElementById("bare").addEventListener("click", () => setBare(true, true));
+document.getElementById("back").addEventListener("click", () => setBare(false));
+document.getElementById("menu").addEventListener("click", () => {
+  edge.classList.remove("shown");  // メニューにかぶらないように
+  sc61box.onMenu?.();
+  canvas.focus();
+});
+// 全画面を抜けたあと(Escや、開き直したとき)に全画面に戻すボタン。全画面のあいだは出さない
+const full = document.getElementById("full");
+full.hidden = !canFull;
+full.addEventListener("click", () => { enterFullscreen(); canvas.focus(); });
+const markFull = () => document.documentElement.classList.toggle("full", !!fullscreen());
+document.addEventListener("fullscreenchange", markFull);
+document.addEventListener("webkitfullscreenchange", markFull);
+let resizing = 0;
+addEventListener("resize", () => {
+  clearTimeout(resizing);
+  resizing = setTimeout(() => sc61box.onResize?.(...sc61box.pageSize()), 150);
+});
+
+let py = null;
+// IndexedDBへの書き込みは1つずつ順に行う(同時に走らせない)
+let writing = Promise.resolve();
+// 書けなければ(空きがない、保存が許されていないなど)失敗として返す
+const persist = () => {
+  const done = writing.then(() => new Promise((ok, fail) => {
+    if (py) py.FS.syncfs(false, (err) => (err ? fail(err) : ok()));
+    else ok();
+  }));
+  writing = done.catch(() => {});  // 失敗しても、次の書き込みは続ける
+  return done;
+};
+// IndexedDBへの書き込みは、ページを閉じたり読み直したりすると途中で終わることがある。
+// そこで、保存したRAMのファイルは、IndexedDBに書き終わるまでlocalStorageにも写しておき
+// (すぐに書ける)、次に開いたときに写しが残っていれば、そちらを使う
+const STASH = "sc61box-stash";
+const toBase64 = (bytes) => {
+  let s = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(s);
+};
+const fromBase64 = (text) => Uint8Array.from(atob(text), (c) => c.charCodeAt(0));
+// 写しは1つにまとめ、前の写しに残っているファイル(書けないまま機種を替えた、前の機種の
+// RAMなど)も残す。IndexedDBに書けたときは、写しのファイルはすべて書いたことになる
+// (開いたときにrestoreStashがファイルに戻している)
+const stashed = () => {
+  try { return JSON.parse(localStorage.getItem(STASH) || "null"); } catch { return null; }
+};
+const stash = (paths) => {
+  const files = { ...stashed()?.files };
+  for (const path of paths) files[path] = toBase64(py.FS.readFile(path));
+  const id = `${Date.now()}-${Math.random()}`;
+  try { localStorage.setItem(STASH, JSON.stringify({ id, files })); } catch { return null; }
+  return id;
+};
+const unstash = (id) => {  // そのあとに写し直していなければ消す
+  try { if (stashed()?.id === id) localStorage.removeItem(STASH); } catch {}
+};
+const restoreStash = async () => {
+  const saved = stashed();
+  if (!saved) return;
+  for (const [path, text] of Object.entries(saved.files)) py.FS.writeFile(path, fromBase64(text));
+  try { await persist(); } catch { return; }  // 書けなければ、写しは次に開いたときまで残す
+  unstash(saved.id);
+};
+globalThis.sc61box = {
+  audio,
+  copyText: (text) => navigator.clipboard?.writeText(text).catch(() => {}),
+  // プログラムを入れたリンクをコピーする。コピーできなければ(Safariは、クリックからすぐでないと
+  // 断ることがある)、このページのアドレスをそのリンクにして、共有やアドレスのコピーで渡せるようにする
+  shareLink(url, done) {
+    const instead = () => { history.replaceState(null, "", url); done(false); };
+    if (!navigator.clipboard) instead();
+    else navigator.clipboard.writeText(url).then(() => done(true), instead);
+  },
+  chooseFiles: () => picker.click(),
+  download(name, bytes) {
+    const url = URL.createObjectURL(new Blob([bytes]));
+    Object.assign(document.createElement("a"), { href: url, download: name }).click();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  },
+  readClipboard(done) {  // 読めなければnull
+    if (!navigator.clipboard?.readText) { done(null); return; }
+    navigator.clipboard.readText().then(done, () => done(null));
+  },
+  sync: () => persist().catch(() => sc61box.onSaveFailed?.()),
+  // RAMを消したあと(Pythonが、消したファイルのpathsを渡す)。消したことをIndexedDBに書けたら、
+  // 写しからもそのファイルだけを除いて読み直す。書けなければ写しはそのままにして、failedを呼ぶ
+  // (読み直さない)
+  async restart(paths, failed) {
+    try {
+      await persist();
+    } catch {
+      failed();
+      return;
+    }
+    const saved = stashed();
+    if (saved) {
+      for (const path of paths) delete saved.files[path];
+      try {
+        if (Object.keys(saved.files).length) localStorage.setItem(STASH, JSON.stringify(saved));
+        else localStorage.removeItem(STASH);
+      } catch {}
+    }
+    location.reload();
+  },
+  // RAMをファイルに書かせてから、データのフォルダをIndexedDBに書く。IndexedDBに書けたか、
+  // 書けなくてもlocalStorageに写しを残せたらtrue。書けなければ、Pythonに知らせる
+  async save() {
+    const paths = sc61box.onSave ? Array.from(sc61box.onSave()) : [];
+    const id = paths.length ? stash(paths) : null;
+    try {
+      await persist();
+    } catch {
+      sc61box.onSaveFailed?.();
+      return id !== null || !paths.length;  // 写しは消さない(次に開いたときに使う)
+    }
+    if (id) unstash(id);
+    return true;
+  },
+  // 本体と操作欄などを置ける大きさ(CSSの画素)。ページの幅と、見出しの下の高さ
+  pageSize: () => [document.documentElement.clientWidth, innerHeight - header.offsetHeight],
+  onResize: null, // Pythonが置く(置ける大きさが変わった)
+  onSave: null,   // Pythonが置く(RAMを保存して、書いたファイルの名前を返す)
+  onSaveFailed: null,  // Pythonが置く(保存できなかったことを知らせる)
+  onPaste: null,  // Pythonが置く(貼り付けた文字を受け取る)
+  onFiles: null,  // Pythonが置く(読み込むファイルを受け取る)
+  link,  // リンクで渡されたファイル({url, run}かnull)
+  bare: false,  // 本体だけか
+  onBodyOnly: null,  // Pythonが置く(本体だけにする・戻す。新しい置ける大きさも渡す)
+  onMenu: null,  // Pythonが置く(よく使う操作のメニューを出す)
+  onLink: null,  // Pythonが置く(ページに落としたリンクを開く)
+  offline: null,  // オフラインで使うためのファイルを持てたか("ready"・"failed"。分かったときだけ)
+  onOffline: null,  // Pythonが置く(それを知らせる)
+  keepOffline: () => keepOffline(true),  // 持てなかったときに、メニューから試し直す
+  navigate,
+};
+try { if (sessionStorage.getItem(BARE)) setBare(true); } catch {}
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") sc61box.save();
+});
+addEventListener("pagehide", () => sc61box.save());
+document.addEventListener("paste", (e) => {
+  sc61box.onPaste?.(e.clipboardData.getData("text/plain"));
+});
+// ⌘・Ctrlとの組み合わせはエミュレータのショートカットに使うので、ブラウザには渡さない
+// (貼り付けとコピーは、ブラウザのイベントで文字を受け渡すので通す)
+addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && !["v", "c", "q", "w"].includes(e.key.toLowerCase())) {
+    e.preventDefault();
+  }
+}, true);
+
+status.innerHTML = `<img src="logo-light.png" alt="sc61box"><span>${lang === "ja" ? "読み込み中…" : "Loading…"}</span>`;
+// 一度開いたあとはネットにつながっていなくても動くように、ページが使うファイルを持っておく(sw.js)。
+// 初めて持てたときと、持てなかったときは、Pythonに知らせる(動き出す前ならsc61box.offlineに残す)
+const tellOffline = (state) => { sc61box.offline = state; sc61box.onOffline?.(state); };
+// 持つのは、sw.jsが入ったとき(すべてのファイルを持てたとき)。登録できただけでは持てていない
+const watched = new WeakSet();  // 同じsw.jsを二重に見ない(登録し直しとupdatefoundの両方から来る)
+const watchWorker = (worker, first) => {
+  if (!worker || watched.has(worker)) return;
+  watched.add(worker);
+  let installed = false;
+  worker.addEventListener("statechange", () => {
+    if (worker.state === "installed" || worker.state === "activated") {
+      if (!installed && first) tellOffline("ready");
+      installed = true;
+    } else if (worker.state === "redundant" && !installed) {
+      tellOffline("failed");  // どれかのファイルを持てなかった(取れない、空きがないなど)
+    }
+  });
+};
+// 開いたときに登録する(前に持てなかったときは、ここでもう一度試す)。retryなら、メニューから
+// 試し直す: 前の版が入っていれば新しい版を取り直し、何も入っていなければ登録し直す
+const keepOffline = async (retry = false) => {
+  if (!("serviceWorker" in navigator)) return;
+  const first = !navigator.serviceWorker.controller;  // まだ何も持っていない
+  try {
+    let reg = retry ? await navigator.serviceWorker.getRegistration() : undefined;
+    if (reg?.active) {
+      reg.addEventListener("updatefound", () => watchWorker(reg.installing, first), { once: true });
+      await reg.update();
+      return;
+    }
+    reg = await navigator.serviceWorker.register("sw.js");
+    watchWorker(reg.installing, first);
+    reg.addEventListener("updatefound", () => watchWorker(reg.installing, first));
+  } catch {
+    tellOffline("failed");
+  }
+};
+keepOffline();
+py = await loadPyodide({ indexURL: "{{PYODIDE}}" });
+py.canvas.setCanvas2D(canvas);
+await py.loadPackage(["pygame-ce", "pillow"], { messageCallback: () => {} });
+const app = await (await fetch("{{APP}}")).arrayBuffer();  // ?の後ろは中身のハッシュ(build.pyが入れる)
+py.unpackArchive(app, "zip", { extractDir: "/app" });
+py.FS.mkdirTree(DATA);
+py.FS.mount(py.FS.filesystems.IDBFS, {}, DATA);
+await new Promise((ok) => py.FS.syncfs(true, ok));
+await restoreStash();
+// 閉じたときの保存は書き終わらないことがあるので、動かしているあいだもときどき保存する
+setInterval(() => sc61box.save(), 30000);
+status.classList.add("done");
+if (!guide.open) canvas.focus();
+py.globals.set("MODEL", model);
+py.globals.set("CARD", Number(card));
+py.globals.set("LANG", lang);
+await py.runPythonAsync(`
+import sys
+sys.path.insert(0, "/app")
+from sc61box import web
+await web.run(MODEL, LANG, CARD)
+`);
+</script>
+</body>
+</html>

@@ -744,7 +744,7 @@ def test_export_option_reads_rom_less_ram(model, tmp_path, monkeypatch):
     from typer.testing import CliRunner
 
     from sc61box import app as app_module
-    from sc61box import paths
+    from sc61box import cli, paths
 
     data = tmp_path / "data"
     data.mkdir()
@@ -758,9 +758,7 @@ def test_export_option_reads_rom_less_ram(model, tmp_path, monkeypatch):
     app.m.save_ram(app_module.ram_file(model, 0, norom=True))
     app.close()
     out = tmp_path / "out"
-    result = CliRunner().invoke(
-        app_module.make_cli(), ["--model", model, "--norom", "--export", str(out)]
-    )
+    result = CliRunner().invoke(cli.make_cli(), ["--model", model, "--norom", "--export", str(out)])
     assert result.exit_code == 0, result.output
     path = result.output.strip().splitlines()[-1]
     assert '10 PRINT "NOROM"' in open(path, encoding="utf-8").read()
@@ -1176,7 +1174,7 @@ def test_version():
     """--versionでpyproject.tomlの版を出して終わる"""
     from typer.testing import CliRunner
 
-    from sc61box.app import make_cli
+    from sc61box.cli import make_cli
 
     with open(
         os.path.join(os.path.dirname(__file__), "..", "pyproject.toml"), encoding="utf-8"

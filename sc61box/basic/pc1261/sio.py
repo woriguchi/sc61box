@@ -3,9 +3,11 @@
 エミュレータにはシリアルの相手がないので、ROMのある本体に何もつないでいないときと同じに
 ふるまう。
 
-- 設定はOPEN$の字のまま6E60hから置き、FFhで終える。6E60hが00hなら初期値
-  「1200,N,8,1,A,C,&1A」(ROMのある本体は、OPENで書いた字をここに置き、設定はほかの所に
-  持つ。どちらも電源を入れると初期値に戻るので、ここは同じにしていない)
+- 設定は78B1h〜78B3hに置く。78B1hは終わりの字、78B2hは通信速度(300が01h、600が02h、
+  1200が04h)、78B3hはビット7がデータ8ビット、ビット6・5がパリティ(Nが00b、Oが10b、Eが11b)、
+  ビット4がストップ2ビット、ビット2〜0がフロー制御(Cが100b、Lが010b、Fが001b)。初期値は
+  「1200,N,8,1,A,C,&1A」(1Ah、04h、84h)。OPENで書いた字は、文字列の作業場所(6E60h〜)に
+  置いたあとにFFhを書く
 - OPENしているかのフラグは78B0hのビット7。CONSOLEの字数は78B4h・78B5h(どちらも同じ値。
   初期値は40)
 - 電源を入れると、シリアルを閉じて、設定とCONSOLEの字数を初期値に戻す
@@ -17,8 +19,11 @@
 
 from ..errors import BasicError
 
-SETTINGS = 0x6E60
-DEFAULT = b"1200,N,8,1,A,C,&1A"
+SETTINGS = 0x78B1  # 終わりの字、通信速度、そのほかのビット
+DEFAULT = bytes([0x1A, 0x04, 0x84])
+BAUD = {b"300": 0x01, b"600": 0x02, b"1200": 0x04}
+PARITY = {b"N": 0x00, b"O": 0x40, b"E": 0x60}
+FLOW = {b"C": 0x04, b"L": 0x02, b"F": 0x01}
 OPEN_FLAG = (0x78B0, 0x80)
 CONSOLE_WIDTH = (0x78B4, 0x78B5)
 CONSOLE_DEFAULT = 40
@@ -36,12 +41,26 @@ CHOICES = (
 HEX = b"0123456789ABCDEF"
 
 
+def _name(table: dict[bytes, int], v: int) -> bytes:
+    return next((k for k, bits in table.items() if bits == v), next(iter(table)))
+
+
 def settings(m) -> bytes:
     """OPEN$の字"""
-    if m.mem[SETTINGS] == 0:
-        return DEFAULT
-    end = bytes(m.mem[SETTINGS : SETTINGS + 32]).find(b"\xff")
-    return bytes(m.mem[SETTINGS : SETTINGS + (end if end >= 0 else 0)]) or DEFAULT
+    end, baud, bits = m.mem[SETTINGS : SETTINGS + 3]
+    return b",".join([
+        _name(BAUD, baud), _name(PARITY, bits & 0x60), b"8" if bits & 0x80 else b"7",
+        b"2" if bits & 0x10 else b"1", b"A", _name(FLOW, bits & 0x07), b"&%02X" % end,
+    ])  # fmt: skip
+
+
+def _store(m, text: bytes) -> None:
+    """OPEN$の字の形の設定を、78B1h〜78B3hに置く"""
+    baud, parity, data, stop, _, flow, end = text.split(b",")
+    bits = (
+        PARITY[parity] | FLOW[flow] | (0x80 if data == b"8" else 0) | (0x10 if stop == b"2" else 0)
+    )
+    m.mem[SETTINGS : SETTINGS + 3] = bytes([int(end[1:], 16), BAUD[baud], bits])
 
 
 def is_open(m) -> bool:
@@ -56,7 +75,7 @@ def set_open(m, on: bool) -> None:
 
 def power_on(m) -> None:
     set_open(m, False)
-    m.mem[SETTINGS] = 0
+    m.mem[SETTINGS : SETTINGS + 3] = DEFAULT
     for a in CONSOLE_WIDTH:
         m.mem[a] = CONSOLE_DEFAULT
 
@@ -85,8 +104,10 @@ def open_port(m, text: bytes | None) -> None:
     if is_open(m):
         raise BasicError(8)
     if text is not None:
-        new = changed(settings(m), text)
-        m.mem[SETTINGS : SETTINGS + len(new) + 1] = new + b"\xff"
+        _store(m, changed(settings(m), text))
+        at = getattr(text, "at", None)  # 文字列の作業場所に置いた字のあと
+        if at is not None:
+            m.mem[at + len(text)] = 0xFF
     set_open(m, True)
 
 

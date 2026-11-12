@@ -43,14 +43,21 @@ class TapeIO:
 
     def command(self, code: bytes) -> Steps:
         """RUN・PROモードのCSAVE・CLOAD・CLOAD?・CLOAD M・MERGE。BRKで止めると、何も
-        出さずに>に戻る(観察)"""
+        出さずに>に戻る(観察)。読む命令は、始めたときのm.on_cloadを受け取り、終えたら読み終えたかを
+        それに知らせる(状態を戻して捨てたCLOADが、あとで置いた知らせ先を使わないように)"""
+        done = None
+        if code[0] != self.T_CSAVE:
+            done, self.m.on_cload = self.m.on_cload, None
+        loaded = False
         try:
             if code[0] == self.T_CSAVE:
                 yield from self.csave(code, 1)
             else:
-                yield from self.cload(code)
+                loaded = yield from self.cload(code)
         finally:
             self.quiet()
+            if done is not None:
+                done(loaded)
         self.basic._prompt()
 
     def csave(self, code: bytes, pos: int) -> Generator[int, None, bool]:

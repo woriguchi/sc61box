@@ -8,6 +8,7 @@ from typing import NamedTuple
 
 import pygame
 
+from . import host
 from .i18n import tr
 
 WHITE = (240, 240, 235)
@@ -230,8 +231,12 @@ class ProgramMenu:
     # 略さない
     @staticmethod
     def top_buttons() -> tuple[tuple[str, str, str], ...]:
+        if host.WEB:  # ブラウザには開くフォルダがないので、ファイルを選んで読み込む
+            folder = (tr("overlay.load_file_o"), tr("overlay.file"), "folder")
+        else:
+            folder = (tr("overlay.open_folder_o"), tr("overlay.folder"), "folder")
         return (
-            (tr("overlay.open_folder_o"), tr("overlay.folder"), "folder"),
+            folder,
             (tr("overlay.reload_r"), tr("overlay.reload"), "reload"),
             (tr("common.close_esc"), tr("overlay.close"), "close"),
         )

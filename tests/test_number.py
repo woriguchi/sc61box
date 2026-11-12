@@ -16,6 +16,7 @@ from sc61box.number import (
     power,
     put_num,
     random_value,
+    reset_seed,
     to_degrees,
     to_dms,
     trig_value,
@@ -84,11 +85,49 @@ def test_degrees_and_dms():
 
 
 def test_random_value():
-    m = SimpleNamespace(rnd_seed=1)
+    """種はRAMに置く。電源を入れたあとのPC-1251のRND 10は3、2、4(ROMのある本体で観察した並び)。
+    負の数で種を決めれば、前の種によらず同じ値"""
+    from sc61box.machine import MODELS
+
+    def machine():
+        m = SimpleNamespace(model=MODELS["1251"], mem=bytearray(0x10000))
+        reset_seed(m)
+        return m
+
+    m = machine()
+    assert [int(random_value(m, Decimal(10))) for _ in range(3)] == [3, 2, 4]
     assert {int(random_value(m, Decimal(6))) for _ in range(200)} == set(range(1, 7))
     assert all(0 < random_value(m, Decimal("0.5")) < 1 for _ in range(20))
-    other = SimpleNamespace(rnd_seed=12345)
-    assert random_value(m, Decimal(-3)) == random_value(other, Decimal(-3))
+    assert random_value(m, Decimal(-3)) == random_value(machine(), Decimal(-3))
+
+
+def test_random_seed_reads_digits_only():
+    """種は仮数の12桁を0.の後ろに並べた数とみて、指数の欄は見ない(観察)。種が0なら、次の種は
+    指数が−1で仮数が000000000001"""
+    from sc61box.machine import MODELS
+
+    for e in ("99 90", "99 70", "98 90", "00 50"):
+        m = SimpleNamespace(model=MODELS["1251"], mem=bytearray(0x10000))
+        m.mem[0xF8B0:0xF8B8] = bytes.fromhex(e + "12 34 56 78 90 12")
+        assert random_value(m, Decimal(10)) == 9
+        assert bytes(m.mem[0xF8B0:0xF8B8]) == bytes.fromhex("9992839506147271")
+    m = SimpleNamespace(model=MODELS["1261"], mem=bytearray(0x10000))
+    assert [random_value(m, Decimal(10)) for _ in range(3)] == [1, 3, 7]
+    assert bytes(m.mem[0x28B8:0x28C0]) == bytes.fromhex("9994600000000021")
+
+
+def test_negative_random_returns_seed():
+    """負のRNDは新しい種そのもの(PC-1261系とPC-1350で、引数から種を作るときの数が1以上でも。
+    観察)"""
+    from sc61box.machine import MODELS
+
+    for name, want in (
+        ("1251", "0.100000000001"),
+        ("1261", "0.992141158631"),
+        ("1350", "0.992141158631"),
+    ):
+        m = SimpleNamespace(model=MODELS[name], mem=bytearray(0x10000))
+        assert random_value(m, Decimal(-7)) == Decimal(want), name
 
 
 def test_number_text():

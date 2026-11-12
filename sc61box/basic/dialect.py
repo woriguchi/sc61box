@@ -43,6 +43,8 @@ class Dialect:
     # CLOAD?でRAMとの違いを見つけても終わりまで読み、読み終えてからこの時間のあとERROR 8に
     # する(Noneなら、見つけたときにERROR 8)
     verify_error_after: int | None = None
+    # PRINTの最初の項目が文字列で、;のあとに数があるとき、代入した値の写しの場所に数を置く
+    print_copy_number: bool = False
 
 
 _ALL: dict[str, Dialect] = {}  # 機種の名前 → 違い(系統ごとのdialect.pyから集める)

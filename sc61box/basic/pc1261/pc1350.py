@@ -19,6 +19,7 @@ from decimal import ROUND_FLOOR, Decimal
 from typing import cast
 
 from ...machine import TICK_2MS
+from .. import workarea
 from ..editor import NO_SEP, spans
 from ..errors import BasicError
 from ..evaluate import by_code
@@ -79,6 +80,18 @@ def _floor(v) -> int:
 
 class Evaluator(evaluate.Evaluator):
     VARS = variables.PC1350
+    # 計算に使うRAM(観察)。積んだ数と文字列の作業場所の次の番地は、RAMに置かない
+    WORK = workarea.Layout(
+        ops=0x74A0, ops_size=16, ops_count=None, values=0x7680, values_size=8,
+        values_top=None, strings=0x6E60, strings_end=0x6EB0, strings_next=None,
+        copy=0x7080, copy_number=0x70A8, target=0x6F24, call=0x6F5A, number_work=0x729D,
+        number_first=3, number_text=0x7280, unary_minus=0x65, string_array=0,
+        array_kinds=True, dim_pushes=True, colon=0x3A,
+        for_at=0x6E06, for_top=0x6F2B, gosub_at=0x7090, gosub_top=0x6F2C, int_limit=False,
+        last=0x7498, line_numbers=False, data=0x6F22, reading=0x6F20, program_head=0x6F1C,
+        flags=0x6F13, print_end=0x6F4C, print_item=None, print_token=None, using=0x6F3A,
+        print_copies=False, print_page=None,
+    )  # fmt: skip
     PI_CHAR, ROOT_CHAR = 0xFB, 0xFC  # πの字はPI、√の字はSQRと同じ(観察)
 
     @staticmethod
@@ -94,7 +107,9 @@ class Evaluator(evaluate.Evaluator):
     def _operand(self):
         if self.peek() == _CODE["OPEN$"]:  # シリアルの設定の字
             self.pos += 1
-            return sio.settings(self.m)
+            text = sio.settings(self.m)
+            workarea.put(self.m, 0x6DE0, text + b"\r")  # 字を作る所(観察)
+            return self._place(text)
         if self.peek() == _CODE["POINT"]:  # POINT (x,y)
             self.pos += 1
             self.spend(XY_TIME + POINT_TIME)
@@ -382,6 +397,7 @@ Runner.STATEMENTS = by_code(
 
 
 class Basic(system.Basic):
+    PRINT_BUFFER = None
     T_EQU = -1  # EQU#はない
     CALL_REGS = {}  # 確かめていない
     TYPED_AT = 0x6EB0  # CALLのとき打った行を置く番地(観察)

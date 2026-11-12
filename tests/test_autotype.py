@@ -54,3 +54,42 @@ def test_clear_drops_calls_and_writes():
     for _ in range(3):
         t.step()
     assert ran == [2]
+
+
+def test_short_mouse_taps_reach_basic():
+    """マウスや指で軽く叩いたキーは、押して離すのが同じフレームの中でも、本体に届く"""
+    from helpers import make_app
+
+    from sc61box.lcdtext import lcd_text
+
+    app = make_app(norom=True)
+    for name in ("1", "+", "1", "ENTER"):
+        app.typer.press_mouse(name)
+        app.typer.release_mouse(name)
+        for _ in range(6):
+            app.frame()
+    for _ in range(20):
+        app.frame()
+    assert lcd_text(app.m).strip().startswith("2")
+    assert not app.m.held
+    app.close()
+
+
+def test_short_tap_then_restore_releases_key(tmp_path, monkeypatch):
+    """短く叩いたキーを押しておくあいだに、前に保存した状態へ戻しても、そのキーは離す(押して
+    おく時刻は戻す前のサイクルで数えたものなので、戻したあとには使わない)"""
+    from helpers import make_app
+
+    app = make_app(norom=True)
+    monkeypatch.setattr(app, "state_file", str(tmp_path / "state.json"))
+    app.save_state()
+    for _ in range(150):  # 5秒
+        app.frame()
+    app.typer.press_mouse("1")
+    app.typer.release_mouse("1")
+    app.load_state()
+    app.typer.add_text("2")
+    for _ in range(30):
+        app.frame()
+    assert "1" not in app.m.held and not app.typer.mouse_off
+    app.close()

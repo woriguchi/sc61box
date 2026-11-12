@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 import pygame
 
-from . import codemap, disasm
+from . import codemap, disasm, host
 from .i18n import tr
 from .overlay import load_help_font, wrap_text
 from .workbench import ROW, Bench, checksum, span_text
@@ -724,6 +724,8 @@ class BenchView:
         if b.live and b.state == "pause":
             return tr("bench.g_continue_j_step", c=c, s=self.shift)
         if b.state == "run":
+            if host.WEB:  # ブラウザでは、EscでBRKを押さない
+                return tr("bench.web_running_keys_go", model=b.m.model.title, c=c)
             return tr("bench.running_keys_go_esc", model=b.m.model.title, c=c)
         if b.state == "pause":
             return tr("bench.g_continue_j_step_c_c", c=c)

@@ -261,12 +261,52 @@ def _sdl_library() -> ctypes.CDLL:
     return ctypes.CDLL(found)
 
 
-class SoundQueue:
-    """SDLのキューにサンプル(16ビット、モノラル)を積む出力先"""
+class QueueOutput:
+    """サンプル(16ビット、モノラル)をキューに積む出力先。キューはSDL(SoundQueue)か、ブラウザの
+    Web Audio(web.WebAudio)。子クラスがqueued・append・clear・closeを決める"""
 
     keep_silent = True  # 無音のサンプルも積んで、たまり具合を保つ
 
     def __init__(self) -> None:
+        self.underruns = 0  # 尽きかけて無音を足した回数
+        self.started = False
+
+    def queued(self) -> int:
+        """キューにたまっているサンプルの数"""
+        raise NotImplementedError
+
+    def append(self, pcm: bytes) -> None:
+        raise NotImplementedError
+
+    def level(self) -> int:
+        return self.queued()
+
+    def push(self, pcm: bytes) -> None:
+        level = self.level()
+        if level > LIMIT:
+            return
+        if level < LOW and pcm:  # 尽きかけている(鳴り始めも)
+            if self.started:
+                self.underruns += 1
+            self.started = True
+            need = TARGET - level - len(pcm) // 2
+            if need > 0:
+                pcm = bytes(2 * need) + pcm
+        if pcm:
+            self.append(pcm)
+
+    def clear(self) -> None:
+        self.started = False
+
+    def close(self) -> None:
+        pass
+
+
+class SoundQueue(QueueOutput):
+    """SDLのキューに積む出力先"""
+
+    def __init__(self) -> None:
+        super().__init__()
         sdl = _sdl_library()
         sdl.SDL_OpenAudioDevice.restype = ctypes.c_uint32
         sdl.SDL_OpenAudioDevice.argtypes = [
@@ -289,31 +329,17 @@ class SoundQueue:
         if not dev:
             raise OSError(sdl.SDL_GetError().decode(errors="replace"))
         self.sdl, self.dev = sdl, dev
-        self.underruns = 0  # 尽きかけて無音を足した回数
-        self.started = False
         sdl.SDL_PauseAudioDevice(dev, 0)
 
-    def level(self) -> int:
-        """キューにたまっているサンプルの数"""
+    def queued(self) -> int:
         return self.sdl.SDL_GetQueuedAudioSize(self.dev) // 2
 
-    def push(self, pcm: bytes) -> None:
-        level = self.level()
-        if level > LIMIT:
-            return
-        if level < LOW and pcm:  # 尽きかけている(鳴り始めも)
-            if self.started:
-                self.underruns += 1
-            self.started = True
-            need = TARGET - level - len(pcm) // 2
-            if need > 0:
-                pcm = bytes(2 * need) + pcm
-        if pcm:
-            self.sdl.SDL_QueueAudio(self.dev, pcm, len(pcm))
+    def append(self, pcm: bytes) -> None:
+        self.sdl.SDL_QueueAudio(self.dev, pcm, len(pcm))
 
     def clear(self) -> None:
         self.sdl.SDL_ClearQueuedAudio(self.dev)
-        self.started = False
+        super().clear()
 
     def close(self) -> None:
         self.sdl.SDL_PauseAudioDevice(self.dev, 1)
@@ -388,11 +414,20 @@ class MixerOutput:
         pass
 
 
-def open_output() -> "SoundQueue | MixerOutput | None":
-    """音の出力先を開く。SDLのキューが使えなければpygame.mixer、それもだめならNone"""
+def open_output() -> "QueueOutput | MixerOutput | None":
+    """音の出力先を開く。SDLのキューが使えなければpygame.mixer、それもだめならNone。
+    ブラウザではWeb Audio"""
     import pygame
 
     pygame.mixer.quit()  # pygame.initが開いたmixerの装置は使わない
+    if sys.platform == "emscripten":
+        from .web import WebAudio
+
+        try:
+            return WebAudio()
+        except OSError as e:
+            print(tr("audio.sound_off", error=e), file=sys.stderr)
+            return None
     try:
         return SoundQueue()
     except (OSError, AttributeError) as e:

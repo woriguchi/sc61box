@@ -14,7 +14,7 @@ from collections.abc import Callable, Generator
 from decimal import Decimal
 from typing import cast
 
-from .. import system
+from .. import system, workarea
 from ..editor import pieces
 from ..errors import BasicError
 from ..evaluate import expect_end
@@ -58,6 +58,8 @@ ERROR_TEXTS = {
 
 
 class Basic(system.Basic):
+    PRINT_BUFFER = 0x67B0  # PRINTの字を置く所(観察)
+    PRINT_END, PAUSE_UNMARKS = 0x0D, False
     PROMPT, COLON, SPACE, EQ, COMMA, QUOTE, AT = 0x3E, 0x3A, 0x20, 0x3D, 0x2C, 0x22, 0x40
     T_LIST, T_NEW, T_RUN, T_CONT, T_GOTO = (
         _CODE["LIST"], _CODE["NEW"], _CODE["RUN"], _CODE["CONT"], _CODE["GOTO"]
@@ -394,6 +396,11 @@ class Basic(system.Basic):
         if numbers:
             self.last_number = self.display_number(numbers[-1])
         self.screen.show(self.page)
+        w = self.EVALUATOR.WORK
+        if w is not None and w.print_page is not None:  # 出した字(観察)
+            workarea.put(self.m, w.print_page, bytes(self.page))
+        if self.PRINT_BUFFER is not None:
+            self.put_text(text)
         self.display(True)
         self.state = "print"
         self.last_value = items[-1] if items else None

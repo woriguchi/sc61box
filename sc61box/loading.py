@@ -9,7 +9,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from . import basic, keytype, workbench
+from . import basic, host, keytype, workbench
 from .basic import dialect
 from .i18n import tr
 from .machine import PC1251
@@ -50,6 +50,8 @@ def card_problem(prog: Program, m: PC1251, name: str) -> Problem | None:
     """# card: のRAMカードを差していないとき(PC-1350)"""
     if not prog.card or m.model.family != "1350" or m.card >= prog.card:
         return None
+    if host.WEB:  # ブラウザでは、ページの上でRAMカードを選ぶ
+        return tr("load.web_needs_kb_ram_card", name=name, n=prog.card), 10
     return tr("load.needs_kb_ram_card",
               name=name, n=prog.card), 10  # fmt: skip
 

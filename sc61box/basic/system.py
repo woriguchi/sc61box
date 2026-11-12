@@ -15,7 +15,8 @@ from decimal import Decimal
 from .. import routines
 from ..i18n import Text
 from ..machine import CLOCK, TICK_2MS
-from . import dialect, lexer, password, program, reserve, timing, variables
+from ..number import reset_seed
+from . import dialect, lexer, password, program, reserve, timing, variables, workarea
 from .editor import Editor, layout, pieces
 from .errors import BasicError
 from .evaluate import Evaluator, expect_end
@@ -122,6 +123,8 @@ class Basic:
     # PRINT・PAUSEの字の並びを置く番地と大きさ(Noneなら置かない。観察)
     PRINT_BUFFER: int | None = None
     PRINT_BUFFER_SIZE = 0x50
+    PRINT_END = 0x00  # PRINT_BUFFERの字のすぐあとに置く印
+    PAUSE_UNMARKS = True  # PAUSEでは、字のあとの印を空白にする
     CALL_R = CALL_STACK  # CALLで呼んだ先の頭でのR(観察)
     # CALLで呼んだ先の頭で、いつも同じ値になる内部RAMの番地と値(観察)
     CALL_REGS: dict[int, int] = {}
@@ -240,6 +243,10 @@ class Basic:
         self._left = 0
 
     # ---- 状態の保存(どこでもセーブ) ----
+    def settle(self) -> None:
+        """作業領域の書き戻しの途中なら、書き終える。RAMを保存する前に呼ぶ"""
+        self.runner.settle()
+
     def save(self) -> dict:
         """RAMの外にあるBASICの状態。プログラムの実行中なら、続ける所も入れる(文の途中で
         保存したときは、その文の頭から。PRINTとINPUTの待ちは、その待ちから)"""
@@ -397,6 +404,7 @@ class Basic:
         m = self.m
         if not keep:
             self.VARS.initialize(m)
+            reset_seed(m)  # 電源を入れるたびに種を置く(観察)
             m.out_c(m.pc_out & ~0x08 | 0x01)  # 液晶を点ける(電源を切ったビットは下ろす)
             self._power_on()
         while True:
@@ -1009,6 +1017,7 @@ class Basic:
     def _direct(self, code: bytes, mode: str) -> Generator[int, None, Decimal | bytes | None]:
         """行番号のない行を実行する。命令は液晶を自分で変えてNoneを返し、式と代入は液晶に
         出す値を返す。代入は、式のあとに余計なものがあっても先に入れてからエラーにする(観察)"""
+        self.runner.work_done()
         head = code[0] if code else None
         if head == self.T_PASS:
             self._pass(code)
@@ -1088,12 +1097,14 @@ class Basic:
             target = e.target()
             e.claim(target)
             if e.take(self.EQ):
+                self.runner.assigning(e, target)
                 value = e.expression()
                 try:
                     stored = self.VARS.write(self.m, e.resolve(target, create=True), value)
                 except BasicError as err:
                     err.at(e.pos - 1)  # 型が合わないときは、式の最後の字(観察)
                     raise
+                self.runner.assigned(value)
                 self.runner.meter.add(DIRECT_ASSIGN)
                 # 文字列の代入は、変数に入った字ではなく式の値を出す(観察)
                 return value if isinstance(value, bytes) else stored
@@ -1154,8 +1165,12 @@ class Basic:
             return fmt.show_string(self.spell(v), self.SPACE)
 
         if comma:
+            # 最後の文字列の欄は空白で埋めない(観察: PRINTの字の置き場所で、字のすぐあとに印を置く)
             half = cells // 2
-            return b"".join(self._half(v, piece(v), half, sp) for v in items)
+            text = b"".join(self._half(v, piece(v), half, sp) for v in items)
+            if isinstance(items[-1], bytes):
+                text = text[: half * (len(items) - 1) + len(piece(items[-1])[:half])]
+            return text
         if len(items) == 1 and isinstance(items[0], Decimal) and not joined:
             t = piece(items[0]).rstrip(sp)[-cells:]
             return sp * (cells - len(t)) + t
@@ -1169,12 +1184,15 @@ class Basic:
         m = self.m
         text = text[: self.PRINT_BUFFER_SIZE - 1]
         for i in range(self.PRINT_BUFFER_SIZE):
-            m.write(at + i, text[i] if i < len(text) else 0x00 if i == len(text) else self.SPACE)
+            m.write(
+                at + i,
+                text[i] if i < len(text) else self.PRINT_END if i == len(text) else self.SPACE,
+            )
         self._text_end = at + len(text)
 
     def unmark_text(self) -> None:
         """put_textで字のあとに置いた00hを空白にする(PAUSEは00hを置かない。観察)"""
-        if self._text_end is not None:
+        if self._text_end is not None and self.PAUSE_UNMARKS:
             self.m.write(self._text_end, self.SPACE)
 
     def print_text_of(self, code: bytes) -> tuple[bytes, int]:
@@ -1377,10 +1395,14 @@ class Basic:
             self.call.base = base
             if self.TEXT_POINTER is None:
                 cpu.ram[4], cpu.ram[5] = at & 0xFF, at >> 8
+                if self.EVALUATOR.WORK is not None:
+                    workarea.put_word(self.m, self.EVALUATOR.WORK.reading, at)
             else:
                 self.m.mem[self.TEXT_POINTER] = at & 0xFF
                 self.m.mem[self.TEXT_POINTER + 1] = at >> 8
                 cpu.ram[0x15] = 0x10 if self.where == "run" else 0x00  # 実行中かのフラグ(観察)
+        if self.EVALUATOR.WORK is not None:
+            workarea.called(self.m, self.EVALUATOR.WORK, addr)
         self.guard = self.m.outside_ram()  # # ram: でRAMの終わりが動くので、CALLごとに作る
         cpu.r = self.CALL_R + 2
         if self.OUTER_RETURN is not None:

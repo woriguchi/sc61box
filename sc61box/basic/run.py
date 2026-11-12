@@ -6,11 +6,13 @@ Basicのメソッド(液晶に出す、キーを待つ、CPUに渡す)を使う�
 """
 
 from collections.abc import Generator
+from contextlib import nullcontext
 from dataclasses import dataclass
 from decimal import Decimal
 
 from ..machine import CLOCK
-from . import program, timing, variables
+from ..number import randomize
+from . import program, timing, variables, workarea
 from .errors import BasicError
 from .evaluate import Evaluator, expect_end, number
 from .timing import Meter
@@ -130,6 +132,7 @@ class Runner:
         self.code = b""  # いまの行の中身
         self.pos = 0
         self.meter = Meter()  # 文の実行にかかった時間をためる
+        self.timeline: workarea.Timeline | None = None  # 文のあいだに作業領域へ書いたもの
         self.stmt = 0  # いまの文の頭の位置
         self.at = (0, 0)  # 状態を保存したときに、実行を続ける(行の番地, 位置)
         self.mode = basic.mode  # 実行を始めたときのモード
@@ -151,6 +154,7 @@ class Runner:
         self.waited_step = False
         self.dead_cont = False
         self._jumped = False
+        self._read_to: tuple[int, int] | None = None  # 跳ぶ文を読み終えた所(行の番地, 位置)
         self._chained = False
         self.trailing = False  # いまのPRINTが;で終わった(PC-1261系とPC-1350)
 
@@ -160,6 +164,11 @@ class Runner:
         行(なければ最初の行)から実行する(観察)"""
         self.VARS.clear_arrays(self.m)
         self.data = None
+        self._data_read(self.PROGRAM.first(self.m))
+        self._flag(0x06, True)
+        w = self.EVALUATOR.WORK
+        if w is not None:
+            workarea.put(self.m, w.using, bytes(3))  # USINGをやめる
         self.using = Format()
         self.wait = None
         yield from self.go(line)
@@ -371,11 +380,9 @@ class Runner:
                             raise Break(n, self.stopped_pos(), kind)
                         self.at = (self.addr, self.pos)
                         yield self.TIMES.STATEMENT
-                        yield from self._statement()
+                        yield from self._recorded(self._statement())
                     self.at = (self.addr, self.pos)
-                    spent = self.meter.take()
-                    if spent:
-                        yield spent
+                    yield from self._spend(self.meter.take())
                     if self._jumped:
                         break
                     if self._chained:
@@ -411,6 +418,7 @@ class Runner:
         return max(pos, 0)
 
     def _jump(self, addr: int, pos: int = 0) -> None:
+        self._read_to = self._read_to or (self.addr, self.pos)  # 跳ぶ文を読み終えた所
         self.addr, self.pos = addr, pos
         self._jumped = True
 
@@ -479,34 +487,126 @@ class Runner:
     def _at_end(self) -> bool:
         return self.pos >= len(self.code) or self.code[self.pos] == self.COLON
 
+    def _recorded(self, steps: Steps) -> Steps:
+        """文を実行しながら、作業領域に書いた順と時間を覚える。文の途中で待つ(PRINTなど)ときは、
+        それまでに書いたものはそのままにして、待ったあとから覚え直す"""
+        self.timeline = self._new_timeline()
+        try:
+            for n in steps:
+                self.timeline = None
+                yield n
+                self.timeline = self._new_timeline()
+        except BaseException:
+            self.timeline = None
+            raise
+
+    def _new_timeline(self) -> workarea.Timeline | None:
+        self.settle()
+        return None if self.EVALUATOR.WORK is None else workarea.Timeline(self.meter)
+
+    def settle(self) -> None:
+        """作業領域の書き戻しの途中なら、書き終える(状態を保存する前など)"""
+        if self.timeline is not None:
+            self.timeline.finish(self.m)
+            self.timeline = None
+
+    def _spend(self, spent: int) -> Steps:
+        """文にかかった時間spentを待つ。そのあいだに、文で作業領域に書いたものを、書いた順に、
+        書いたときまでにかかった時間に合わせて書き戻す(workarea.Timeline)"""
+        done = 0
+        tl = self.timeline
+        if tl is not None and tl.rewind(self.m):
+            while (t := tl.next_time()) is not None:
+                t = min(t, spent)
+                if t > done:
+                    yield t - done
+                    done = t
+                tl.step(self.m)
+        self.settle()
+        if spent > done:
+            yield spent - done
+
     def _statement(self) -> Steps:
         """文を1つ実行する。位置の決まらないエラーは、文の頭の位置にする(観察: RETURNの
         ERROR 5はRETURNの位置)"""
         start = self.stmt = self.pos
+        self._read_to = None
+        self.work_done()
         try:
-            c = self.code[self.pos]
-            if c == self.QUOTE:
-                # 文字列だけの文は何もしない(行の頭なら、DEFで実行するラベル。観察)
-                self.pos = self._ev().skip_string()
-                # ラベルのあとは「:」なしで文を書ける(観察)
-                self._chained = self.pos < len(self.code) and self.code[self.pos] != self.COLON
-                return
-            if self.EVALUATOR.is_letter(c):
-                self._assign()
-                self.fresh = False
-                return
-            self.pos += 1
-            handler = self.STATEMENTS.get(c)
-            if handler is None:
-                # 文の頭に来られない字や関数はERROR 9、ほかの命令はERROR 1(観察)
-                raise BasicError(9 if c < self.TOKEN or c in self.NOT_STATEMENTS else 1)
-            result = handler(self)
-            if result is not None:
-                yield from result
-            self.fresh = False
+            yield from self._run_statement()
         except BasicError as e:
             e.at(start)
             raise
+        self.work_done(ended=True)
+
+    def _run_statement(self) -> Steps:
+        c = self.code[self.pos]
+        if c == self.QUOTE:
+            # 文字列だけの文は何もしない(行の頭なら、DEFで実行するラベル。観察)
+            self.pos = self._ev().skip_string()
+            # ラベルのあとは「:」なしで文を書ける(観察)
+            self._chained = self.pos < len(self.code) and self.code[self.pos] != self.COLON
+            return
+        if self.EVALUATOR.is_letter(c):
+            self._assign()
+            self.fresh = False
+            return
+        self.pos += 1
+        handler = self.STATEMENTS.get(c)
+        if handler is None:
+            # 文の頭に来られない字や関数はERROR 9、ほかの命令はERROR 1(観察)
+            raise BasicError(9 if c < self.TOKEN or c in self.NOT_STATEMENTS else 1)
+        result = handler(self)
+        if result is not None:
+            yield from result
+        self.fresh = False
+
+    def work_done(self, ended: bool = False) -> None:
+        """文の頭と終わりで、文字列の作業場所を空にし、積んだFOR・GOSUBの数と、いまの行の
+        位置を書く。endedなら、終えた文の最後のバイトの番地も書く(観察)"""
+        w = self.EVALUATOR.WORK
+        if w is None:
+            return
+        m = self.m
+        workarea.set_free(m, w, w.strings)
+        workarea.set_records(m, w, len(self.loops), len(self.returns))
+        workarea.Stacks(m, w).reset()
+        addr, pos = self._read_to or (self.addr, self.pos) if ended else (self.addr, self.pos)
+        if self.PROGRAM.number_at(m, addr) is None:
+            return  # 打った行
+        head = self.basic.LINE_HEAD
+        workarea.put_word(m, w.program_head, self.PROGRAM.block_first(m, self.addr) - 1)
+        if ended:
+            workarea.put_word(m, w.last, addr + head + pos - 1)
+            if w.line_numbers:
+                workarea.put(m, w.last + 2, bytes(m.mem[addr : addr + 2]))
+
+    def _record(self, kind: str) -> None:
+        """積んだFOR(kindが"for")かGOSUBの記録を作業領域に書く(観察)。戻る位置は、次に
+        実行する文の頭の1つ前の番地(同じ行なら「:」、次の行なら行の頭の最後のバイト、
+        プログラムの終わりならFFh)と、PC-1251系はその行の行番号の2バイト(終わりならFFh 00h)"""
+        w = self.EVALUATOR.WORK
+        if w is None or self.PROGRAM.number_at(self.m, self.addr) is None:
+            return
+        head = self.basic.LINE_HEAD
+        line = bytes(self.m.mem[self.addr : self.addr + 2])
+        if self.pos < len(self.code):
+            at = self.addr + head + self.pos
+        else:
+            at = self.PROGRAM.next_line(self.m, self.addr)
+            if self.PROGRAM.number_at(self.m, at) is None:
+                line = b"\xff\x00"
+            else:
+                line = bytes(self.m.mem[at : at + 2])
+                at += head - 1
+        back = bytes([at & 0xFF, at >> 8]) + (line if w.int_limit else b"")
+        fs, gs = workarea.record_size(w)
+        if kind == "for":
+            loop = self.loops[-1]
+            data = workarea.for_record(w, loop.ref.addr, loop.limit, loop.step, back)
+            workarea.put(self.m, w.for_at + fs * (len(self.loops) - 1), data)
+        else:
+            workarea.put(self.m, w.gosub_at + gs * (len(self.returns) - 1), back)
 
     # ---- 文 ----
     def _assign(self, let: bool = False) -> None:
@@ -520,6 +620,7 @@ class Runner:
             if not e.take(self.EQ):
                 # 位置は、LETなら変数のあと、LETを省いた文ならその代入の頭(観察)
                 raise BasicError(1, e.pos) if let else BasicError(9, start)
+            self.assigning(e, target)
             value = e.expression()
             self.pos = e.pos
             try:
@@ -527,9 +628,22 @@ class Runner:
             except BasicError as err:
                 err.at(e.pos - 1)  # 型が合わないときは、式の最後の字(観察)
                 raise
+            self.assigned(value)
             self.meter.add(self.TIMES.ASSIGN)
             if not self._take(self.COMMA):
                 return
+
+    def assigning(self, e: Evaluator, target) -> None:
+        """代入する変数を作業領域に書く(固定の変数だけ。観察)"""
+        w = self.EVALUATOR.WORK
+        if w is not None and target.subs is None:
+            workarea.assigning(self.m, w, e.resolve(target).addr, target.string)
+
+    def assigned(self, value: Decimal | bytes) -> None:
+        """代入した値の写しを作業領域に書く(観察)"""
+        w = self.EVALUATOR.WORK
+        if w is not None:
+            workarea.assigned(self.m, w, value)
 
     def _store(self, ref: variables.Ref, value: Decimal | bytes) -> None:
         """代入・READ・INPUT・AREADで変数に入れる(入れた値をBasicに知らせる)"""
@@ -539,7 +653,9 @@ class Runner:
         self._assign(let=True)
 
     def _print(self, pause: bool = False) -> Steps:
+        token = None if pause else self.addr + self.basic.LINE_HEAD + self.pos - 1
         items, comma = self._print_items()
+        self._printed(items, comma, token)
         numbers = sum(isinstance(v, Decimal) for v in items)
         # 字にして書き終えてから液晶を点ける(観察)
         yield self.meter.take() + self.TIMES.PRINT + self.TIMES.PRINT_NUMBER * numbers
@@ -637,8 +753,11 @@ class Runner:
         items: list[Decimal | bytes] = []
         separators: list[int] = []
         self.trailing = False
+        w = self.EVALUATOR.WORK
         while not self._at_end():
             items.append(self._expression())
+            if w is not None and isinstance(items[-1], bytes):
+                workarea.release(self.m, w, items[-1])  # 項目ごとに作業場所を空ける(観察)
             if self.pos < len(self.code) and self.code[self.pos] in (self.COMMA, self.SEMICOLON):
                 separators.append(self.code[self.pos])
                 if (
@@ -674,6 +793,10 @@ class Runner:
                 raise BasicError(1, self.pos)
         else:
             self.using = Format()
+        w, n = self.EVALUATOR.WORK, self.using.number
+        if w is not None:  # 数の書式の#の数と文字列の書式の&の数(観察)
+            nums = [n.width, n.decimals + n.dot] if n else [0, 0]
+            workarea.put(self.m, w.using, bytes([*nums, self.using.text or 0]))
         if after_print:
             if not self._take(self.SEMICOLON):
                 raise BasicError(1, self.pos)
@@ -682,6 +805,48 @@ class Runner:
 
     def _using(self) -> None:
         self._set_using()
+
+    def _printed(self, items: list[Decimal | bytes], comma: bool, token: int | None) -> None:
+        """PRINT・PAUSEで出すものを作業領域に書く(観察)。最初の項目と,のあとの項目は代入した
+        値の写しの場所に置く。数はSTR$と同じ所で字にする"""
+        w = self.EVALUATOR.WORK
+        if w is None or not items:
+            return
+        m, basic, fmt = self.m, self.basic, self.using
+        first = items[0]
+        if isinstance(first, bytes) and not comma and basic.dialect.print_copy_number:
+            first = next((v for v in items if isinstance(v, Decimal)), first)
+        for i, v in enumerate(items):
+            if w.print_copies and (i == 0 or comma):
+                self.assigned(first if i == 0 else v)
+            if isinstance(v, Decimal) and fmt.number is None:
+                text = basic.print_text([v], False, fmt, joined=True).strip(bytes([basic.SPACE]))
+                workarea.put_number_text(m, w, text, basic.CODES, with_text=False)
+        cells = basic.screen.width
+        last = items[-1]
+        size = len(basic.print_text([last], False, fmt, joined=True))
+        if comma:
+            # 文字列の欄は字の数だけ、数の欄は半分の幅を数える(観察)
+            half = cells // 2
+            widths = [
+                half
+                if isinstance(v, Decimal)
+                else min(len(basic.print_text([v], False, fmt)), half)
+                for v in items
+            ]
+            end = half * (len(items) - 1) + widths[-1]
+            start = sum(widths[:-1])
+        elif len(items) == 1 and isinstance(last, Decimal):
+            start, end = 0, cells
+        else:
+            start = len(basic.print_text(items[:-1], False, fmt, joined=True))
+            end = start + size
+        workarea.put(m, w.print_end, bytes([end & 0xFF]))
+        if w.print_item is not None:
+            workarea.put(m, w.print_item, bytes([start & 0xFF]))
+        self._flag(0x04, False)
+        if token is not None and self.PROGRAM.number_at(m, self.addr) is not None:
+            workarea.put_word(m, w.print_token, token)  # PAUSEは書かない(観察)
 
     def _pause(self) -> Steps:
         return self._print(pause=True)
@@ -763,6 +928,7 @@ class Runner:
         if len(self.returns) >= MAX_GOSUB:
             raise BasicError(5)
         self.returns.append((self.addr, self.pos))
+        self._record("gosub")
         self._goto_line(n)
 
     def _return(self) -> None:
@@ -796,6 +962,7 @@ class Runner:
         self.meter.add(self.TIMES.FOR)
         # 同じ変数のFORがあっても、新しく積む(観察: GOTOで同じFORに戻るたびに積まれる)
         self.loops.append(Loop(ref, limit, step, self.addr, self.pos))
+        self._record("for")
 
     def _loop_value(self, e: Evaluator) -> Decimal:
         """FORの終わりか増分。PC-1251系は整数に切り捨て、−32768〜32767の外はERROR 3。
@@ -847,6 +1014,7 @@ class Runner:
                 if len(self.returns) >= MAX_GOSUB:
                     raise BasicError(5)
                 self.returns.append((self.addr, self.pos))
+                self._record("gosub")
             self._goto_line(targets[n - 1], line_end=kind == self.T_GOTO)
 
     def _end(self) -> None:
@@ -864,13 +1032,17 @@ class Runner:
         """READ: DATAの値を変数に入れる"""
         while True:
             e = self._ev()
-            ref = e.reference(create=True)
+            target = e.target()
+            ref = e.resolve(target, create=True)
             self.pos = e.pos
+            self.assigning(e, target)
             try:
                 value, after = self._next_data()
             except BasicError as err:
                 raise BasicError(err.number, self.pos) from None
             self._store(ref, value)
+            self.assigned(value)
+            self._flag(0x02, False)
             # 型が合わずに入れられなかったときは、次もその値を読む(観察)
             self.data = after
             if not self._take(self.COMMA):
@@ -902,9 +1074,24 @@ class Runner:
             raise BasicError(1)
         e = self.EVALUATOR(self.m, code, pos, self.meter)
         value = e.expression()
+        self._data_read(addr, e.pos)
         if e.pos < len(code) and code[e.pos] == self.COMMA:
             return value, (addr, e.pos + 1)
         return value, (self.PROGRAM.next_line(self.m, addr), None)
+
+    def _flag(self, bit: int, on: bool) -> None:
+        """作業領域の状態のビットを立てるか下ろす(観察)"""
+        w = self.EVALUATOR.WORK
+        if w is not None:
+            old = self.m.mem[w.flags]
+            workarea.put(self.m, w.flags, bytes([(old | bit if on else old & ~bit) & 0xFF]))
+
+    def _data_read(self, addr: int, pos: int = 0) -> None:
+        """READで読んだ所を作業領域に書く: 番地addrの行の位置posの1つ前(posが0なら本文の1つ前。
+        観察)"""
+        w = self.EVALUATOR.WORK
+        if w is not None:
+            workarea.put_word(self.m, w.data, addr + self.basic.LINE_HEAD + pos - 1)
 
     def _restore(self) -> None:
         """RESTORE [n]: 次に読むDATAを、最初か行n(行番号かラベル)から探す。行nがなければERROR 4。nを
@@ -913,12 +1100,16 @@ class Runner:
             self.basic.dialect.restore_colon and self.code[self.pos] == self.COLON
         ):
             self.data = None  # PC-1245は:が続いてもよい(観察)
+            self._data_read(self.PROGRAM.first(self.m))
+            self._flag(0x02, True)
             return
         n = self._target()
         found = self._lookup(n)
         if found is None:
             raise BasicError(4, self.pos - 1)
         self.data = (found[1], None)
+        self._data_read(found[1])
+        self._flag(0x02, True)
 
     def _data(self) -> None:
         in_string = False
@@ -941,9 +1132,15 @@ class Runner:
             string = self._take(self.DOLLAR)
             if not self._take(self.LPAREN):
                 raise BasicError(1)
-            dims = [self._integer()]
-            if self._take(self.COMMA):
-                dims.append(self._integer())
+            e = self._ev()
+            first = e.expression()
+            dims = [int(number(first))]
+            if e.take(self.COMMA):
+                # PC-1261系とPC-1350は、1つ目の大きさを計算の積み場所に積んでおく(観察)
+                w = self.EVALUATOR.WORK
+                with e.waiting(self.COMMA, first) if w and w.dim_pushes else nullcontext():
+                    dims.append(int(number(e.expression())))
+            self.pos = e.pos
             if not self._take(self.RPAREN):
                 raise BasicError(1)
             size = 8
@@ -993,6 +1190,7 @@ class Runner:
 
     def _random(self) -> None:
         self.m.rnd_seed = (self.m.rnd_seed * 6364136223846793005 + 1) & ((1 << 64) - 1) or 1
+        randomize(self.m)
 
     def _beep(self) -> Steps:
         """BEEP n: 4kHzの音をn回鳴らす。nが1より小さければ鳴らさない(観察)"""

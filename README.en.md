@@ -16,6 +16,10 @@ sc61box is an emulator of the SC61860, the CPU of the SHARP PC-1251, PC-1245, PC
 
 The user guide, starting from installation on macOS and Windows, is [`doc/manual.pdf`](doc/manual.pdf) (in Japanese).
 
+## In the browser
+
+You can also use sc61box without installing it, by opening [https://sc61box.github.io/](https://sc61box.github.io/) in a browser. The browser version runs without a ROM only; recording, gamepads and running a real ROM are not available there. The RAM of each model is saved in the browser. Once opened, it also works offline and can be added to the home screen.
+
 ## Installing
 
 You need [uv](https://docs.astral.sh/uv/). uv fetches a suitable Python by itself.

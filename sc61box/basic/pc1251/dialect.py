@@ -64,6 +64,7 @@ PC1245 = Dialect(
     repeat_delay=timing.ms(730.0),
     repeat_every=timing.ms(103.0),  # 実機は約100〜110ms(表示をずらすときに長い)
     shift_keywords=_codes(SHIFT_1245),
+    print_copy_number=True,
 )
 
 DIALECTS = {"1250": PC1251, "1251": PC1251, "1255": PC1251, "1245": PC1245}

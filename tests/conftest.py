@@ -80,6 +80,8 @@ def pytest_collection_modifyitems(config, items):
                 "test_basic_state",
                 "test_loading",
                 "test_autotype",
+                "test_display",
+                "test_web",
             )
             or f"{item.module.__name__}::{item.name}" in NO_ROM_NEEDED
         ):
@@ -97,6 +99,7 @@ def pytest_collection_modifyitems(config, items):
         if item.module.__name__ in (
             "test_norom_basic",
             "test_norom_pc1261",
+            "test_norom_work",
             "test_norom1261",
             "test_norom1350",
             "test_routines",

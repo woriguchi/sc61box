@@ -6,7 +6,6 @@ BASICの変数と同じ8バイトの形の数の読み書き、桁の切り捨�
 
 from __future__ import annotations
 
-import hashlib
 import math
 from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal, localcontext
 
@@ -146,22 +145,90 @@ def _random(m) -> int:
     return (x * 0x2545F4914F6CDD1D) & MASK64
 
 
-def _below(m, n: int) -> int:
-    """0以上n未満の乱数"""
-    v = 0
-    for _ in range(n.bit_length() // 64 + 2):
-        v = v << 64 | _random(m)
-    return v % n
+# 乱数の種を置く番地と、電源を入れたときの種(観察。PC-1251系はπ、PC-1261系とPC-1350は180/π)
+SEED_1251 = (0xF8B0, bytes.fromhex("0000314159265359"))
+SEED_1261 = (0x28B8, bytes.fromhex("0010572957795131"))
+SEED_1350 = (0x7298, bytes.fromhex("0010572957795131"))
+
+
+def _seed_place(m) -> tuple[int, bytes]:
+    if m.model.family == "1350":
+        return SEED_1350
+    return SEED_1261 if m.model.lines == 2 else SEED_1251
+
+
+def _digits(b: bytes) -> int | None:
+    """8バイトの数の仮数の12桁(BCDでなければNone)"""
+    text = "".join(f"{v:02X}" for v in b[2:8])
+    return int(text) if text.isdigit() else None
+
+
+def reset_seed(m) -> None:
+    """電源を入れたときの種を置く(観察)"""
+    at, init = _seed_place(m)
+    m.mem[at : at + 8] = init
+
+
+def _seed(m) -> Decimal:
+    """いまの乱数の種(0〜1)。仮数の12桁を0.の後ろに並べた数とみる。指数の欄は見ない(観察)。
+    仮数がBCDでなければ、電源を入れたときの種とみる"""
+    at, init = _seed_place(m)
+    d = _digits(bytes(m.mem[at : at + 8]))
+    return Decimal(d if d is not None else _digits(init) or 0).scaleb(-12)
+
+
+def _advance(m, s: Decimal) -> None:
+    """種sから次の種を求めてRAMに置く(観察)。p=230sを12桁で切り捨て、pが1以上か0なら
+    (pを10で割った余り)を10^-10の桁で切り捨てて10^-11を足し、10で割る(指数は−1のまま、仮数の
+    頭の0は詰めない)。pが1より小さければ、pを10^-10の桁で切り捨てて12桁目に1を足し、10で割る。
+    指数の欄の下位4ビットにはpの十の位を置く"""
+    with localcontext() as c:
+        c.prec = 40
+        p = s * 230
+        if p:
+            p = p.quantize(Decimal(1).scaleb(p.adjusted() - 11), rounding=ROUND_DOWN)
+        tens = int(p // 10) % 10
+        buf = bytearray(8)
+        if p >= 1 or p == 0:
+            y = (p % 10).quantize(Decimal("1E-10"), rounding=ROUND_DOWN) + Decimal("1E-11")
+            new = y / 10
+            d = f"{int(new.scaleb(12)):012d}"
+            buf[:2] = b"\x99\x90"
+            buf[2:] = bytes(int(d[i : i + 2], 16) for i in range(0, 12, 2))
+        else:
+            y = p.quantize(Decimal("1E-10"), rounding=ROUND_DOWN)
+            y += Decimal(1).scaleb((y.adjusted() if y else -10) - 11)
+            new = y / 10
+            put_num(buf, 0, new)
+        buf[1] |= tens
+    at, _ = _seed_place(m)
+    m.mem[at : at + 8] = buf
+
+
+LOG10_E = Decimal("0.434294481903")
 
 
 def random_value(m, x: Decimal) -> Decimal:
-    """RND xの値。1以上なら1〜その数の整数、0以上1未満なら0と1のあいだの数。負なら、その数で
-    乱数の種を決めてから0と1のあいだの数(乱数の並びはROMと違う)"""
+    """RND x(観察)。種を進め、xが1以上ならINT(種×x)+1、0以上1未満なら種そのもの(種は_seedの
+    読み方で読む)。負なら、xの仮数の12桁(PC-1261系とPC-1350は|x|×log10(e)の仮数の12桁)を0.の
+    後ろに並べた数を種にしてから進め、種そのもの"""
     if x < 0:
-        m.rnd_seed = int.from_bytes(hashlib.sha256(str(x).encode()).digest()[:8]) or 1
+        y = x if _seed_place(m) == SEED_1251 else cut(-x * LOG10_E)
+        buf = bytearray(8)
+        put_num(buf, 0, y)
+        s = Decimal(_digits(bytes(buf)) or 0).scaleb(-12)
+    else:
+        s = _seed(m)
+    _advance(m, s)
+    new = _seed(m)
     if x >= 1:
-        return Decimal(1 + _below(m, int(x)))
-    return Decimal(1 + _below(m, 10**12 - 1)).scaleb(-12)
+        return Decimal(int(new * x) + 1)
+    return new
+
+
+def randomize(m) -> None:
+    """RANDOM: 種を新しくする(ROMのある本体は時刻から作る。ここではrnd_seedから作る)"""
+    _advance(m, Decimal(_random(m) % 10**12).scaleb(-12))
 
 
 def number_text(v: Decimal) -> list[str]:
@@ -178,6 +245,27 @@ def number_text(v: Decimal) -> list[str]:
     else:
         body = [ds[0], ".", *ds[1:], "[E]", "-" if e < 0 else " ", *f"{abs(e):02d}"]
     return ["-", *body] if sign else body
+
+
+def put_str_work(
+    m, base: int, first: int, text_at: int | None, text: bytes, codes: dict[str, int]
+) -> None:
+    """STR$が数を字にするのに使ったRAMの跡(観察)。textはSTR$の字の並び、codesは字の文字コード。
+    baseからの28バイトを空白で埋め、15〜23バイト目を0で埋め、小数点が14バイト目に来るように
+    字を置いた形のうち、first(バイト数)から後ろを書く。text_atには、小数点のない数に小数点を
+    足した字の並びと、24バイトまでの残りのFFhを書く"""
+    dot = codes["."]
+    shown = text if dot in text else text + bytes([dot])
+    buf = bytearray([codes[" "]] * 28)
+    buf[15:24] = bytes([codes["0"]] * 9)
+    start = 14 - shown.index(dot)
+    for i, c in enumerate(shown):
+        if 0 <= start + i < 28:
+            buf[start + i] = c
+    m.mem[base + first : base + 28] = buf[first:]
+    if text_at is not None:
+        m.mem[text_at : text_at + 24] = shown[:24].ljust(24, b"\xff")
+    m.lcd_dirty = True
 
 
 def leading_number(s: bytes, exp_spaces: bool = False) -> Decimal:

@@ -3,7 +3,7 @@
 from decimal import Decimal
 
 from ... import charset, number
-from .. import dialect, evaluate, timing
+from .. import dialect, evaluate, timing, workarea
 from ..evaluate import by_code
 from . import tokens, variables
 
@@ -46,6 +46,18 @@ class Evaluator(evaluate.Evaluator):
     TIMES = timing.PC1251
     FUNCTION_TIME = by_code(tokens.KEYWORDS_1251, evaluate.function_times(TIMES))
     VARS = variables.PC1251
+    # 計算に使うRAM(観察)。STR$の跡のうち、F800〜F80Fは計算の積み場所で、あとで戻す
+    WORK = workarea.Layout(
+        ops=0xF800, ops_size=16, ops_count=0xC6F6, values=0xF840, values_size=8,
+        values_top=0xC6F5, strings=0xC760, strings_end=0xC7B0, strings_next=0xC6F7,
+        copy=0xC6C6, copy_number=None, target=0xC6EB, call=0xC6DC, number_work=0xF800,
+        number_first=0x10, number_text=0xF820, unary_minus=0x3A, string_array=0x80,
+        array_kinds=False, dim_pushes=False, colon=0x1D,
+        for_at=0xC710, for_top=0xC6F3, gosub_at=0xF880, gosub_top=0xC6F4, int_limit=True,
+        last=0xC6FE, line_numbers=True, data=0xC70E, reading=None, program_head=None,
+        flags=0xC6D8, print_end=0xC6E7, print_item=0xC6A2, print_token=0xC6B5, using=0xC6F9,
+        print_copies=True, print_page=None,
+    )  # fmt: skip
     is_digit = staticmethod(is_digit)
     is_letter = staticmethod(is_letter)
     display_number = staticmethod(display_number)
