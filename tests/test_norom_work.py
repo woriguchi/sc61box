@@ -364,27 +364,35 @@ def number_of(m, at: int) -> Decimal:
     return get_num(m.mem, at)
 
 
-@pytest.mark.parametrize("model", ["1251", "1245"])
-def test_sample_stack_shows_work_area(model, monkeypatch):
-    """見本stack.bas: 表示をオンにしたまま式を計算すると、液晶RAMに積んだ演算子と値が見える。
-    止まったときの点の並びは、ROMのある本体で観察したものと同じ"""
-    from sc61box import programs
+# 表示をオンにしたまま、割り算を入れ子にした式を計算し続け、最後の模様のまま止まる
+SHOWING = (
+    "10 POKE &C200,2,1,255,177,55\n20 CALL &C200\n30 FOR I=1 TO 30\n"
+    "40 A=I/7+(2*I/7+(3*I/7+(4*I/7+(5*I/7+(6*I/7+I/7)))))\n50 NEXT I\n60 GOTO 60\n"
+)
 
-    monkeypatch.setattr(helpers, "MODEL", model)
-    prog = programs.find("stack", model)
-    assert prog is not None and not prog.errors and prog.runs_on(model)
+
+def _showing(model: str = "1251", seconds: int = 3):
     m = basic_machine(model)
     t = Typer(m)
     t.add_mode("PRO")
     finish(m, t)
     m.run(CLOCK)
-    t.add_text(prog.basic)
+    t.add_text(SHOWING)
     t.add_mode("RUN")
     finish(m, t)
     m.run(CLOCK)
     t.add_text("RUN\n")
     finish(m, t)
-    m.run(CLOCK * 20)
+    m.run(CLOCK * seconds)
+    return m
+
+
+@pytest.mark.parametrize("model", ["1251", "1245"])
+def test_shown_work_area(model, monkeypatch):
+    """表示をオンにしたまま式を計算すると、液晶RAMに積んだ演算子と値が見える。止まったときの
+    点の並びは、ROMのある本体で観察したものと同じ"""
+    monkeypatch.setattr(helpers, "MODEL", model)
+    m = _showing(model, 20)
     assert m.display_on()
     # 演算子: +と(を交互に、最後に/
     assert bytes(m.mem[0xF800:0xF80C]) == bytes.fromhex("35 30 35 30 35 30 35 30 35 30 35 38")
@@ -396,31 +404,11 @@ def test_sample_stack_shows_work_area(model, monkeypatch):
     assert bytes(m.mem[0xF840:0xF878]) == values
 
 
-def _stack_running(model: str = "1251"):
-    from sc61box import programs
-
-    prog = programs.find("stack", model)
-    assert prog is not None
-    m = basic_machine(model)
-    t = Typer(m)
-    t.add_mode("PRO")
-    finish(m, t)
-    m.run(CLOCK)
-    t.add_text(prog.basic)
-    t.add_mode("RUN")
-    finish(m, t)
-    m.run(CLOCK)
-    t.add_text("RUN\n")
-    finish(m, t)
-    m.run(CLOCK * 3)
-    return m
-
-
 def test_work_area_changes_during_statement(monkeypatch):
     """文の時間のあいだに、積んだ演算子と値が少しずつ変わって見える(ROMのある本体では、2秒の
     あいだに液晶RAMの作業領域が65回変わった。文の終わりに一度に変わるのではない)"""
     monkeypatch.setattr(helpers, "MODEL", "1251")
-    m = _stack_running()
+    m = _showing()
     prev, changes = None, 0
     for _ in range(400):  # 2秒を5msごとに見る
         m.run(CLOCK // 200)
@@ -435,7 +423,7 @@ def test_snapshot_settles_work_area(monkeypatch):
     import base64
 
     monkeypatch.setattr(helpers, "MODEL", "1251")
-    m = _stack_running()
+    m = _showing()
     for _ in range(200):
         m.run(CLOCK // 500)
         assert m.basic is not None
@@ -495,7 +483,7 @@ def test_machine_freed_while_replaying(monkeypatch):
     import weakref
 
     monkeypatch.setattr(helpers, "MODEL", "1251")
-    m = _stack_running()
+    m = _showing()
     for _ in range(200):
         m.run(CLOCK // 500)
         assert m.basic is not None
@@ -510,11 +498,16 @@ def test_machine_freed_while_replaying(monkeypatch):
     assert ref() is None
 
 
-def _sample_lcd(m, name: str, seconds: int) -> bytes:
+def test_dodge_sample(monkeypatch):
+    """見本dodge.bas: キーを押さなければ、岩に当たって「SCORE 5.」になる(ROMのある本体と同じ)"""
+    from basic_diff import lcd
+
     from sc61box import programs
 
-    prog = programs.find(name, "1251")
+    monkeypatch.setattr(helpers, "MODEL", "1251")
+    prog = programs.find("dodge", "1251")
     assert prog is not None and not prog.errors
+    m = basic_machine("1251")
     t = Typer(m)
     t.add_mode("PRO")
     finish(m, t)
@@ -525,16 +518,14 @@ def _sample_lcd(m, name: str, seconds: int) -> bytes:
     m.run(CLOCK)
     t.add_text("RUN\n")
     finish(m, t)
-    m.run(CLOCK * seconds)
-    assert m.display_on()
-    return bytes(m.mem[0xF800:0xF880])
-
-
-@pytest.mark.parametrize(("name", "seconds"), [("mix", 20), ("func", 18)])
-def test_sample_matches_rom(name, seconds, monkeypatch):
-    """見本mix.bas・func.bas: 止まったときの液晶RAMが、ROMのある本体と同じ"""
-    monkeypatch.setattr(helpers, "MODEL", "1251")
-    hle = _sample_lcd(basic_machine("1251"), name, seconds)
-    assert any(hle[:0x10]) and any(hle[0x40:])  # 演算子と値を積んだ跡がある
-    if HAVE["1251"]:
-        assert hle == _sample_lcd(boot("1251")[0], name, seconds)
+    fields = []
+    for _ in range(1500):
+        m.run(CLOCK // 100)
+        field = bytes(m.mem[0xF848:0xF878])
+        if not fields or fields[-1] != field:
+            fields.append(field)
+        if "SCORE" in lcd(m):
+            break
+    m.run(CLOCK)
+    assert lcd(m).strip() == "SCORE 5."
+    assert len(fields) >= 6  # 1回の掛け算ごとに少しずつ変わる

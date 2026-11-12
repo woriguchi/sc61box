@@ -76,6 +76,12 @@ class Timing:
     MUL_PER_DIGIT: int
     DIV: int
     DIV_PER_DIGIT: int
+    # 配列の要素を読むか書く(添字を計算する時間のほかに)。A(n)の固定の変数は別
+    ARRAY: int
+    ARRAY_PER_SUBSCRIPT: int  # 2つ目からの添字1つごと
+    FIXED_ARRAY: int
+    READ_ITEM: int  # READで値を1つ読んで入れる
+    RESTORE_LINE: int  # RESTOREで行を指定したとき
     # 計算のルーチン(FADD、FSINなど。romsyms.ROUTINES_1251の名前)にかかる時間
     routines: dict[str, int] = field(default_factory=dict)
 
@@ -123,5 +129,10 @@ PC1251 = Timing(
     MUL_PER_DIGIT=ms(0.38),
     DIV=ms(27.95),
     DIV_PER_DIGIT=ms(0.325),
+    ARRAY=ms(14.7),  # A=T(1)はA=Bより14.4ms、T(1)=Aは15.3ms、A$=S$(1)は14.7ms長い
+    ARRAY_PER_SUBSCRIPT=ms(9.2),  # A=U(1,2)はA=Bより23.8ms長い
+    FIXED_ARRAY=ms(8.3),  # A=A(2)はA=Bより8.2ms長い
+    READ_ITEM=ms(12.9),  # RESTOREのあとREAD Aで22.2ms、READ A,B,Cで48.1ms
+    RESTORE_LINE=ms(9.5),  # RESTORE 20はRESTOREより10.9ms長い
     routines={name: routine(name) for name in norom.ROUTINES},
 )

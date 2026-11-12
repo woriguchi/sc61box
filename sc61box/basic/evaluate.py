@@ -556,6 +556,11 @@ class Evaluator:
                 self.VARS.fixed_addr(target.name - self.LETTER_BASE), target.string
             )
         subs = [0, target.subs[1]] if create and target.quirk else target.subs
+        t = self.TIMES
+        if self.VARS.fixed(self.m, target.name, target.string, subs):
+            self.spend(t.FIXED_ARRAY)
+        else:
+            self.spend(t.ARRAY + t.ARRAY_PER_SUBSCRIPT * (len(subs) - 1))
         try:
             return self.VARS.element(self.m, target.name, target.string, subs, create)
         except BasicError as e:

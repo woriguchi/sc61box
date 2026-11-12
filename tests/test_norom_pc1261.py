@@ -468,7 +468,7 @@ def _loop_time(m, body: str, n: int, more: tuple[str, ...] = (), marker: int = 0
     return (m.cpu.cycles - start) / CLOCK
 
 
-LOOP_BODIES = ["", "A=1", "A=I+1", "A=I/3", "A=SQR I", "PRINT 1", "CLS", "CURSOR 24"]
+LOOP_BODIES = ["", "A=1", "A=I+1", "A=I/3", "A=SQR I", "PRINT 1", "CLS", "CURSOR 24", "A=A(2)"]
 
 
 @pytest.mark.parametrize("body", LOOP_BODIES)
@@ -482,6 +482,27 @@ def test_loop_time_like_rom(body):
 
     def per_loop(make) -> float:
         return (_loop_time(make(), body, 150) - _loop_time(make(), body, 50)) / 100
+
+    rom = per_loop(lambda: boot("1261")[0])
+    own = per_loop(lambda: basic_machine("1261"))
+    assert abs(own / rom - 1) < 0.1, (body, rom, own)
+
+
+READ_LOOPS = [
+    ("RESTORE 30:READ A,B,C", ("30 DATA 1,2.5,3",)),
+    ("RESTORE 30:READ A(2)", ("30 DATA 1",)),
+]
+
+
+@pytest.mark.parametrize(("body", "more"), READ_LOOPS)
+def test_read_time_like_rom(body, more):
+    """RESTOREとREADの時間が、ROMのある本体と10%以内(PC-1261)"""
+    if not HAVE_ROM_1260:
+        pytest.skip("ROMがない")
+    from basic_diff import basic_machine
+
+    def per_loop(make) -> float:
+        return (_loop_time(make(), body, 150, more) - _loop_time(make(), body, 50, more)) / 100
 
     rom = per_loop(lambda: boot("1261")[0])
     own = per_loop(lambda: basic_machine("1261"))

@@ -201,9 +201,13 @@ class Variables:
         m.mem[bottom : bottom + self.HEAD - 3 + length] = head + bytes(length - 3)
         self.set_bottom(m, bottom)
 
+    def fixed(self, m, name: int, string: bool, subs: list[int]) -> bool:
+        """A(n)・A$(n)の固定の変数の続きか"""
+        return name == self.EXTRA and len(subs) == 1 and self._fixed_a(m, string)
+
     def element(self, m, name: int, string: bool, subs: list[int], create: bool) -> Ref:
         """配列の要素の場所。A(n)・A$(n)は固定の変数の続き"""
-        if name == self.EXTRA and len(subs) == 1 and self._fixed_a(m, string):
+        if self.fixed(m, name, string, subs):
             return self._fixed_element(m, subs[0], string, create)
         arr = self.find(m, name, string)
         if arr is None:

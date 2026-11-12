@@ -47,5 +47,12 @@ PC1261 = replace(
     # BEEPの1回は、PC-1261で205.2ms鳴って209.3ms休む(PC-1350は203.8msと207.1ms)
     BEEP_ON=ms(204.5),
     BEEP_OFF=ms(208.2),
+    # A=T(1)はA=Bより12.7ms、T(1)=Aは13.0ms、A=U(1,2)は20.2ms、A=A(2)は7.7ms長い(PC-1350も
+    # ほぼ同じ)
+    ARRAY=ms(11.4),
+    ARRAY_PER_SUBSCRIPT=ms(7.3),
+    FIXED_ARRAY=ms(6.2),
+    READ_ITEM=ms(11.2),  # READ Aで15.3ms、READ A,B,Cで37.7ms、6つで71.3ms
+    RESTORE_LINE=ms(9.0),  # RESTORE 30:A=BはA=Bより14.4ms長い
     routines=_ROUTINES,
 )

@@ -1041,6 +1041,7 @@ class Runner:
             except BasicError as err:
                 raise BasicError(err.number, self.pos) from None
             self._store(ref, value)
+            self.meter.add(self.TIMES.READ_ITEM)
             self.assigned(value)
             self._flag(0x02, False)
             # 型が合わずに入れられなかったときは、次もその値を読む(観察)
@@ -1107,6 +1108,7 @@ class Runner:
         found = self._lookup(n)
         if found is None:
             raise BasicError(4, self.pos - 1)
+        self.meter.add(self.TIMES.RESTORE_LINE)
         self.data = (found[1], None)
         self._data_read(found[1])
         self._flag(0x02, True)
