@@ -446,4 +446,6 @@ def test_app_names_broken_state_file(tmp_path):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(state, f)
     app.load_state(path)
-    assert app.status == f"状態を読み込めません({path}): 状態ファイルが破損しています"
+    from sc61box.app import _short  # ホームの下なら~で始める(Windowsの一時フォルダはホームの下)
+
+    assert app.status == f"状態を読み込めません({_short(path)}): 状態ファイルが破損しています"
