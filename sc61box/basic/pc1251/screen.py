@@ -2,7 +2,7 @@
 
 from ... import charset
 from ...basictext import CHARS
-from .. import screen
+from .. import dialect, screen
 from ..screen import INSERT_MARK, UNDERLINE
 
 # 文字コードの表(basictext.CHARS)にない字
@@ -21,8 +21,14 @@ class Screen(screen.Screen):
     def __init__(self, m) -> None:
         super().__init__(m)
         self.cells = self.width = m.model.cells
+        self.stray = dialect.of(m).stray_glyphs
 
     def show(self, codes: list[int], cursor: int | None = None, shape: bytes = UNDERLINE) -> None:
         for i in range(self.cells):
-            self.put(i, shape if i == cursor else glyph(codes[i]) if i < len(codes) else bytes(5))
+            if i == cursor:
+                self.put(i, shape)
+            elif i < len(codes):
+                self.put(i, self.stray.get(codes[i]) or glyph(codes[i]))
+            else:
+                self.put(i, bytes(5))
         self.m.lcd_dirty = True

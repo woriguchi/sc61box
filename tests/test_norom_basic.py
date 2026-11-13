@@ -667,6 +667,10 @@ def test_programs_match_rom(index):
     assert not differences(a, b), "\n".join(differences(a, b))
 
 
+# 跳ぶ先を探すときに通る、長い行
+_LONG_LINES = "|".join(f"{n} B=1234567890:C=1234567890" for n in range(30, 70))
+_LONG_LABELS = "|".join(f'{n} "C" B=1234567890:C=1234567890' for n in range(30, 70))
+
 SPEED_PROGRAMS = [
     "10 FOR I=1 TO {n}|11 NEXT I",
     "10 FOR I=1 TO {n}|11 A=A+1:B=A*3|12 NEXT I",
@@ -678,6 +682,14 @@ SPEED_PROGRAMS = [
     '10 FOR I=1 TO {n}:WAIT 0:PRINT I;"X"|11 NEXT I',
     "5 DIM T(9),U(3,3)|10 FOR I=1 TO {n}|11 A=T(3)+U(1,2):T(1)=A(2)|12 NEXT I",
     "10 FOR I=1 TO {n}|11 RESTORE 20|12 READ A,B,C|13 NEXT I|20 DATA 8,9.5,7",
+    # 跳ぶ先は、いまの行から前にも後ろにも探し、あいだの行の長さに応じて時間がかかる
+    "10 FOR I=1 TO {n}:GOSUB 90|11 NEXT I:END|" + _LONG_LINES + "|90 RETURN",
+    "10 GOTO 90|11 RETURN|" + _LONG_LINES + "|90 FOR I=1 TO {n}:GOSUB 11|91 NEXT I",
+    "10 I=0|11 GOTO 90|" + _LONG_LINES + "|90 I=I+1:IF I<{n} GOTO 11",
+    "10 I=0|" + _LONG_LINES + "|90 I=I+1:IF I<{n} GOTO 90",
+    # ラベルは頭から探し、前の行の長さに応じて時間がかかる
+    '10 FOR I=1 TO {n}:GOSUB "B"|11 NEXT I:END|' + _LONG_LINES + '|90 "B" RETURN',
+    '10 FOR I=1 TO {n}:GOSUB "B"|11 NEXT I:END|' + _LONG_LABELS + '|90 "B" RETURN',
 ]
 
 
@@ -738,6 +750,190 @@ def test_call_entry_registers_match_rom():
     if have_rom():
         rom = _entry_registers(boot()[0], "CALL &C000")
         assert rom.ram[1] == cpu.ram[1] and rom.r == cpu.r
+
+
+# CALLの戻り方の試験。マシン語はC200番地に置く。startはプログラムの頭のFFhの番地(行10は
+# start+1から。start+0Dhは行10のCALLのあとの:、start+16hは行20の「C=3」の3)
+CALL_LINES = ["10 A=1:CALL &C200:B=2", "20 C=3:D=4", "30 END"]
+ERROR_3 = [0x02, 0x03, 0x94, 0xDB, 0x5B, 0x42, 0x34]  # 14h番地を3にし、戻り番地を1つ進める
+
+
+def _pointer(at: int) -> list[int]:
+    """C6B1h・C6B2h(行の中のいまの位置)にatを書く"""
+    return [0x10, 0xC6, 0xB1, 0x02, at & 0xFF, 0x52, 0x11, 0xB2, 0x02, at >> 8, 0x52]
+
+
+def _status(v: int) -> list[int]:
+    """内部RAMの15hをvにする"""
+    return [0x02, v, 0x95, 0xDB]
+
+
+# (マシン語を作る関数, RUNモードで打つもの(Noneは液晶を見る), 液晶, 変数A〜Dが0でないか)。
+# 液晶は前後の空白を除いたもの(機種で違えば機種ごとの辞書)。値はPC-1251とPC-1245のROMの
+# ある本体で観察したもの
+CALL_RETURNS = [
+    # キャリー1で戻り番地の次へ: 14h番地のエラー。位置はポインタの指すバイト(カーソルは0の上)
+    (lambda s: ERROR_3 + [0xD0, 0x37],
+     ["RUN\n", None, ("mode", "PRO"), ("wait", 1.5), ["UP"], None, ("wait", 0.55), None],
+     ["ERROR 3 IN 10", {"1251": "10:A=1: CALL &C20#:B=2", "1245": "10:1: CALL &C20#"}],
+     "1000"),
+    # キャリー0なら、ふつうに戻ったのと同じ
+    (lambda s: ERROR_3 + [0xD1, 0x37], ["RUN\n", None], [">"], "1111"),
+    # ポインタがプログラムの外: 前へE0h以上のバイトを探して行番号にする(プログラムの終わりの
+    # FFhと次の00hで「(4Fh)00」)
+    (lambda s: _pointer(0xC500) + ERROR_3 + [0xD0, 0x37], ["RUN\n", None],
+     ["ERROR 3 IN  00"], "1000"),
+    # 打った行: 行番号なしのエラー。←でポインタの指すバイトにカーソルを置いて呼び出す
+    (lambda s: ERROR_3 + [0xD0, 0x37],
+     ["CALL &C200\n", None, ["LEFT"], None, ("wait", 0.55), None], ["ERROR 3", "CALL &C20#"],
+     "0000"),
+    # ふつうに戻ると、ポインタの指すバイトの次から読む: 行20の:のあとから
+    (lambda s: _pointer(s + 0x16) + [0x37], ["RUN\n", None], [">"], "1001"),
+    # 次のバイトが:でも行の終わりでもなければERROR 1
+    (lambda s: _pointer(s + 0x0D) + [0x37], ["RUN\n", None], ["ERROR 1 IN 10"], "1000"),
+    # 15hを20hにして戻る: >もBREAKも出さずに止まる(液晶は打った行のまま点ける)。CONTはできない
+    (lambda s: _status(0x20) + [0x37], ["RUN\n", None, "CONT\n", None], ["RUN_", "ERROR 9"],
+     "1000"),
+    # 打った行で15hを30hにして戻る: >だけを出し、CONTは何もせずに>
+    (lambda s: _status(0x30) + [0x37], ["CALL &C200\n", None, "CONT\n", None], [">", ">"],
+     "0000"),
+]  # fmt: skip
+
+
+def _call_return(m, make, actions) -> tuple[list[str], str, int]:
+    """CALL_LINESを登録し、C200番地にmake(プログラムの頭)のマシン語を置いてactionsを行う。
+    (見た液晶, 変数A〜Dが0でないかの字, 液晶を点けているか)"""
+    from basic_diff import play
+
+    from sc61box.basic.pc1251.variables import fixed_addr
+
+    play(m, _program(CALL_LINES, []))
+    code = bytes(make(m.program_start()))
+    m.mem[0xC200 : 0xC200 + len(code)] = code
+    looks = play(m, _program([], actions)[5:])
+    used = "".join(str(int(any(m.mem[fixed_addr(i) : fixed_addr(i) + 8]))) for i in range(1, 5))
+    shown: list[str] = []
+    for x in looks:  # 点滅のあいだをおいて見た2つは、カーソル(#)の位置を残して1つにする
+        u = x.lcd.strip()
+        if (
+            shown
+            and len(u) == len(shown[-1])
+            and "#" in u + shown[-1]
+            and all(a == b or "#" in (a, b) for a, b in zip(u, shown[-1], strict=True))
+        ):
+            u = "".join("#" if "#" in (a, b) else a for a, b in zip(u, shown.pop(), strict=True))
+        shown.append(u)
+    return shown, used, m.pc_out & 1
+
+
+@pytest.mark.parametrize(("make", "actions", "shown", "used"), CALL_RETURNS)
+def test_call_returns_without_rom(make, actions, shown, used):
+    """CALLのマシン語の戻り方(キャリー、戻り番地の次、C6B1hのポインタ、内部RAMの15h)で、
+    ROMのある本体と同じに続けるか止まる"""
+    from basic_diff import basic_machine
+
+    assert _call_return(basic_machine(), make, actions) == (_for_model(shown), used, 1)
+
+
+@pytest.mark.parametrize(("make", "actions", "shown", "used"), CALL_RETURNS)
+def test_call_returns_match_rom(make, actions, shown, used):
+    if not have_rom():
+        pytest.skip("ROMがない")
+    assert _call_return(boot()[0], make, actions) == (_for_model(shown), used, 1)
+
+
+def _for_model(shown: list) -> list[str]:
+    return [x[helpers.MODEL] if isinstance(x, dict) else x for x in shown]
+
+
+def _after_enter(m, lines, until) -> list:
+    """linesを登録し、RUNモードでRUNのENTERを押してから、until(本体)がTrueになるまで、液晶の
+    字と液晶を点けているかが変わるごとに(ミリ秒, 字, 点けているか)を集める(2秒まで)"""
+    from basic_diff import lcd, play
+
+    play(m, _program(lines, ["RUN"]))
+    m.held.add("ENTER")
+    c0, k, seen = m.cpu.cycles, 0, []
+    while m.cpu.cycles - c0 < CLOCK * 2:
+        m.run(CLOCK // 4000)
+        k += 1
+        if k == 200:
+            m.held.discard("ENTER")
+        now = (lcd(m).rstrip(), m.pc_out & 1)
+        if not seen or seen[-1][1:] != now:
+            seen.append(((m.cpu.cycles - c0) * 1000 / CLOCK, *now))
+        if until(m):
+            break
+    return seen
+
+
+def _printing(m) -> tuple[list[str], float]:
+    """「10 PRINT "AB"」をRUNして液晶を点けるまでに液晶RAMに見えた字の並び(書きかけの桁(?)の
+    あるものは除く)と、最初の字を書いてから点けるまでのミリ秒"""
+    from basic_diff import lcd
+
+    seen = _after_enter(m, ['10 PRINT "AB"'], lambda m: m.pc_out & 1 and "AB" in lcd(m))
+    shown = [text for _, text, _ in seen if "?" not in text]
+    first = next(t for t, text, _ in seen if text != "RUN_")
+    return [x for i, x in enumerate(shown) if not i or x != shown[i - 1]], seen[-1][0] - first
+
+
+def test_print_writes_cells_one_by_one():
+    """PRINTは、液晶を消したまま、空白の桁も含めて左から1桁ずつ(1桁に約1.55ms)書いてから
+    液晶を点ける(ROMのある本体で観察: PC-1251は24桁を約38ms、PC-1245は16桁を約26ms)"""
+    from basic_diff import basic_machine
+
+    m = basic_machine()
+    shown, span = _printing(m)
+    assert shown == ["RUN_", "AUN_", "ABN_", "AB _", "AB"]
+    assert abs(span - 1.55 * m.model.cells) < 2, span
+    if have_rom():
+        rom_shown, rom_span = _printing(boot()[0])
+        assert rom_shown == shown and abs(rom_span - span) < 2, (rom_shown, rom_span, span)
+
+
+def _label_value(m) -> bytes:
+    """「10 "A" A=1」をDEFのあとAで実行し始めてから60msの、待たせている値の1段目"""
+    from basic_diff import play
+
+    play(m, _program(['10 "A" A=1', "20 END"], [["DEF"], ("wait", 0.2)]))
+    m.held.add("A")
+    m.run(CLOCK * 60 // 1000)
+    m.held.discard("A")
+    return bytes(m.mem[0xF840:0xF848])
+
+
+def test_def_puts_label_value():
+    """DEFで実行を始めると、ラベルの字を文字列の値(印D0h、番地、長さ)として、待たせている値の
+    1段目に置く。PC-1251は液晶の右端の2桁に、字でない点として見える"""
+    from basic_diff import basic_machine
+
+    m = basic_machine()
+    at = m.program_start() + 4  # 行の頭のFFh、行番号の2バイト、"のあと
+    want = bytes([0, 0, 0, 0, 0xD0, at & 0xFF, at >> 8, 1])
+    assert _label_value(m) == want
+    if have_rom():
+        assert _label_value(boot()[0]) == want
+
+
+def _input_ms(m) -> float:
+    """「10 INPUT A」のRUNのENTERを押してから、?を出して液晶を点けるまでのミリ秒"""
+    from basic_diff import lcd
+
+    seen = _after_enter(m, ["10 INPUT A"], lambda m: m.pc_out & 1 and lcd(m).startswith("?"))
+    return seen[-1][0]
+
+
+def test_input_prompt_time_matches_rom():
+    """INPUTの?を出すまでの時間が、ROMのある本体と同じ(観察: PC-1251は約93ms、PC-1245は約80ms)"""
+    from basic_diff import basic_machine
+
+    want = {"1251": 92.7, "1245": 80.2}[helpers.MODEL]
+    ours = _input_ms(basic_machine())
+    assert abs(ours - want) < want * 0.05, ours
+    if have_rom():
+        rom = _input_ms(boot()[0])
+        assert abs(ours - rom) < rom * 0.05, (rom, ours)
 
 
 def _answer_ms(m, line) -> float:
@@ -1909,3 +2105,105 @@ def test_array_in_lcd_mirror_like_rom():
     assert seen[0] == (0x61, bytes(5), 0x61)
     if len(seen) > 1:
         assert seen[0] == seen[1]
+
+
+def _a_session(m, lines: list[str]) -> list[tuple[str, int, bytes]]:
+    """配列の場所(C560h〜C5CFh)に前の中身を置いてから、RUNモードで行を打つ(CLはCLのキー、!PRO・
+    !RUNはモード)。行ごとに(液晶, 配列の下端, C400h〜C69FhのRAM)を返す"""
+    from basic_diff import lcd
+
+    from sc61box.autotype import Typer
+
+    t = Typer(m)
+    t.add_mode("RUN")
+    finish(m, t)
+    m.run(CLOCK * 3 // 2)
+    m.mem[0xC560:0xC5D0] = bytes(range(0x60, 0xD0))
+    out = []
+    for line in lines:
+        if line == "CL":
+            t.add_keys([["CL"]])
+        elif line.startswith("!"):
+            t.add_mode(line[1:])
+            finish(m, t)
+            m.run(CLOCK)
+        else:
+            t.add_text(line + "\n")
+        finish(m, t)
+        m.run(CLOCK)
+        bottom = m.mem[0xC6FC] | m.mem[0xC6FD] << 8
+        out.append((lcd(m).strip(), bottom, bytes(m.mem[0xC400:0xC6A0])))
+    return out
+
+
+# A(n)の続きの配列とDIM A、A(i,j)、配列をなくすCLEAR・RUN(観察: どの行のあとも、液晶と配列の
+# 下端とRAMがROMのある本体と同じ)
+A_SESSIONS = [
+    ["A(27)", "A(29)", "A(27)=5", "A(30)=7", "A(28)", "A$(31)", "CL", "CLEAR", "A$(27)",
+     'A$(28)="XY"'],
+    ["DIM B(1)", "A(27)", "A(28)", "DIM C(0)", "A(28)", "A(29)", "CL", "A(29)=1", "CL", "A(27)=3"],
+    ["DIM C(170),B(255),D$(0)*38", "A(27)", "CLEAR", "DIM C(170),B(255),D$(0)*39", "A(27)", "CL",
+     "A(27)=1"],
+    ["A(255)", "A(256)", "CL", "CLEAR", "A(256)=1", "CL", "A(0)", "CL", "A(27.9)"],
+    ["DIM A(26)", "DIM A(0)", "CL", "DIM A(30)", "DIM A(2)", "DIM A(31)", "CL", "DIM A$(1)*3",
+     "CL", "CLEAR", "DIM B(1),A(28),C(0)", "DIM A$(30)*3", "CL", "DIM A(256)"],
+    ["DIM A(2,3)", "CL", "DIM A(30,3)", "CL", "A(1,2)=5", "CL", "A(1,28)=6", "CL", "A(1,0)=5",
+     "CL", "B=A(0,0)", "B=A(0,1)", "CL", "A(1,1)", "CL", "B=A(1,2)"],
+    ["B=5", "DIM B(1)", "A(28)=7", "RUN", "!PRO", "10 END", "!RUN", "RUN 20", "CL", "RUN",
+     "DIM B(2)", "A(27)", "CLEAR"],
+]  # fmt: skip
+
+
+@pytest.mark.parametrize("index", range(len(A_SESSIONS)))
+def test_extra_a_matches_rom(index):
+    if not have_rom():
+        pytest.skip("ROMがない")
+    from basic_diff import _same_but_blink, basic_machine
+
+    lines = A_SESSIONS[index]
+    want = _a_session(boot()[0], lines)
+    got = _a_session(basic_machine(), lines)
+    for line, (a, b) in zip(lines, zip(want, got, strict=True), strict=True):
+        assert _same_but_blink(a[0], b[0]), (line, a[0], b[0])
+        assert a[1:] == b[1:], (line, hex(a[1]), hex(b[1]))
+
+
+def test_reading_extra_a_makes_array():
+    """添字が26を越えるA(n)は、読むだけでも名前Aの配列を作って0を返す。見出しの添字の最大の
+    2バイトは前の中身のまま。広げると前の見出しの所も0になり、ほかの配列が下にあればERROR 3。
+    CLEARのあとも配列の場所の中身は残る(ROMのある本体で観察した値)"""
+    from basic_diff import basic_machine
+
+    lines = ["A(27)", "A(29)", "A(27)=5", "DIM C(0)", "A(30)", "CL", "A(30)=1", "CL", "CLEAR"]
+    seen = _a_session(basic_machine(), lines)
+
+    def ram(step: int, a: int, n: int) -> bytes:
+        return seen[step][2][a - 0xC400 : a - 0xC400 + n]
+
+    assert seen[0][:2] == ("0.", 0xC5C2)
+    assert ram(0, 0xC5C2, 14) == bytes.fromhex("51000bc5c608") + bytes(8)
+    assert seen[1][:2] == ("0.", 0xC5B2)
+    assert ram(1, 0xC5AC, 36) == bytes.fromhex("acadaeafb0b1 51001bb5b608") + bytes(24)
+    assert seen[3][1] == 0xC5A4
+    assert seen[4][:2] == seen[6][:2] == ("ERROR 3", 0xC5A4)
+    assert seen[8][1] == 0xC5D0
+    head = bytes.fromhex("53000b000008") + bytes(8) + bytes.fromhex("51001bb5b608")
+    assert ram(8, 0xC5A4, 20) == head
+    assert ram(8, 0xC5C8, 3) == bytes.fromhex("000050")
+
+
+def test_dim_a_and_a_pair_without_rom():
+    """PC-1251系のDIM A(n)はA(n)の場所を取るだけ(nが26までは何もしない)。A(i,j)に入れると、
+    PC-1251はERROR 1、PC-1245はA(j)に入れる。RUNは始める行がなければ配列をなくさない(観察)"""
+    from basic_diff import basic_machine
+
+    lines = ["DIM A(26)", "DIM A(30)", "DIM A(31)", "CL", "A(1,2)=5", "CL", "RUN"]
+    seen = _a_session(basic_machine(), lines)
+    assert [s[1] for s in seen[:3]] == [0xC5D0, 0xC5AA, 0xC5AA]
+    assert seen[2][0] == "ERROR 3"
+    if helpers.MODEL == "1251":
+        assert seen[4][0] == "ERROR 1"
+    else:
+        assert seen[4][0] == "5."
+        assert seen[4][2][0xC690 - 0xC400 : 0xC693 - 0xC400] == bytes.fromhex("000050")
+    assert seen[6][1] == 0xC5AA

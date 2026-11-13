@@ -6,7 +6,7 @@
 本体の機種(machine.Model)が持つ。
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -40,11 +40,17 @@ class Dialect:
     repeat_every: int
     # RSVモードのない機種で、SHIFTのあとリザーブの位置のキーで打つ命令(キーと中間コード)
     shift_keywords: dict[str, int] | None = None
-    # CLOAD?でRAMとの違いを見つけても終わりまで読み、読み終えてからこの時間のあとERROR 8に
-    # する(Noneなら、見つけたときにERROR 8)
-    verify_error_after: int | None = None
     # PRINTの最初の項目が文字列で、;のあとに数があるとき、代入した値の写しの場所に数を置く
     print_copy_number: bool = False
+    # 字の形の表にない文字コードを出したときの液晶の5列(観察)。ROMは表の外の番地を読んで、
+    # たまたまそこにあるバイトを字の形として出す。よく知られたもの(3Eh、「メロン」)だけを置く
+    stray_glyphs: dict[int, bytes] = field(default_factory=dict)
+    # 文で名前を書いたA(i,j)(代入、INPUT、FORなど。式の中で読むものは除く)を、A(n)が固定の
+    # 変数の続きのときにどう扱うか。"error"なら「,」でERROR 1、"last"なら1つ目の添字を見ずに
+    # A(j)とする(観察)
+    a_pair: str | None = None
+    # INPUTの文を始めてから、?か字を出すまでに余分にかかる時間
+    input_cost: int = 0
 
 
 _ALL: dict[str, Dialect] = {}  # 機種の名前 → 違い(系統ごとのdialect.pyから集める)

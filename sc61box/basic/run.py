@@ -36,6 +36,7 @@ class Break(Exception):
     quiet: PRINTの待ちで↑を押して離したか、CLか字のキーを押した。>を出す(字のキーなら
     keyに入れ、その字を打ち始める)
     mode: 実行中か、PRINT・INPUTの待ちで、モードを変えた。新しいモードの>を出す
+    quiet-end: CALLのマシン語が内部RAMの15hを止める値にして戻った。液晶はそのまま(CONTはできない)
     """
 
     def __init__(self, line: int, pos: int = 0, kind: str = "stop", key: str = "") -> None:
@@ -49,11 +50,12 @@ class Break(Exception):
 class LineError(Exception):
     """プログラムの行で起きたエラー。posは行の中のエラーの位置"""
 
-    def __init__(self, number: int, line: int, pos: int = 0) -> None:
+    def __init__(self, number: int, line: int, pos: int = 0, shown: bytes | None = None) -> None:
         super().__init__(f"ERROR {number} IN {line}")
         self.number = number
         self.line = line
         self.pos = pos
+        self.shown = shown  # 行番号の代わりに出す字(位置がプログラムの外のとき)
 
 
 @dataclass(frozen=True)
@@ -116,6 +118,7 @@ class Runner:
     # ふるまいの違い
     TRAILING_SEMICOLON = False  # PRINTの終わりに;を置ける(PC-1261系とPC-1350)
     COMMA_ITEMS = 2  # PRINTを,で分けられる数(PC-1261系とPC-1350は4)
+    BACK_FROM_TOP = False  # 前の行へ跳ぶ先をプログラムの頭から探す(PC-1251系はいまの行から)
     FOR_INTEGERS = True  # FORの終わりと増分を整数にする(PC-1261系とPC-1350はしない)
     # 出すもののないPRINT・PAUSE・LPRINTで出すもの(NoneならERROR 1。PC-1261系とPC-1350)
     EMPTY_PRINT: list[Decimal | bytes] | None = None
@@ -161,8 +164,7 @@ class Runner:
     # ---- 始め方 ----
     def start(self, line: int | bytes | None) -> Steps:
         """RUN: 配列とDATAの位置を消し、WAITをやめて(PRINTはENTERを待つ)、行番号かラベルの
-        行(なければ最初の行)から実行する(観察)"""
-        self.VARS.clear_arrays(self.m)
+        行(なければ最初の行)から実行する。始める行がなければ配列は残る(観察)"""
         self.data = None
         self._data_read(self.PROGRAM.first(self.m))
         self._flag(0x06, True)
@@ -171,23 +173,29 @@ class Runner:
             workarea.put(self.m, w.using, bytes(3))  # USINGをやめる
         self.using = Format()
         self.wait = None
-        yield from self.go(line)
+        addr = self._first_line(line)
+        self.VARS.clear_arrays(self.m)
+        yield from self.run_from(addr)
 
     def go(self, target: int | bytes | None) -> Steps:
         """GOTO: 変数とDATAの位置はそのままで、FOR・GOSUBを忘れて、行番号かラベルの行(なければ
         最初の行)から実行する(観察)"""
+        yield from self.run_from(self._first_line(target))
+
+    def _first_line(self, target: int | bytes | None) -> int:
+        """RUN・GOTOで始める行の番地(プログラムがなければEnd、行がなければERROR 4)"""
         self.addr = 0  # 行番号は、いまのプログラムから探す
         if target is None:
             found = self.PROGRAM.lines(self.m)[:1]
             if not found:
                 raise End
-            addr = found[0][1]
-        else:
-            addr = self._find(target)
-        yield from self.run_from(addr)
+            return found[0][1]
+        return self._find(target)
 
     def run_from(self, addr: int) -> Steps:
-        """番地addrの行から実行する(GOTOとDEF)"""
+        """番地addrの行から実行する(GOTOとDEF)。跳ぶ先がなくてエラーになったときは、止まった
+        行を忘れない(観察)"""
+        self.basic.stopped_at = None
         self.basic.printout.program_started()
         self.loops.clear()
         self.returns.clear()
@@ -197,10 +205,12 @@ class Runner:
         yield from self._execute(addr, 0)
 
     def cont(self) -> Steps:
-        if self.resume is None:
-            raise BasicError(9)
         if self.dead_cont:
             raise End
+        if self.resume is None:
+            raise BasicError(9)
+        if not self.stepping:  # ↓で1行ずつ進めるときは、止まった行はbasicが置き直す
+            self.basic.stopped_at = None
         addr, pos = self.resume
         yield from self._execute(addr, pos)
 
@@ -417,34 +427,53 @@ class Runner:
             pos -= 1
         return max(pos, 0)
 
+    def jump(self, addr: int, pos: int) -> None:
+        """CALLのマシン語が動かした位置: addrの行のposから続ける"""
+        self._jump(addr, pos)
+
     def _jump(self, addr: int, pos: int = 0) -> None:
         self._read_to = self._read_to or (self.addr, self.pos)  # 跳ぶ文を読み終えた所
         self.addr, self.pos = addr, pos
         self._jumped = True
 
-    def _goto_line(self, n: int | bytes, line_end: bool = False) -> None:
+    def _goto_line(self, n: int | bytes, line_end: bool = False, gosub: bool = False) -> None:
         """行番号かラベル(文字列)nの行へ跳ぶ。行がなければERROR 4で、位置は行番号の最後の字。
         line_endなら、行があることを確かめてから、行の終わりかを確かめる(観察)"""
         if isinstance(n, bytes):
             self._goto_label(n, line_end)
             return
-        numbers = [number for number, _ in self._lines()]
+        lines = self._lines()
+        numbers = [number for number, _ in lines]
         if n not in numbers:
             raise BasicError(4, self.pos - 1)
         if line_end:
             self._line_end()
-        # 跳ぶ先を探す時間は、いまの行と跳ぶ先の行のあいだの行の数で決まる(観察: 先の行へは
-        # 間の行の数だけかかり、前の行へ跳ぶときは、跳ぶ先より前の行の数にはよらない)
         here = self.PROGRAM.number_at(self.m, self.addr)
         target = numbers.index(n)
         start = numbers.index(here) if here in numbers else 0
-        self.meter.add(self.TIMES.JUMP + self.TIMES.JUMP_PER_LINE * abs(target - start))
+        self.meter.add(self._search_time(lines, start, target, gosub))
         found = self._line(n)
         self._jump(found[0][1])
 
+    def _search_time(
+        self, lines: list[tuple[int, int]], start: int, target: int, gosub: bool
+    ) -> int:
+        """行linesのstart番目の行からtarget番目の行へ跳ぶとき、跳ぶ先を探す時間(観察)"""
+        t = self.TIMES
+        if target > start:
+            per, count = (t.GOSUB_PER_LINE if gosub else t.JUMP_PER_LINE), target - start
+        else:
+            per, count = t.JUMP_BACK_PER_LINE, (target if self.BACK_FROM_TOP else start - target)
+        size = 0
+        if t.JUMP_PER_BYTE:
+            between = lines[min(start, target) + 1 : max(start, target)]
+            size = sum(len(self.PROGRAM.body(self.m, a)) for _, a in between)
+        return (t.GOSUB if gosub else t.JUMP) + per * count + t.JUMP_PER_BYTE * size
+
     def _goto_label(self, label: bytes, line_end: bool) -> None:
         """ラベルの行へ跳ぶ。ラベルは、すべてのプログラムの行の頭から、最初の行から順に探す
-        (観察: 探す時間は、ラベルの字の数、前にある行の数、前にあるラベルの行の数で決まる)"""
+        (観察: 探す時間は、ラベルの字の数、前にある行の数、前にあるラベルの行の数で決まる。
+        PC-1251系は前にある行の長さにもよる)"""
         found = self._label(label)
         if found is None:
             raise BasicError(4, self.pos - 1)
@@ -458,6 +487,7 @@ class Runner:
             + t.LABEL_PER_CHAR * len(label)
             + t.LABEL_PER_LINE * len(before)
             + t.LABEL_PER_MARK * marks
+            + t.LABEL_PER_BYTE * sum(len(self.PROGRAM.body(self.m, a)) for a in before)
         )
         self._jump(found[1])
 
@@ -499,6 +529,14 @@ class Runner:
         except BaseException:
             self.timeline = None
             raise
+
+    def new_timeline(self) -> workarea.Timeline | None:
+        """作業領域に書いたものを覚え始める(前の書き戻しは書き終える)"""
+        return self._new_timeline()
+
+    def spend(self, spent: int) -> Steps:
+        """_spendと同じ(打った行の計算の時間)"""
+        yield from self._spend(spent)
 
     def _new_timeline(self) -> workarea.Timeline | None:
         self.settle()
@@ -658,7 +696,8 @@ class Runner:
         self._printed(items, comma, token)
         numbers = sum(isinstance(v, Decimal) for v in items)
         # 字にして書き終えてから液晶を点ける(観察)
-        yield self.meter.take() + self.TIMES.PRINT + self.TIMES.PRINT_NUMBER * numbers
+        wait = self.meter.take() + self.TIMES.PRINT + self.TIMES.PRINT_NUMBER * numbers
+        yield from self.basic.print_cells(items, comma, self.using, wait)
         self.basic.show_print(items, comma, self.using)
         if pause:
             self.basic.unmark_text()
@@ -852,6 +891,8 @@ class Runner:
         return self._print(pause=True)
 
     def _input(self) -> Steps:
+        if self.basic.dialect.input_cost:
+            yield self.basic.dialect.input_cost
         while True:
             prompt = None
             keep = False
@@ -929,14 +970,23 @@ class Runner:
             raise BasicError(5)
         self.returns.append((self.addr, self.pos))
         self._record("gosub")
-        self._goto_line(n)
+        self._goto_line(n, gosub=True)
 
     def _return(self) -> None:
         self._line_end()
         if not self.returns:
             raise BasicError(5)
-        self.meter.add(self.TIMES.RETURN)
-        self._jump(*self.returns.pop())
+        addr, pos = self.returns.pop()
+        self.meter.add(self.TIMES.RETURN + self._return_time(addr))
+        self._jump(addr, pos)
+
+    def _return_time(self, addr: int) -> int:
+        """RETURNで、番地addrの行へ戻る時間のうち、戻る行より前の行の数による分(観察)"""
+        per = self.TIMES.RETURN_PER_LINE
+        if not per:
+            return 0
+        lines = self.PROGRAM.lines(self.m, self.PROGRAM.block_first(self.m, addr))
+        return per * next((i for i, (_, a) in enumerate(lines) if a == addr), 0)
 
     def _for(self) -> None:
         """FOR 変数=初め TO 終わり [STEP 増分]。PC-1251系は増分が0ならERROR 9(PC-1261系と
@@ -1015,7 +1065,8 @@ class Runner:
                     raise BasicError(5)
                 self.returns.append((self.addr, self.pos))
                 self._record("gosub")
-            self._goto_line(targets[n - 1], line_end=kind == self.T_GOTO)
+            gosub = kind == self.T_GOSUB
+            self._goto_line(targets[n - 1], line_end=not gosub, gosub=gosub)
 
     def _end(self) -> None:
         self._line_end()
@@ -1137,7 +1188,15 @@ class Runner:
             e = self._ev()
             first = e.expression()
             dims = [int(number(first))]
-            if e.take(self.COMMA):
+            # PC-1251系のDIM A(n)はA(n)の場所を取るだけで、*nはERROR 1。A(i,j)は代入の左辺と
+            # 同じ(Dialect.a_pair。観察)
+            fixed = self.VARS.DIM_FIXED and c == self.VARS.EXTRA
+            pair = self.basic.dialect.a_pair if fixed else None
+            if pair == "error" and e.peek() == self.COMMA:
+                raise BasicError(1, e.pos)
+            if pair == "last" and e.take(self.COMMA):
+                dims = [int(number(e.expression()))]
+            elif not fixed and e.take(self.COMMA):
                 # PC-1261系とPC-1350は、1つ目の大きさを計算の積み場所に積んでおく(観察)
                 w = self.EVALUATOR.WORK
                 with e.waiting(self.COMMA, first) if w and w.dim_pushes else nullcontext():
@@ -1146,9 +1205,14 @@ class Runner:
             if not self._take(self.RPAREN):
                 raise BasicError(1)
             size = 8
-            if string:
+            if string and not fixed:
                 size = self._integer() if self._take(self.MUL) else 16
-            self.VARS.dim(self.m, c, string, dims, size)
+            try:
+                self.VARS.dim(self.m, c, string, dims, size)
+            except BasicError as err:
+                if fixed:
+                    err.at(self.pos - 1)  # 閉じ括弧(観察)
+                raise
             if not self._take(self.COMMA):
                 return
 

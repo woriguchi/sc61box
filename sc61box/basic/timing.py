@@ -45,13 +45,19 @@ class Timing:
     NEXT_LOOP: int  # NEXTで増分を足して調べ、FORへ戻る(戻らないときも同じ)
     FOR: int
     IF: int  # IF(条件が成り立たず、行の残りを飛ばすときも同じ)
-    JUMP: int  # GOTO・GOSUB・THENの行番号で跳ぶ
-    JUMP_PER_LINE: int  # 跳ぶ先を探すとき、いまの行と跳ぶ先の行のあいだの行1つごと
+    JUMP: int  # GOTO・THENの行番号で跳ぶ
+    GOSUB: int  # GOSUBで跳ぶ
+    JUMP_PER_LINE: int  # 先の行へ跳ぶ先を探すとき、行1つごと
+    GOSUB_PER_LINE: int  # GOSUBで先の行へ跳ぶ先を探すとき、行1つごと
+    JUMP_BACK_PER_LINE: int  # 前の行(いまの行も)へ跳ぶ先を探すとき、行1つごと
+    JUMP_PER_BYTE: int  # 跳ぶ先を探すとき、あいだの行の中身の1バイトごと
     LABEL: int  # ラベルの行へ跳ぶ
     LABEL_PER_CHAR: int  # ラベルの1字ごと
     LABEL_PER_LINE: int  # ラベルを探すとき、跳ぶ先より前の行1つごと
     LABEL_PER_MARK: int  # そのうちラベルの行1つごとに足す時間
+    LABEL_PER_BYTE: int  # ラベルを探すとき、跳ぶ先より前の行の中身の1バイトごと
     RETURN: int
+    RETURN_PER_LINE: int  # RETURNで、戻る行より前の行1つごと
     STOPPED: int  # 終わるか止まってから、液晶に>やメッセージを出すまで
     PRINT: int  # PRINT・PAUSEで液晶に書く
     PRINT_NUMBER: int  # 出す数1つを字にする
@@ -104,12 +110,25 @@ PC1251 = Timing(
     FOR=ms(14.3),
     IF=ms(2.7),
     JUMP=ms(10.3),
-    JUMP_PER_LINE=ms(1.13),
-    LABEL=ms(1.4),  # GOSUB "B"で、すぐ次の行へのGOSUBより0.2ms長い
+    GOSUB=ms(10.3),
+    # 跳ぶ先は、いまの行から前にも後ろにも探す。かかる時間は、あいだの行の数と中身の長さで
+    # 決まる(観察: 先の行へは、中身3バイトの行1つで1.05ms、25バイトで3.1ms。前の行へは
+    # それぞれ1.13msと3.29ms)
+    JUMP_PER_LINE=ms(0.74),
+    GOSUB_PER_LINE=ms(0.73),
+    JUMP_BACK_PER_LINE=ms(0.80),
+    JUMP_PER_BYTE=ms(0.093),
+    # GOSUB "B"で、すぐ次の行へのGOSUBより0.2ms長い。前の行の数と長さによる分は
+    # LABEL_PER_LINEとLABEL_PER_BYTEで数える
+    LABEL=ms(0.15),
     LABEL_PER_CHAR=ms(1.11),  # "B"を"BCDEFG"にすると5.6ms長い
-    LABEL_PER_LINE=ms(0.31),  # 前に空の行を20足すと6.2ms長い
-    LABEL_PER_MARK=ms(4.0),  # 前にほかのラベルの行を1つ足すと4.3ms長い
+    # 前の行1つで、中身がREMだけなら0.30ms、3バイトなら0.48ms、25バイトなら2.50ms長い。
+    # "C" REMのようなラベルの行なら4.0ms、中身28バイトのラベルの行なら6.2ms長い
+    LABEL_PER_LINE=ms(0.20),
+    LABEL_PER_MARK=ms(3.43),
+    LABEL_PER_BYTE=ms(0.092),
     RETURN=ms(0.3),
+    RETURN_PER_LINE=0,
     STOPPED=ms(45.0),
     PRINT=ms(68.0),
     PRINT_NUMBER=ms(9.5),

@@ -71,6 +71,7 @@ class Variables:
     EXTRA: int  # 添字が26を越えるA(n)の場所は、名前Aの配列として持つ
     EXTRA_KEY: int  # A(n)の続きの配列を探すときの名前
     HEAD: int  # 配列のヘッダのバイト数
+    DIM_FIXED = False  # DIM A(n)をA(n)の場所を取る文とする(PC-1251系)
     Ref = Ref
     word = staticmethod(word)
     set_word = staticmethod(set_word)
@@ -157,16 +158,12 @@ class Variables:
         return stored
 
     def clear(self, m) -> None:
-        """固定の変数を0にし、配列を消す"""
-        lo = min(word(m, self.ARRAY_PTR), self.ARRAY_TOP)
-        m.mem[lo : self.FIXED_TOP] = bytes(self.FIXED_TOP - lo)
+        """固定の変数を0にし、配列をなくす(配列の場所の中身は残る。観察)"""
+        m.mem[self.ARRAY_TOP : self.FIXED_TOP] = bytes(self.FIXED_TOP - self.ARRAY_TOP)
         self.set_bottom(m, self.ARRAY_TOP)
 
     def clear_arrays(self, m) -> None:
-        """配列だけを消す(RUN)"""
-        lo = word(m, self.ARRAY_PTR)
-        if lo < self.ARRAY_TOP:
-            m.mem[lo : self.ARRAY_TOP] = bytes(self.ARRAY_TOP - lo)
+        """配列だけをなくす(RUN。配列の場所の中身は残る。観察)"""
         self.set_bottom(m, self.ARRAY_TOP)
 
     def arrays(self, m) -> Iterator[Array]:
@@ -183,10 +180,17 @@ class Variables:
         return None
 
     def dim(self, m, name: int, string: bool, dims: list[int], size: int) -> None:
-        """DIM。作ってある配列、添字の最大が255を越える、文字列の長さが80を越えるとERROR 3、
-        場所が足りなければERROR 6(観察)"""
+        """DIM。作ってある配列(Aなら、A(n)の続きの配列も)、添字の最大が255を越える、文字列の
+        長さが80を越えるとERROR 3、場所が足りなければERROR 6(観察)。DIM_FIXEDなら、DIM A(n)は
+        A(n)の場所を取るだけで、nが26を越えるときに名前Aの配列があればERROR 3(観察)"""
+        if self.DIM_FIXED and name == self.EXTRA:
+            if dims[0] > 26 and self.find(m, self.EXTRA_KEY, False):
+                raise BasicError(3)
+            self._fixed_element(m, dims[0], string)
+            return
         if (
             self.find(m, name, string)
+            or (name == self.EXTRA and self.find(m, self.EXTRA_KEY, False))
             or any(not 0 <= d <= 255 for d in dims)
             or not 1 <= size <= 80
         ):
@@ -205,10 +209,10 @@ class Variables:
         """A(n)・A$(n)の固定の変数の続きか"""
         return name == self.EXTRA and len(subs) == 1 and self._fixed_a(m, string)
 
-    def element(self, m, name: int, string: bool, subs: list[int], create: bool) -> Ref:
+    def element(self, m, name: int, string: bool, subs: list[int]) -> Ref:
         """配列の要素の場所。A(n)・A$(n)は固定の変数の続き"""
         if self.fixed(m, name, string, subs):
-            return self._fixed_element(m, subs[0], string, create)
+            return self._fixed_element(m, subs[0], string)
         arr = self.find(m, name, string)
         if arr is None:
             raise BasicError(3)
@@ -227,11 +231,11 @@ class Variables:
         """A(n)を固定の変数の続きとして扱うか"""
         return True
 
-    def _fixed_element(self, m, n: int, string: bool, create: bool) -> Ref:
-        """A(n)・A$(n)の場所。nが26を越えるときは、名前Aの配列(ヘッダの添字の最大は0と0)を
-        いちばん下に作って続きにする。A(27)が配列の上端の8バイトで、そこから下へ並ぶ。配列が
-        いちばん下にあれば下へ広げ、ほかの配列がその下にあればERROR 3(観察)"""
-        if n < 1:
+    def _fixed_element(self, m, n: int, string: bool) -> Ref:
+        """A(n)・A$(n)の場所。nが26を越えるときは、読むだけでも、名前Aの配列をいちばん下に
+        作って続きにする。A(27)が配列の上端の8バイトで、そこから下へ並ぶ。配列がいちばん下に
+        あれば下へ広げ、ほかの配列がその下にあればERROR 3。nが255を越えるとERROR 3(観察)"""
+        if not 1 <= n <= 255:
             raise BasicError(3)
         if n <= 26:
             return Ref(self.fixed_addr(n), string)
@@ -240,13 +244,17 @@ class Variables:
         top = extra.end if extra else bottom_now
         have = (extra.length - 3) // 8 if extra else 0
         if n - 26 > have:
-            if not create or (extra is not None and extra.addr != bottom_now):
+            if extra is not None and extra.addr != bottom_now:
                 raise BasicError(3)
             length = 3 + (n - 26) * 8
             bottom = top - (self.HEAD - 3) - length
             if bottom <= word(m, m.model.prog_end_ptr):
                 raise BasicError(6)
             head = self._header(self.EXTRA_KEY, False, length, 0, 0, 8)
-            m.mem[bottom : top - 8 * have] = head + bytes(top - 8 * have - bottom - self.HEAD)
+            # 添字の最大の2バイトは書かない(前の中身のまま。観察)。要素は前の見出しの所も0にする
+            k = self.HEAD - 3
+            m.mem[bottom : bottom + k] = head[:k]
+            m.mem[bottom + self.HEAD - 1] = head[-1]
+            m.mem[bottom + self.HEAD : top - 8 * have] = bytes(top - 8 * have - bottom - self.HEAD)
             self.set_bottom(m, bottom)
         return Ref(top - 8 * (n - 26), string)

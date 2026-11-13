@@ -27,6 +27,7 @@ class Runner(run.Runner):
     TRAILING_SEMICOLON = True  # PRINT "A";のあとのPRINTは、同じ行に続けて出す(観察)
     FOR_INTEGERS = False  # FOR I=0 TO 1 STEP .5、FOR I=40000 TO 40001、STEP 0(観察)
     COMMA_ITEMS = 4  # PRINT "A","B","C","D"(観察。液晶の2行ぶん)
+    BACK_FROM_TOP = True  # 前の行へ跳ぶ先は、プログラムの頭から探す(観察)
     # PRINT・PAUSEだけは何も書かずに待つ。LPRINTだけは空の行を送る(観察)
     EMPTY_PRINT: list[Decimal | bytes] | None = []
     NO_PRINTER_TIME = timing.ms(2860)  # プリンタがないときのLPRINTだけで、ERROR 8までの時間

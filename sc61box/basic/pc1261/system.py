@@ -15,9 +15,10 @@ from decimal import Decimal
 from typing import cast
 
 from .. import system, workarea
-from ..editor import pieces
+from ..editor import pieces, spans
 from ..errors import BasicError
 from ..evaluate import expect_end
+from ..run import LineError
 from ..system import Steps
 from ..using import Format
 from ..variables import word as word_at
@@ -35,7 +36,7 @@ from . import (
     tokens,
     variables,
 )
-from .screen import Screen
+from .screen import Screen, marked
 
 _CODE = {name: code for code, name in tokens.KEYWORDS.items()}
 # RUNモードで行番号なしに打って実行できる文(観察。ほかの文はERROR 1)
@@ -69,6 +70,7 @@ class Basic(system.Basic):
     )  # fmt: skip
     T_ROM = T_INSTAT = T_INPUT = -1  # INPUTを直接打つとERROR 1(観察)
     T_EQU = 0xB9  # EQU#(PC-1260/1261/1262)
+    KANA_SWITCH: tuple[int, int] | None = keyboard.KANA_SWITCH
     DIRECT = tuple(_CODE[name] for name in DIRECT_NAMES)
     CODES = keyboard.CODES
     USING_CODES = keyboard.CODES | {"[E]": evaluate.E}
@@ -129,6 +131,10 @@ class Basic(system.Basic):
         self.last_number = b"0."
         self.error_number = 0  # 直接打った行のエラーの番号
         self.notice_row: list[int] | None = None  # 2行目に出しているエラーメッセージ
+        self.input_error_shown = False  # INPUTの答えのエラーを出している
+        self.stop_number: int | None = None  # プログラムがエラーで止まったときの番号
+        self.under_row: list[int] | None = None  # 止まった行を出したときの2行目(次の行の頭)
+        self._hook_keys()
 
     def display(self, on: bool) -> None:
         """液晶を消して実行しているあいだは、BUSYの記号を点ける(観察)"""
@@ -146,6 +152,9 @@ class Basic(system.Basic):
         p = cast(program.Program, self.PROGRAM)
         p.set_start(self.m, p.start(self.m))  # いまのプログラムの頭の番地を置く(観察)
         self.set_angle("DEGREE")
+        if self.KANA_SWITCH is not None:  # SHIFTのあと8はカナの入力を切り替える(観察)
+            a, bit = self.KANA_SWITCH
+            self.m.mem[a] |= bit
 
     def set_angle(self, which: str) -> None:
         for name in ("DEG", "RAD", "GRAD"):
@@ -180,6 +189,12 @@ class Basic(system.Basic):
         d["page"] = bytes(self.page).hex()
         d["page_at"] = [self.page_pos, self.page_cont]
         d["last_number"] = self.last_number.hex()
+        d["stop_number"] = self.stop_number
+        # 2行目に出しているエラーメッセージと次の行の頭(カーソルを描き直すときに使う)
+        d["error_number"] = self.error_number
+        d["rows"] = [
+            None if r is None else bytes(r).hex() for r in (self.notice_row, self.under_row)
+        ]
         return d
 
     def prepare(self, d: object) -> Callable[[], None]:
@@ -196,6 +211,14 @@ class Basic(system.Basic):
                 extra["last_number"] = bytes.fromhex(d.get("last_number", "302e"))
             except (KeyError, IndexError, TypeError, ValueError, OverflowError):
                 pass
+            n = d.get("stop_number")  # エラーで止まったときの番号(なければエラーで止まっていない)
+            extra["stop_number"] = n if type(n) is int and 0 <= n <= 0xFF else None
+            n = d.get("error_number")
+            extra["error_number"] = n if type(n) is int and 0 <= n <= 0xFF else 0
+            rows = d.get("rows")
+            if not isinstance(rows, list) or len(rows) != 2:
+                rows = [None, None]
+            extra["notice_row"], extra["under_row"] = (self._row_in(r) for r in rows)
 
         def both() -> None:
             apply()
@@ -204,21 +227,114 @@ class Basic(system.Basic):
 
         return both
 
+    def _row_in(self, v: object) -> list[int] | None:
+        """状態に書いた2行目の字の並び。形が違えば出さない(None)"""
+        try:
+            row = bytes.fromhex(v) if isinstance(v, str) else None
+        except ValueError:
+            return None
+        return list(row) if row is not None and len(row) == self.screen.width else None
+
     def _show_editor(self) -> None:
         """登録した行を編集しているあいだ、行が1行目に収まれば2行目はそのまま。エラーの
-        行を呼び出したときは、2行目にエラーメッセージを出す(観察)"""
-        text, cursor, shape = self.editor.view(
-            self.screen.cells, self.keywords, self.CODES, self.blink_off
-        )
+        行を呼び出したときは、2行目にエラーメッセージを出す。登録した行の続きの行は
+        「行番号:」の幅だけ空ける(観察)"""
+        ed = self.editor
+        text, cursor, shape = ed.view(self.screen.cells, self.keywords, self.CODES, False)
         width = self.screen.width
-        notice = self.state in ("input", "input-wait")
-        keep = self.notice_row if notice else self.lcd.text[width:]
+        stopped = self.state == "error-line" and self.notice_row is not None
+        if self.state in ("edit", "error-line") and ed.head and cursor is not None:
+            whole, cols, ends = spans(
+                ed.units, self.keywords, self.CODES, ed.head, ed.sep, ed.glued, **ed.style()
+            )
+            out, at = self._indented(whole, cols[ed.cur], ed.head + 1, ends)
+            assert at is not None
+            # 2行に入らなければ、カーソルのある行を2行目にして出す。2行目にエラーメッセージを
+            # 出すときは、カーソルのある行を1行目に出す。続きの行から出すときは、空けた所に
+            # 「行番号:」を出す(観察)
+            row = at // width
+            top = row if stopped else max(0, row - 1)
+            out += [self.SPACE] * ((top + 2) * width - len(out))
+            head = out[: ed.head + 1] if top else []
+            text = head + out[top * width + len(head) : (top + 2) * width]
+            cursor = at - top * width
+            if len(whole) <= width or stopped:
+                text = text[:width]  # 2行目は、そのままか次の行の頭かエラーメッセージ
+        text = marked(text)
+        if self.blink_off and not ed.at_end():
+            cursor = None
+        notice = self.state in ("input", "input-wait") or stopped
+        if notice:
+            keep = self.notice_row
+        elif self.state in ("edit", "error-line") and self.under_row is not None:
+            keep = self.under_row
+        else:
+            keep = self.lcd.text[width:]
         if (notice or self.state in ("edit", "error-line")) and len(text) <= width and keep:
             if cursor is None or cursor < width:
-                text = text + [self.SPACE] * (width - len(text)) + keep
+                text = text[:width] + [self.SPACE] * (width - len(text)) + keep
         if self.state == "input-wait":
             self.notice_row = None  # INPUTの答えを呼び出したときのメッセージは、次のキーで消える
         self.screen.show(text, cursor, shape)
+
+    def _indented(
+        self, text: list[int], cursor: int | None, indent: int, ends: list[int] | None = None
+    ) -> tuple[list[int], int | None]:
+        """1行目のあとの行の頭をindent字ずつ空けた並びと、カーソルの桁。endsは単位ごとの字の
+        終わりで、渡せば命令(後ろの空白まで)を行をまたがずに次の行へ送り、送った命令の前の
+        空白は捨てる(LISTと同じ。観察)"""
+        w = self.screen.width
+        if ends is None:
+            ends = list(range(1, len(text) + 1))
+        places: list[int] = []
+        row, col, start = 0, 0, 0
+        for end in ends:
+            piece = list(range(start, min(end, len(text))))
+            start = end
+            chunks = [piece] if len(piece) > 1 and end > indent else [[k] for k in piece]
+            for chunk in chunks:
+                if col + len(chunk) > w:
+                    row, col = row + 1, indent
+                    if len(chunk) > 1 and text[chunk[0]] == self.SPACE:
+                        places.append(row * w + col)  # 捨てた空白は次の字と同じ桁
+                        chunk = chunk[1:]
+                for _k in chunk:
+                    places.append(row * w + col)
+                    col += 1
+        out = [self.SPACE] * ((row + 1) * w)
+        for k, cell in enumerate(places):
+            if out[cell] == self.SPACE:
+                out[cell] = text[k]
+        if cursor is not None:
+            if cursor < len(places):
+                cursor = places[cursor]
+            else:
+                cursor = row * w + col if col < w else (row + 1) * w + indent
+        while len(out) > w and out[-w:] == [self.SPACE] * w and (cursor or 0) < len(out) - w:
+            out = out[:-w]
+        return out, cursor
+
+    def _stop_message(self, e) -> None:
+        super()._stop_message(e)
+        self.stop_number = e.number if isinstance(e, LineError) else None
+
+    def _show_stopped(self) -> bool:
+        """PROモードで止まった行を出すとき、2行目は次の行の頭。エラーで止まったときは、
+        2行目にエラーメッセージを出す(次のキーで消える。観察)"""
+        found = (
+            None
+            if self.stopped_at is None
+            else self.PROGRAM.at_or_after(self.m, self.stopped_at[0])
+        )
+        if found is not None and self.stopped_at is not None and found[0] == self.stopped_at[0]:
+            after = self.PROGRAM.next_line(self.m, found[1])
+            n2 = self.PROGRAM.number_at(self.m, after)
+            width = self.screen.width
+            row = self._line_rows(n2, after)[0] if n2 is not None else []
+            self.under_row = row + [self.SPACE] * (width - len(row))
+            if self.stop_number is not None:
+                self.notice_row = self._notice(self.stop_number)
+        return super()._show_stopped()
 
     def _notice(self, number: int) -> list[int]:
         """2行目に出すエラーメッセージ"""
@@ -229,10 +345,26 @@ class Basic(system.Basic):
     def input_error(self, number: int, text: bytes, pos: int):
         """INPUTの答えのエラーで←・→を押すと、答えを呼び出し、2行目にエラーメッセージを出す
         (次のキーで消える。観察)"""
-        recalled = yield from super().input_error(number, text, pos)
+        self.input_error_shown = True
+        try:
+            recalled = yield from super().input_error(number, text, pos)
+        finally:
+            self.input_error_shown = False
         if recalled is not None:
             self.notice_row = self._notice(number)
         return recalled
+
+    def _hook_keys(self) -> None:
+        cast(keyboard.Keyboard, self.keys).locked = self._error_shown
+
+    def _error_shown(self) -> bool:
+        """エラーの知らせを出しているあいだは、カナ・英小文字の入力を切り替えない(BREAKの
+        知らせでは切り替える。観察)"""
+        return self.state in ("error", "program-error") or self.input_error_shown
+
+    def restart(self) -> None:
+        super().restart()
+        self._hook_keys()
 
     def _message_key(self, k: str) -> bool:
         """直接打った行のエラーで←・→を押すと、行を呼び出し、2行目にエラーメッセージを出す
@@ -298,6 +430,8 @@ class Basic(system.Basic):
 
     def _error(self, number: int) -> None:
         self.error_number = number
+        if self.stop_number is not None:
+            self.stop_number = number  # 止まった行に添えるメッセージは、最後のエラーのもの(観察)
         super()._error(number)
 
     def _debug_key(self, k: str):
@@ -316,8 +450,18 @@ class Basic(system.Basic):
         self.state = "input"
         self._show_editor()
 
+    def _scroll(self, step: int) -> None:
+        """止まった行が端の行で、↑・↓で動かないときも、エラーメッセージは出したまま(観察)"""
+        before = self.state, self.line_no
+        super()._scroll(step)
+        if before[0] == "error-line" and (self.state, self.line_no) == before:
+            if self.stop_number is not None:
+                self.notice_row = self._notice(self.stop_number)
+                self._show_editor()
+
     def _show_line(self, n: int, a: int) -> None:
         """登録した行を「行番号:中身」の形で出す。1行に収まれば、2行目に次の行の頭を出す"""
+        self.under_row = None
         rows = self._line_rows(n, a)
         after = self.PROGRAM.next_line(self.m, a)
         n2 = self.PROGRAM.number_at(self.m, after)

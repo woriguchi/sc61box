@@ -14,10 +14,14 @@ from typing import cast
 from ... import number
 from .. import evaluate, workarea
 from ..evaluate import Target, by_code
+from ..timing import ms
+from ..variables import word
 from . import editor, timing, tokens, variables
 
 _CODE = {name: code for code, name in tokens.KEYWORDS.items()}
 E = 0x45
+# MEMとMEM#の時間(観察: A=MEMはA=Bより、PC-1261で11.8ms、PC-1350で12.1ms長い。A=MEM#は11.4ms)
+MEM_TIME = ms(11.7)
 
 
 def is_digit(c: int) -> bool:
@@ -57,6 +61,9 @@ class Evaluator(evaluate.Evaluator):
     T_AND, T_OR, T_NOT = _CODE["AND"], _CODE["OR"], _CODE["NOT"]
     T_PI, T_MEM, T_INKEY, T_SQR = _CODE["PI"], _CODE["MEM"], _CODE["INKEY$"], _CODE["SQR"]
     T_LEFT, T_RIGHT, T_MID = _CODE["LEFT$"], _CODE["RIGHT$"], _CODE["MID$"]
+    T_MEM_HEAD = 0xBA  # MEM#(PC-1260/1261/1262)
+    T_CHR = _CODE["CHR$"]
+    CHR_KANA_SHORT = True  # CHR$のカナに+でつなぐときの癖(_join)
     EQ, LT, GT = 0x3D, 0x3C, 0x3E
     VARS = variables.PC1261
     WORK = workarea.Layout(
@@ -131,7 +138,29 @@ class Evaluator(evaluate.Evaluator):
         c = self.peek()
         if c == self.EXP:  # 頭のEは変数の名前
             return self._variable()
+        if c == self.T_CHR and self.CHR_KANA_SHORT:
+            v = super()._operand()
+            if isinstance(v, workarea.Text) and len(v) == 2 and v[0] == editor.KANA_MARK:
+                v.kana_short = True  # type: ignore[attr-defined]
+            return v
+        if c in (self.T_MEM, self.T_MEM_HEAD):
+            self.pos += 1
+            self.spend(MEM_TIME)
+            return Decimal(self._mem() if c == self.T_MEM else self._mem_head())
         return super()._operand()
+
+    def _join(self, a: bytes, b: bytes) -> bytes:
+        """CHR$で作ったカナに+でつなぐと、つないだ字がカナの字のコードに重なる(観察: CHR$ 177+"X"
+        は「FEh、58h」で、Xと出る。LEN(CHR$ 177+"XY")は2)"""
+        if getattr(a, "kana_short", False) and b:
+            return a[:1] + b
+        return a + b
+
+    def _mem_head(self) -> int:
+        """MEM#: プログラムの場所の頭(EQU#で動く)の番地からRAMの頭を引いた数(マシン語に使える
+        バイト数。初めは128)。番地を16ビットで引く(観察: 頭の番地を3013hに書くと61459)"""
+        m = self.m
+        return (word(m, m.PROG_BASE_PTR) - m.model.ram[0]) & 0xFFFF
 
     def _number(self) -> Decimal:
         start, code = self.pos, self.code

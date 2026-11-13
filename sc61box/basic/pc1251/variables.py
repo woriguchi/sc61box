@@ -14,6 +14,7 @@ class Variables(variables.Variables):
     EXTRA = 0x51
     EXTRA_KEY = 0x51
     HEAD = 6
+    DIM_FIXED = True
 
     def initialize(self, m) -> None:
         super().initialize(m)

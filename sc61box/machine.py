@@ -359,6 +359,8 @@ class PC1251(Bus):
         self.norom = norom  # ROMを読まずに作った(ROMの番地はすべて0)
         # 状態を読み込むときに、ROMの印としてほかに受け付けるもの(ROMの番地の中身を変える前の印)
         self.old_digests: set[str] = set()
+        # 代替ROMルーチンが本体ごとに持つもの(本体と一緒に捨てるので、ほかの所に本体を握らせない)
+        self.routine_data: dict[str, object] = {}
         if not norom:
             cpu_name, bas_name = self.model.roms
             self.mem[0:0x2000] = (cpu_rom or read_rom(cpu_name))[:0x2000]
@@ -911,6 +913,10 @@ class PC1251(Bus):
         except ValueError as e:
             raise ValueError(tr("machine.bad_wait_state")) from e
         # ここから先は失敗しない
+        # 戻す前の処理(BASICと代替ROMルーチン)の後始末が、戻したRAMを書き換えないように
+        if self.basic is not None:
+            self.basic.stop()
+        routines.stop_waits(self)
         self.set_ram_top(top)
         for lo, hi in self._writable_ranges():
             self.mem[lo:hi] = mem[lo:hi]

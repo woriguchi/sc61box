@@ -26,6 +26,9 @@ PC1251 = Dialect(
     subscript_quirk=True,
     repeat_delay=timing.ms(730.0),
     repeat_every=timing.ms(115.6),
+    stray_glyphs={0x3E: bytes([0x79, 0x79, 0x69, 0xC7, 0x79])},
+    a_pair="error",
+    input_cost=timing.ms(34.5),  # 観察: 「10 INPUT A」のRUNのENTERから?まで約93ms
 )
 
 
@@ -65,6 +68,9 @@ PC1245 = Dialect(
     repeat_every=timing.ms(103.0),  # 実機は約100〜110ms(表示をずらすときに長い)
     shift_keywords=_codes(SHIFT_1245),
     print_copy_number=True,
+    stray_glyphs={0x3E: bytes([0x2D, 0x79, 0x69, 0xA7, 0x79])},
+    a_pair="last",
+    input_cost=timing.ms(22.0),  # 観察: 「10 INPUT A」のRUNのENTERから?まで約80ms
 )
 
 DIALECTS = {"1250": PC1251, "1251": PC1251, "1255": PC1251, "1245": PC1245}

@@ -137,8 +137,8 @@ class Console(Screen):
             last = at
             at += 1
         self.row, self.used, self.kept = min(last // self.width, ROWS - 1), 1, True
-        # 書いた行より下の行は、字を書き直す(POKEで描いた点は消える。観察)
-        self._draw(range((self.row + 1) * self.width, self.cells))
+        # 書いた行の残りの桁と、それより下の行は、字を書き直す(POKEで描いた点は消える。観察)
+        self._draw(range(min(last + 1, (self.row + 1) * self.width), self.cells))
         return at
 
     def _scroll(self) -> None:

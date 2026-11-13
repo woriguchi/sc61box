@@ -83,10 +83,12 @@ class Variables(variables.Variables):
     def _fixed_a(self, m, string: bool) -> bool:
         return self.find(m, self.EXTRA, string) is None
 
-    def clear(self, m) -> None:
-        """固定の変数を0にし、配列と2字の名前の変数をなくす(配列の場所の中身は残る。観察)"""
-        m.mem[self.ARRAY_TOP : self.FIXED_TOP] = bytes(self.FIXED_TOP - self.ARRAY_TOP)
-        self.set_bottom(m, self.ARRAY_TOP)
+    def element(self, m, name: int, string: bool, subs: list[int]) -> Ref:
+        """式の中のA(i,j)は、Aの配列がなければERROR 1(入れる所は、Evaluator.targetがA(j)に
+        する。観察)"""
+        if name == self.EXTRA and len(subs) == 2 and self._fixed_a(m, string):
+            raise BasicError(1)
+        return super().element(m, name, string, subs)
 
     def write(self, m, ref: Ref, value: Decimal | bytes) -> Decimal | bytes:
         """文字列は、入る字の数までと、短ければ終わりの00hだけを書く(その先は前のまま。観察)"""

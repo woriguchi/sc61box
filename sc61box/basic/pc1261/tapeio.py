@@ -20,7 +20,8 @@ class TapeIO(tapeio.TapeIO):
 
 
 class TapeIO1350(TapeIO):
-    TAIL_ONES = 9  # 最後のバイトのあとの1が、PC-1261より9つ多い(観察)
+    TAIL_ONES = 9  # 最後のバイトのあと(BRKで止めたときも)の1が、PC-1261より9つ多い(観察)
     M_START = timing.ms(130.0)  # CSAVE Mで、音を出し始めるまでに余分にかかる(観察)
-    END_HOLD = (1, timing.ms(36.0))  # 送り終えると、Cポートのビット4だけを36ms立てる(観察)
-    BIT_PERIOD = cassette.BIT * 1.0042  # 1ビットがPC-1261より0.4%長い(観察)
+    # 送り始め(初めの1の前)と送り終えたあと(BRKで止めたときも)に、Cポートのビット4だけを
+    # 36ms立てる(観察)
+    START_HOLD = END_HOLD = (1, timing.ms(36.0))

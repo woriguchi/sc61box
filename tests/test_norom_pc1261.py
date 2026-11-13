@@ -88,8 +88,8 @@ def test_program_and_variables_layout_like_rom():
     v.dim(own, 0x42, False, [3], 8)
     v.dim(own, 0x43, True, [2], 5)
     v.dim(own, 0x44, False, [1, 2], 8)
-    v.write(own, v.element(own, 0x44, False, [1, 2], True), Decimal(5))
-    v.write(own, v.element(own, 0x41, False, [30], True), Decimal(1))
+    v.write(own, v.element(own, 0x44, False, [1, 2]), Decimal(5))
+    v.write(own, v.element(own, 0x41, False, [30]), Decimal(1))
     v.write(own, v.Ref(v.fixed_addr(26), True), b"XY")
     start, end = m.model.prog_start, p.end(m)
     assert p.end(own) == end
@@ -133,8 +133,8 @@ def test_program_and_variables_layout_like_rom_1350(card):
     v.dim(own, 0x42, False, [3], 8)
     v.dim(own, 0x43, True, [2], 5)
     v.dim(own, 0x44, False, [1, 2], 8)
-    v.write(own, v.element(own, 0x44, False, [1, 2], True), Decimal(5))
-    v.write(own, v.element(own, 0x41, False, [30], True), Decimal(1))
+    v.write(own, v.element(own, 0x44, False, [1, 2]), Decimal(5))
+    v.write(own, v.element(own, 0x41, False, [30]), Decimal(1))
     v.write(own, v.Ref(v.fixed_addr(26), True), b"XY")
     v.write(own, v.simple(own, 0x5251, False), Decimal(4))
     start, end = m.model.prog_start, p.end(m)
@@ -275,8 +275,8 @@ def test_two_letter_variables_like_rom():
     v.dim(own, name("F"), True, [1], 16)
     v.dim(own, name("GH"), True, [1, 1], 2)
     with pytest.raises(BasicError):
-        v.element(own, name("AB"), False, [1], True)  # 数の配列ABはない
-    v.write(own, v.element(own, 0x41, False, [30], True), Decimal(2))
+        v.element(own, name("AB"), False, [1])  # 数の配列ABはない
+    v.write(own, v.element(own, 0x41, False, [30]), Decimal(2))
     v.write(own, v.simple(own, name("XY"), False), Decimal(8))
     bottom = v.word(m, v.ARRAY_PTR)
     assert v.word(own, v.ARRAY_PTR) == bottom
@@ -514,6 +514,12 @@ LABEL_LOOPS = [
     ('GOSUB "B"', ('30 "B" RETURN',)),
     ('GOSUB "B"', (*(f"{n} REM" for n in range(30, 50)), '90 "BCDEFG" RETURN', '95 "B" RETURN')),
     ('GOSUB "BCDEFG"', (*(f"{n} REM" for n in range(30, 50)), '90 "BCDEFG" RETURN')),
+    # 行の長さにはよらない
+    ('GOSUB "B"', (*(f"{n} B=1234567890:C=1234567890" for n in range(30, 50)), '90 "B" RETURN')),
+    (
+        'GOSUB "B"',
+        (*(f'{n} "C" B=1234567890:C=1234567890' for n in range(30, 50)), '90 "B" RETURN'),
+    ),
 ]
 
 
@@ -531,6 +537,40 @@ def test_label_jump_time_like_rom(body, more):
     rom = per_loop(lambda: boot("1261")[0])
     own = per_loop(lambda: basic_machine("1261"))
     assert abs(own / rom - 1) < 0.1, (body, rom, own)
+
+
+_REMS = tuple(f"{n} REM" for n in range(30, 70))
+LINE_LOOPS = [
+    ("GOSUB 30", ("30 RETURN",)),
+    ("GOSUB 30", ("30 GOTO 31", "31 RETURN")),
+    ("GOSUB 100", (*_REMS, "100 RETURN")),
+    ("GOSUB 100", (*_REMS, "100 GOSUB 101:RETURN", "101 RETURN")),
+    ("GOSUB 100", (*_REMS, "100 A=A+1:IF A<3 GOTO 100", "101 A=0:RETURN")),
+]
+
+
+@pytest.mark.parametrize("model", ["1261", "1350"])
+@pytest.mark.parametrize(("body", "more"), LINE_LOOPS)
+def test_line_jump_time_like_rom(model, body, more):
+    """行番号で跳ぶ時間が、ROMのある本体と10%以内。先の行へはいまの行から、前の行(いまの行も)へは
+    プログラムの頭から探す。RETURNは、戻る行より前の行の数だけ長くかかる(PC-1261系とPC-1350)"""
+    if not (HAVE_ROM_1260 if model == "1261" else HAVE_ROM_1350):
+        pytest.skip("ROMがない")
+    from basic_diff import basic_machine
+
+    marker = 0x6B00 if model == "1350" else 0x4010
+
+    def rom():
+        m = boot(model)[0]
+        m.run(CLOCK)
+        return m
+
+    def per_loop(make) -> float:
+        times = [_loop_time(make(), body, n, more, marker) for n in (50, 150)]
+        return (times[1] - times[0]) / 100
+
+    a, b = per_loop(rom), per_loop(lambda: basic_machine(model))
+    assert abs(b / a - 1) < 0.1, (body, more[-1], a, b)
 
 
 FOR_CASES = [
@@ -685,6 +725,9 @@ CLOAD_CASES = [
     (["10 X=1", "20 Y=2"], "cd", "MERGE\n"),
     ([], "cd", "MERGE\n"),
     (["5 X=1"], "zz", "CLOAD\n"),
+    # 区切りのあるテープのMERGE: 読んだ行の前の区切りだけを除き、テープの中の区切りは残す
+    (["5 X=1"], "zz", "MERGE\n"),
+    (["50 X=1"], "zz", "MERGE\n"),
 ]
 
 
@@ -771,6 +814,279 @@ def test_cload_frees_arrays_when_lines_reach_them(tmp_path):
     a, b = out
     assert a[-3].lcd.startswith(">")
     assert not differences(a, b), "\n".join(differences(a, b))
+
+
+LONG_LINES = [f'{n} A$="ABCDEFGHIJKLMNOP":B=12345' for n in range(10, 100, 10)]
+
+# (機種, 命令, BRKを押す時刻, 音が止まる時刻)。時刻は音を出し始めてからのms。止まる時刻は
+# ROMのある本体で観察した値。初めの1のあいだは約500msごと(最後の約500msでは見ない)、中身は
+# 1バイトごと(120バイトごとのチェックサムと、終わりのFFh・マーク・チェックサムでは見ない)。
+# PC-1350は、音を出し始めてから36msはビット4だけで、BRKを見たあと1を9つ送り、ビット4だけを
+# 36ms立ててから止める
+CSAVE_BRK_CASES_PC1261 = [
+    ("1261", 'CSAVE "LONG"', 300, 500),
+    ("1261", 'CSAVE "LONG"', 7700, 8346),
+    ("1261", 'CSAVE "LONG"', 8360, 8372),
+    ("1261", 'CSAVE "LONG"', 11450, 11492),
+    ("1261", 'CSAVE "LONG"', 16100, 16178),
+    ("1261", "CSAVE M &6000,&6100", 7700, 8634),
+    ("1261", "CSAVE M &6000,&6100", 15350, 15426),
+    ("1350", 'CSAVE "LONG"', 300, 590),
+    ("1350", 'CSAVE "LONG"', 7700, 8436),
+    ("1350", 'CSAVE "LONG"', 11490, 11582),
+    ("1350", 'CSAVE "LONG"', 16150, 16268),
+]
+
+
+def _csave_brk_stop(m, command: str, at: int) -> tuple[int, int]:
+    """mでcommandを打ち、音を出し始めてからat ms後にBRKを押して、音が止まるまで押し続ける。
+    (音が止まる時刻, >を出す時刻)。時刻は音を出し始めてからのms"""
+    from basic_diff import look, play
+
+    if m.model.family == "1350":
+        m.run(CLOCK)
+    play(m, _pc1261_program(LONG_LINES))
+    start = m.cpu.cycles
+    play(m, [("type", command + "\n")])
+    while not any(c >= start and v for c, v in m.sound_events):
+        m.run(CLOCK // 500)
+    first = next(c for c, v in m.sound_events if c >= start and v)
+    m.run(first + at * CLOCK // 1000 - m.cpu.cycles)
+    press = m.cpu.cycles
+    m.brk = True
+    for _ in range(1000):  # 音が止まるまで(2秒まで)
+        if any(c > press and v == 0 for c, v in m.sound_events):
+            break
+        m.run(CLOCK // 500)
+    m.brk = False
+    stop = next(c for c, v in m.sound_events if c > press and v == 0)
+    for _ in range(1000):  # >を出すまで(2秒まで)
+        if any(row.strip().startswith(">") for row in look(m).lcd.split("\n")):
+            break
+        m.run(CLOCK // 500)
+    return (stop - first) * 1000 // CLOCK, (m.cpu.cycles - first) * 1000 // CLOCK
+
+
+@pytest.mark.parametrize("index", range(len(CSAVE_BRK_CASES_PC1261)))
+def test_csave_checks_brk_at_observed_times(index):
+    """PC-1261系とPC-1350のCSAVEがBRKを見て音を止める時刻と、>を出す時刻が、ROMのある本体で
+    観察した時刻と同じ(ROMなし)。PC-1261は止めてからも、送り終えたときと同じ約913ms待つ"""
+    from basic_diff import basic_machine
+
+    model, command, at, stop = CSAVE_BRK_CASES_PC1261[index]
+    own, prompt = _csave_brk_stop(basic_machine(model), command, at)
+    assert abs(own - stop) <= 2
+    assert abs(prompt - stop - (10 if model == "1350" else 913)) <= 10, prompt - stop
+
+
+@pytest.mark.parametrize("index", range(len(CSAVE_BRK_CASES_PC1261)))
+def test_csave_checks_brk_like_rom_pc1261(index):
+    """PC-1261系とPC-1350のCSAVEがBRKを見て音を止める時刻、>を出す時刻と、止めたあとの液晶が、
+    ROMのある本体と同じ"""
+    from basic_diff import basic_machine, differences, play
+
+    model, command, at, _stop = CSAVE_BRK_CASES_PC1261[index]
+    if not (HAVE_ROM_1350 if model == "1350" else HAVE_ROM_1260):
+        pytest.skip("ROMがない")
+    out = []
+    for m in (boot(model)[0], basic_machine(model)):
+        times = _csave_brk_stop(m, command, at)
+        out.append((times, play(m, [("wait", 0.5), ("look", None)])))
+    ((stop_a, prompt_a), a), ((stop_b, prompt_b), b) = out
+    assert abs(stop_a - stop_b) <= 3 and abs(prompt_a - prompt_b) <= 15, out
+    assert not differences(a, b), "\n".join(differences(a, b))
+
+
+def test_brk_in_cload_waits_like_observed():
+    """CLOADをBRKで止めると、読み終えたときと同じだけ待ってから>を出す(PC-1261は約910ms、
+    PC-1350は約62ms。そのあいだPC-1261はBUSYを点けたまま。ROMのある本体で観察。ROMなし)"""
+    from basic_diff import basic_machine, look, play
+
+    for model, wait in (("1261", 910), ("1350", 62)):
+        m = basic_machine(model)
+        if model == "1350":
+            m.run(CLOCK)
+        play(m, _pc1261_program(["5 X=1"]) + [("type", "CLOAD\n"), ("wait", 0.3)])
+        press = m.cpu.cycles
+        m.brk = True
+        m.run(CLOCK // 50)
+        m.brk = False
+        if model == "1261":
+            assert "BUSY" in look(m).symbols
+        for _ in range(1000):  # >を出すまで(2秒まで)
+            if any(row.strip().startswith(">") for row in look(m).lcd.split("\n")):
+                break
+            m.run(CLOCK // 500)
+        assert abs((m.cpu.cycles - press) * 1000 // CLOCK - wait) <= 10, model
+
+
+def _file_wav(path: str, kind: int, data: bytes, place: bytes = b"", flip: int | None = None):
+    """PC-1261系の形のファイルを、テープの頭から200ms後に始まる音にしてwavに書く。flipの位置の
+    バイトは最下位のビットを変える(チェックサムを合わなくする)"""
+    from sc61box import tape
+    from sc61box.basic.pc1261 import cassette
+
+    raw = bytearray(cassette.file_bytes(kind, b"QR", data, place))
+    if flip is not None:
+        raw[flip] ^= 0x01
+    events, c, mode = [], CLOCK // 5, -1
+    for bit in cassette.bits(bytes(raw)):
+        want = cassette.ONE if bit else cassette.ZERO
+        if want != mode:
+            events.append((c, want))
+            mode = want
+        c += cassette.BIT
+    events.append((c, 0))
+    tape.write_wav(path, tape.render(events, 0, c + CLOCK // 3))
+
+
+def _lines(pairs: list[tuple[int, bytes]]) -> bytes:
+    return b"".join(bytes([n >> 8, n & 0xFF, len(b) + 1]) + b + b"\x0d" for n, b in pairs)
+
+
+BAD_PROGRAM = _lines([(10, b"\xde1"), (20, b"A=5"), (30, b'B$="XYZ"')])  # 10 PRINT 1 …
+BAD_SAME = ["10 PRINT 1", "20 A=5", '30 B$="XYZ"']
+BAD_MACHINE = bytes((0xFF, 0xEE, 0xF8, 0x8F, i * 37 & 0xFF)[i % 5] for i in range(200))
+
+# (機種, BASICか, データのバイト数(マシン語), 変えるバイトの位置, 行, 命令, 待つ字, 字が出る時刻)。
+# 時刻はテープの再生を始めてからのmsで、ROMのある本体で観察した値(Noneなら見ない)。中身の
+# チェックサムが合わないときとCLOAD?で違うときも、読み終えたときと同じだけ待ってからERROR 8。
+# CLOAD?は違うバイトを読んだところでやめる。CLOAD Mは最後のデータのバイトまでしか読まない
+# (そのあとのチェックサムは見ない)
+BAD_TAPE_CASES = [
+    ("1261", True, 0, None, ["5 X=1"], "CLOAD", ">", 10160),
+    ("1261", True, 0, 37, ["5 X=1"], "CLOAD", "ERROR 8", 10166),
+    ("1261", True, 0, 14, ["5 X=1", "7 Y=2:Z=3"], "MERGE", "ERROR 8", 10166),
+    ("1261", True, 0, 14, BAD_SAME, "CLOAD?", "ERROR 8", 9569),
+    ("1261", True, 0, 37, BAD_SAME, "CLOAD?", "ERROR 8", 10166),
+    ("1261", True, 0, None, ["10 PRINT 1", "20 A=6", '30 B$="XYZ"'], "CLOAD?", "ERROR 8", 9747),
+    ("1261", False, 16, 19, ["5 X=1"], "CLOAD M", ">", 10134),
+    ("1261", False, 200, 139, ["5 X=1"], "CLOAD M", "ERROR 8", None),
+    ("1261", False, 200, 140, ["5 X=1"], "CLOAD M", ">", 14944),
+    ("1261", False, 120, 139, ["5 X=1"], "CLOAD M", ">", None),
+    ("1350", True, 0, None, ["5 X=1"], "CLOAD", ">", 9310),
+    ("1350", True, 0, 37, ["5 X=1"], "CLOAD", "ERROR 8", 9312),
+    ("1350", True, 0, None, ["10 PRINT 1", "20 A=6", '30 B$="XYZ"'], "CLOAD?", "ERROR 8", 8896),
+    ("1350", False, 200, 140, ["5 X=1"], "CLOAD M", ">", 14094),
+]
+
+
+def _bad_tape(tmp_path, index: int) -> str:
+    from sc61box.basic.pc1261 import cassette
+
+    model, basic, size, flip = BAD_TAPE_CASES[index][:4]
+    path = str(tmp_path / f"bad{index}.wav")
+    if basic:
+        _file_wav(path, cassette.BASIC, BAD_PROGRAM, flip=flip)
+    else:
+        start = 0x6C00 if model == "1350" else 0x6000
+        data = BAD_MACHINE[:size]
+        _file_wav(path, cassette.MACHINE, data, cassette.place_field(start, size), flip)
+    return path
+
+
+@pytest.mark.parametrize("index", range(len(BAD_TAPE_CASES)))
+def test_bad_tape_like_observed(index, tmp_path):
+    """チェックサムの合わないテープとCLOAD?の違い: ERROR 8を出す時刻(読み終えたときと同じだけ
+    待つ)と、CLOAD Mが最後のデータのあとのチェックサムを見ないことが、ROMのある本体で観察した
+    とおり(ROMなし)"""
+    from basic_diff import basic_machine, look, play
+
+    from sc61box import tape
+
+    model, _basic, _size, _flip, lines, command, needle, when = BAD_TAPE_CASES[index]
+    m = basic_machine(model)
+    if model == "1350":
+        m.run(CLOCK)
+    play(m, _pc1261_program(lines))
+    m.tape = tape.TapeIn(_bad_tape(tmp_path, index))
+    play(m, [("type", command + "\n")])
+    while m.tape.start is None:
+        m.run(CLOCK // 500)
+    seen = None
+    for _ in range(25 * 250):
+        m.run(CLOCK // 250)
+        if needle in look(m).lcd:
+            seen = (m.cpu.cycles - m.tape.start) * 1000 // CLOCK
+            break
+    assert seen is not None, look(m).lcd
+    assert when is None or abs(seen - when) <= 20, (seen, when)
+
+
+@pytest.mark.parametrize("index", range(len(BAD_TAPE_CASES)))
+def test_bad_tape_like_rom(index, tmp_path):
+    """チェックサムの合わないテープとCLOAD?の違いで、液晶とRAM(プログラム、変数、マシン語を
+    置いた所)が、ROMのある本体と同じ"""
+    from basic_diff import basic_machine, differences, play
+
+    from sc61box import tape
+
+    model, _basic, _size, _flip, lines, command, _needle, _when = BAD_TAPE_CASES[index]
+    if not (HAVE_ROM_1350 if model == "1350" else HAVE_ROM_1260):
+        pytest.skip("ROMがない")
+    path = _bad_tape(tmp_path, index)
+    ram = slice(0x6030, 0x6D00) if model == "1350" else slice(0x4080, 0x6100)
+    out = []
+    for m in (boot(model)[0], basic_machine(model)):
+        if model == "1350":
+            m.run(CLOCK)
+        play(m, _pc1261_program(lines))
+        m.tape = tape.TapeIn(path)
+        looks = play(m, [("type", command + "\n")] + [("wait", 2.2), ("look", None)] * 8)
+        m.brk = True  # 待ち続けていれば、BRKで止める
+        m.run(CLOCK * 3 // 10)
+        m.brk = False
+        looks += play(m, [("wait", 0.5), ("look", None)])
+        out.append((looks, bytes(m.mem[ram])))
+    (a, ram_a), (b, ram_b) = out
+    assert not differences(a[-2:], b[-2:]), "\n".join(differences(a[-2:], b[-2:]))
+    assert ram_a == ram_b
+
+
+# MERGEで2つに分けたプログラム(BLOCKS)をCSAVEしたテープ
+MERGE_BLOCKS = (
+    _lines([(10, b'"A"X=1'), (30, b"Y=2")])
+    + b"\xff"
+    + _lines([(30, b"\xde3"), (40, b'B=7:C$="XYZ"')])
+)
+
+
+@pytest.mark.parametrize("model", ["1261", "1350"])
+def test_merge_tape_with_blocks_like_observed(model, tmp_path):
+    """区切りのあるテープをMERGEすると、読んだ行の最初の行番号がいまのプログラムの最後の行番号
+    より大きければ、読んだ行の前の区切りだけを除き、テープの中の区切りは残す。いまのプログラムの
+    頭は、読み終えたときは読んだ行の前の区切り、>を出す前にテープの最後の区切りにする(ROMの
+    ある本体で観察したRAM。ROMなし)"""
+    from basic_diff import basic_machine, play
+
+    from sc61box import tape
+    from sc61box.basic.pc1261 import cassette, program
+    from sc61box.basic.variables import word
+
+    path = str(tmp_path / "blocks.wav")
+    _file_wav(path, cassette.BASIC, MERGE_BLOCKS)
+    m = basic_machine(model)
+    if model == "1350":
+        m.run(CLOCK)
+    play(m, _pc1261_program(["5 X=1"]))
+    m.tape = tape.TapeIn(path)
+    play(m, [("type", "MERGE\n")])
+    while m.tape.start is None:
+        m.run(CLOCK // 500)
+    p = program.PC1350 if model == "1350" else program.PC1261
+    base, first = m.model.prog_start, _lines([(5, b"X=1")])
+    for _ in range(10000):  # 読み終えて行を置くまで
+        if p.end(m) >= base + len(first) + 2:
+            break
+        m.run(CLOCK // 500)
+    # 読み終えたところ: 区切りはまだ除かず、頭は読んだ行の前の区切り
+    assert m.mem[base + 1 + len(first)] == 0xFF
+    assert word(m, p.START_PTR) == base + 1 + len(first)
+    m.run(CLOCK * 3 // 2)
+    want = b"\xff" + first + MERGE_BLOCKS + b"\xff"
+    assert bytes(m.mem[base : base + len(want)]) == want
+    assert word(m, p.START_PTR) == base + 1 + len(first) + MERGE_BLOCKS.index(0xFF)
+    assert p.end(m) == base + len(want) - 1
 
 
 # ---- プリンタ ----
@@ -2193,3 +2509,72 @@ def test_pc1350_key_table_same_as_rom():
     codes = norom1350.key_codes()
     for key in _PROBE_KEYS:
         assert _probe_key(rom, key) == codes[key], key
+
+
+def _a_session_1261(m, model: str, lines: list[str]) -> list[tuple[str, int, bytes]]:
+    """配列の場所の上の96バイトに前の中身を置いてから、RUNモードで行を打つ(CLはCLのキー)。行ごとに
+    (液晶, 配列の下端, 配列の場所の上の384バイトと固定の変数のRAM)を返す"""
+    from basic_diff import lcd_1350, lcd_pc1261
+
+    from sc61box.autotype import Typer
+    from sc61box.basic.pc1261 import variables
+
+    v = variables.PC1350 if model == "1350" else variables.PC1261
+    t = Typer(m)
+    t.add_mode("RUN")
+    finish(m, t)
+    m.run(CLOCK * 3 // 2)
+    m.mem[v.ARRAY_TOP - 96 : v.ARRAY_TOP] = bytes(range(0xA0, 0x100))
+    out = []
+    for line in lines:
+        if line == "CL":
+            t.add_keys([["CL"]])
+        else:
+            t.add_text(line + "\n")
+        finish(m, t)
+        m.run(CLOCK)
+        text = lcd_1350(m) if model == "1350" else lcd_pc1261(m)
+        ram = bytes(m.mem[v.ARRAY_TOP - 384 : v.FIXED_TOP])
+        out.append((text, v.word(m, v.ARRAY_PTR), ram))
+    return out
+
+
+# A(n)の続きの配列、DIM A、A(i,j)、CLEAR(観察: どの行のあとも、液晶と配列の下端とRAMがROMの
+# ある本体と同じ)
+A_SESSIONS_1261 = [
+    ["A(27)", "A(29)", "CL", "A(29)=6", "DIM B(0)", "A(30)", "CL", "A(30)=1", "CL", "CLEAR",
+     "A$(28)", "DIM A(30)", "CL", "A(256)=1", "CL", "A(255)"],
+    ["A(27)", "DIM A(2)", "CL", "DIM A$(2)", "CL", "A(1,2)=3", "B=A(0,0)", "CL", "A(1,28)=5",
+     "CL", "A(1,28)", "CL", "A(1,0)=5", "CL", "CLEAR", "DIM A(2,3)", "A(1,2)=4", "B=A(1,2)"],
+]  # fmt: skip
+
+
+@pytest.mark.parametrize("index", range(len(A_SESSIONS_1261)))
+@pytest.mark.parametrize(("model", "have"), [("1261", HAVE_ROM_1260), ("1350", HAVE_ROM_1350)])
+def test_extra_a_like_rom(model, have, index):
+    if not have:
+        pytest.skip("ROMがない")
+    from basic_diff import _same_but_blink, basic_machine
+
+    lines = A_SESSIONS_1261[index]
+    want = _a_session_1261(boot(model)[0], model, lines)
+    got = _a_session_1261(basic_machine(model), model, lines)
+    for line, (a, b) in zip(lines, zip(want, got, strict=True), strict=True):
+        assert _same_but_blink(a[0], b[0]), (line, a[0], b[0])
+        assert a[1:] == b[1:], (line, hex(a[1]), hex(b[1]))
+
+
+def test_reading_extra_a_makes_array_1261():
+    """PC-1261系も、A(27)を読むだけで続きの配列(名前40h)を作り、見出しの添字の最大の2バイトは
+    前の中身のまま。A(i,j)は、入れるときはA(j)、式の中ではERROR 1。続きの配列があればDIM Aは
+    ERROR 3(ROMのある本体で観察した値)"""
+    from basic_diff import basic_machine
+
+    lines = ["A(27)", "A(1,2)=5", "B=A(1,2)", "CL", "DIM A(2)"]
+    seen = _a_session_1261(basic_machine("1261"), "1261", lines)
+    at = 0x64F1 - (0x6500 - 384)
+    assert seen[0][1] == 0x64F1
+    assert seen[0][2][at : at + 15] == bytes.fromhex("4000000bf5f608") + bytes(8)
+    assert seen[1][2][0x65C2 - (0x6500 - 384)] == 0x50  # Bの仮数
+    assert "ERROR 1" in seen[2][0]
+    assert "ERROR 3" in seen[4][0] and seen[4][1] == 0x64F1

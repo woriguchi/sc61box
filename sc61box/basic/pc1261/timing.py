@@ -26,12 +26,20 @@ PC1261 = replace(
     NEXT_LOOP=ms(3.6),  # 空のFOR・NEXTの1回が7.5ms
     ASSIGN=ms(8.9),  # A=1で12.8ms
     FOR=ms(16.6),  # FOR J=1 TO 1:NEXT Jで28.0ms
-    JUMP=ms(4.0),  # GOSUBとRETURNで12.1ms
-    JUMP_PER_LINE=ms(0.44),
+    JUMP=ms(4.0),  # すぐ次の行へのGOTOで8.6ms
+    GOSUB=ms(2.1),  # GOSUBとRETURNで11.6ms
+    # 先の行へは、いまの行から探す。前の行(いまの行も)へは、プログラムの頭から探す。行の長さには
+    # よらない(観察: 行1つで、GOTOとGOSUBで前へは0.34ms、先へはGOTOで0.34ms、GOSUBで0.52ms)
+    JUMP_PER_LINE=ms(0.34),
+    GOSUB_PER_LINE=ms(0.52),
+    JUMP_BACK_PER_LINE=ms(0.34),
+    JUMP_PER_BYTE=0,
+    RETURN_PER_LINE=ms(0.19),  # 戻る行より前に行を40足すと、7.6ms長い
     LABEL=ms(3.0),  # GOSUB "B"で、すぐ次の行へのGOSUBより5.1ms長い
     LABEL_PER_CHAR=ms(0.67),  # "B"を"BCDEFG"にすると3.5ms長い
     LABEL_PER_LINE=ms(0.57),  # 前に空の行を20足すと11.4ms長い
     LABEL_PER_MARK=ms(2.8),  # 前にほかのラベルの行を1つ足すと3.2〜3.5ms長い
+    LABEL_PER_BYTE=0,  # 行の長さにはよらない
     PRINT=ms(72.2),  # WAIT 0のあとPRINT "A"で76.1ms、PRINT 1で99.4ms
     PRINT_NUMBER=ms(23.3),
     LPRINT=0,  # 送らずにためるLPRINT "A";は、PRINTの字を作る時間だけ(送り始めはprinter.py)

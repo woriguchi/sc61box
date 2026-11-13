@@ -62,6 +62,13 @@ def save_waits(m) -> dict:
     return out
 
 
+def stop_waits(m) -> None:
+    """代替ROMルーチンの途中の処理を閉じる(状態を戻すとき、RAMを戻す前に)"""
+    from . import norom1261
+
+    norom1261.stop(m)
+
+
 def prepare_waits(m, d: object) -> Callable[[], None]:
     """save_waitsの値を調べ、待ちの様子を戻す関数を返す(前の版の状態にはないので、Noneなら
     待ちを捨てる)。おかしければValueError"""

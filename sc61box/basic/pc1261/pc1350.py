@@ -35,6 +35,7 @@ from . import (
     printer,
     program,
     run,
+    screen,
     sio,
     system,
     tapeio,
@@ -93,6 +94,8 @@ class Evaluator(evaluate.Evaluator):
         print_copies=False, print_page=None,
     )  # fmt: skip
     PI_CHAR, ROOT_CHAR = 0xFB, 0xFC  # πの字はPI、√の字はSQRと同じ(観察)
+    T_MEM_HEAD = -1  # MEM#はない
+    CHR_KANA_SHORT = False  # CHR$のカナに+でつないでも、そのままつなぐ(観察)
 
     @staticmethod
     def from_ascii(n: int) -> int | None:
@@ -122,6 +125,10 @@ class Evaluator(evaluate.Evaluator):
         return super()._operand()
 
 
+# RUN・GOTO・DEFのキーで始めるときに、Cポートのビット4を立てておく時間(観察)
+START_PULSE = ms(36.2)
+
+
 class Runner(run.Runner):
     EVALUATOR = Evaluator
     PROGRAM, VARS = program.PC1350, variables.PC1350
@@ -130,6 +137,17 @@ class Runner(run.Runner):
     # 135ms、PRINT Iで144ms)
     TIMES = replace(PC1261, PRINT=ms(38.0), PRINT_NUMBER=ms(10.0))
     NO_PRINTER_TIME = 0
+
+    def run_from(self, addr: int) -> Steps:
+        """RUN・GOTO・DEFのキーで実行を始めるときは、Cポートのビット4だけを36.2ms立てる(CONTと、
+        跳ぶ先がなくてエラーになるときは立てない。観察)"""
+        m = self.m
+        m.out_c(m.pc_out | 0x10)
+        try:
+            yield START_PULSE
+        finally:
+            m.out_c(m.pc_out & ~0x10)
+        yield from super().run_from(addr)
 
     def _cls(self) -> None:
         self.meter.add(CLS_TIME_1350)
@@ -398,6 +416,7 @@ Runner.STATEMENTS = by_code(
 
 class Basic(system.Basic):
     PRINT_BUFFER = None
+    KANA_SWITCH = None  # KANAのキーとSHIFTのあとKANAのキーで切り替える
     T_EQU = -1  # EQU#はない
     CALL_REGS = {}  # 確かめていない
     TYPED_AT = 0x6EB0  # CALLのとき打った行を置く番地(観察)
@@ -433,6 +452,7 @@ class Basic(system.Basic):
 
     def _hook_keys(self) -> None:
         keys = cast(Keyboard1350, self.keys)
+        keys.locked = self._error_shown
         keys.clear_screen = self._cls_key
         keys.toggle_mode = self._toggle_mode
 
@@ -443,8 +463,10 @@ class Basic(system.Basic):
         self._hook_keys()
 
     def _power_on(self) -> None:
-        """電源を入れると、シリアルは閉じて初めの設定に、TEXTモードはBASICモードに戻る(観察)"""
+        """電源を入れると、シリアルは閉じて初めの設定に、TEXTモードはBASICモードに、カナ・英小文字の
+        入力は英大文字の入力に戻る(観察)"""
         super()._power_on()
+        cast(Keyboard1350, self.keys).plain_input()
         self.graphics.reset()
         sio.power_on(self.m)
         textmode.set_on(self.m, self.VARS, False)
@@ -531,6 +553,7 @@ class Basic(system.Basic):
             text, cursor = self._indented(
                 text, cursor, ed.head + sep, ends if whole[: len(text)] == text else None
             )
+        text = screen.marked(text)
         # 字を打ち足したほかは(カーソルを動かした、消したなど)、下の行も書き直す。描いた点は
         # 消える(観察)
         now = (id(self.editor), list(self.editor.units), self.editor.cur)
@@ -557,43 +580,6 @@ class Basic(system.Basic):
         """命令の後ろの空白は、行の終わりでも捨てない(入らなければ命令ごと次の行へ。観察)"""
         head = list(self._codes(f"{n}{sep}"))
         return self._wrapped(head, self.EDITOR.units_of(self.PROGRAM.body(self.m, a)), trim=False)
-
-    def _indented(
-        self, text: list[int], cursor: int | None, indent: int, ends: list[int] | None = None
-    ) -> tuple[list[int], int | None]:
-        """1行目のあとの行の頭をindent字ずつ空けた並びと、カーソルの桁。endsは単位ごとの字の
-        終わりで、渡せば命令(後ろの空白まで)を行をまたがずに次の行へ送り、送った命令の前の
-        空白は捨てる(LISTと同じ。観察)"""
-        w = self.console.width
-        if ends is None:
-            ends = list(range(1, len(text) + 1))
-        places: list[int] = []
-        row, col, start = 0, 0, 0
-        for end in ends:
-            piece = list(range(start, min(end, len(text))))
-            start = end
-            chunks = [piece] if len(piece) > 1 and end > indent else [[k] for k in piece]
-            for chunk in chunks:
-                if col + len(chunk) > w:
-                    row, col = row + 1, indent
-                    if len(chunk) > 1 and text[chunk[0]] == self.SPACE:
-                        places.append(row * w + col)  # 捨てた空白は次の字と同じ桁
-                        chunk = chunk[1:]
-                for _k in chunk:
-                    places.append(row * w + col)
-                    col += 1
-        out = [self.SPACE] * ((row + 1) * w)
-        for k, cell in enumerate(places):
-            if out[cell] == self.SPACE:
-                out[cell] = text[k]
-        if cursor is not None:
-            if cursor < len(places):
-                cursor = places[cursor]
-            else:
-                cursor = row * w + col if col < w else (row + 1) * w + indent
-        while len(out) > w and out[-w:] == [self.SPACE] * w and (cursor or 0) < len(out) - w:
-            out = out[:-w]
-        return out, cursor
 
     def _show_result(self, value: Decimal | bytes) -> None:
         """数は打った行の下の行の右に、文字列は液晶を消して1行目に出す(観察)"""

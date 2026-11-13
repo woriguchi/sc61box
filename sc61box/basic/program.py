@@ -68,12 +68,15 @@ class Program:
     def loaded(self, m, at: int, data: bytes) -> None:
         """CLOADとMERGEで、番地atから行の並びdataを置いたあと"""
 
+    def separated(self, m, at: int, data: bytes) -> None:
+        """CLOADとMERGEを終えて、>を出す前(読んだ行の並びdataを番地atから置いた)"""
+
     def merge_at(self, m) -> int:
         """MERGEで、読んだ行を置き始める番地"""
         return self.end(m)
 
-    def merged(self, m) -> None:
-        """MERGEを終えて、>を出す前"""
+    def merged(self, m, at: int) -> None:
+        """MERGEを終えて、>を出す前(atは読んだ行を置き始めた番地)"""
 
     def body(self, m, a: int) -> bytes:
         """番地aの行の中身(行番号と終わりのマーカーを除く)"""

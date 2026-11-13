@@ -198,6 +198,8 @@ ROUTINES_1261: dict[str, int] = {
     "INKEY": 0x1138,
     "MODESW": 0x18DA,
     "POWEROFF": 0x0458,
+    # テープ(FENSCERが呼ぶもの。BASIC ROMの番地)
+    "CLOAD": 0x9695,
 }
 
 # PC-1350の名前と番地

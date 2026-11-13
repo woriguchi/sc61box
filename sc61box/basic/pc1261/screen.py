@@ -2,13 +2,21 @@
 Screenと字の形を受け継ぐ"""
 
 from ... import charset
-from .. import screen
+from .. import editor, screen
 from ..screen import INSERT_MARK, UNDERLINE
 from . import font
 
 # 液晶にない記号(ビットだけを立てる。GRADは207Cのビット2。machine.SYMBOLS_1261の註釈も参照)
 HIDDEN = {"GRAD": (0x207C, 0x04)}
 BLANK = frozenset({0x60})  # 液晶に何も描かない字(観察。PC-1350では`の形)
+# 打っている行の挿入マークを液晶に出すときの番号。文字列の01h(PC-1350のCHR$ 1など)は空白で
+# 出す(観察)
+INSERT_CODE = 0x100
+
+
+def marked(codes: list[int]) -> list[int]:
+    """打っている行の液晶の字の並びの挿入マーク(01h)を、INSERT_CODEにする"""
+    return [INSERT_CODE if c == editor.INSERT_MARK else c for c in codes]
 
 
 def char(code: int) -> str:
@@ -24,7 +32,7 @@ def char(code: int) -> str:
 
 def glyph(code: int) -> bytes:
     """字の形(5列)。形のない字は空白"""
-    if code == 0x01:
+    if code == INSERT_CODE:
         return INSERT_MARK
     if code in BLANK:
         return bytes(5)

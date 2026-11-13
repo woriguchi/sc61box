@@ -1,15 +1,17 @@
 """ROMなしのBASICの状態の保存と復元: CALLの最中に保存して戻しても、保存しなかったときと同じに
 終わる(4機種、打った行とプログラムの中、マシン語の戻り方)。壊れた状態は、本体に手を付けずに断る"""
 
+import base64
 import copy
 import json
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from basic_diff import basic_machine
 from helpers import finish
 
 from sc61box.autotype import Typer
+from sc61box.basic.pc1261.system import Basic as Basic1261
 from sc61box.machine import CLOCK
 
 # マシン語を置く番地と、待つあいだ見る番地
@@ -23,10 +25,14 @@ SPOTS = {
 # 待ったあとの戻り方
 ENDS = {
     "rtn": [0x37],
-    # 14h番地を3にして、戻り番地の次へ戻る: エラー3(PC-1251系)
-    "error": [0x02, 0x03, 0x94, 0xDB, 0x5B, 0x42, 0x34, 0x37],
+    # 14h番地を3にして、キャリーを1にして戻り番地の次へ戻る: エラー3(PC-1251系)
+    "error": [0x02, 0x03, 0x94, 0xDB, 0x5B, 0x42, 0x34, 0xD0, 0x37],
     # 15h番地を30hにしてRTN: BREAK(PC-1251系)
     "break": [0x02, 0x30, 0x95, 0xDB, 0x37],
+    # 15h番地を20hにしてRTN: プログラムの中なら>を出さずに止まる(PC-1251系)
+    "quiet": [0x02, 0x20, 0x95, 0xDB, 0x37],
+    # 15h番地を10hにしてRTN: 打った行なら、CONTが何もしなくなる(PC-1251系)
+    "dead": [0x02, 0x10, 0x95, 0xDB, 0x37],
     # 戻り番地を捨て、Xを2つ進めてキャリー0で命令の続きへ(PC-1350)
     "go-on": [0x04, 0x04, 0xD1, 0x5B, 0x5B, 0x37],
     # 戻り番地を捨て、34h番地を3、キャリー1で命令の続きへ: エラー3(PC-1350)
@@ -35,8 +41,8 @@ ENDS = {
 # 打つ行(atはマシン語の番地)。programはプログラムの中のCALL
 LINES = {"typed": "CALL &{at:04X}", "typed-rest": "CALL &{at:04X}:A=1", "program": "RUN"}
 MODEL_ENDS = {
-    "1251": ("rtn", "error", "break"),
-    "1245": ("rtn", "error", "break"),
+    "1251": ("rtn", "error", "break", "quiet", "dead"),
+    "1245": ("rtn", "error", "break", "quiet", "dead"),
     "1261": ("rtn",),
     "1350": ("rtn", "go-on", "fail"),
 }
@@ -73,7 +79,9 @@ def _ended(m) -> tuple:
     m.run(CLOCK)
     b = m.basic
     lo, hi = m.model.ram
-    return (b.state, b.where, b.stopped_at, b.error_pos, m.columns(), bytes(m.mem[lo:hi]))
+    r = b.runner
+    return (b.state, b.where, b.stopped_at, b.error_pos, m.columns(), bytes(m.mem[lo:hi]),
+            r.resume, r.dead_cont, m.pc_out & 1)  # fmt: skip
 
 
 CASES = [(model, end, line) for model, ends in MODEL_ENDS.items() for end in ends for line in LINES]
@@ -268,3 +276,71 @@ def test_broken_rom_digest_is_refused(bad):
     state["rom"] = bad
     with pytest.raises(ValueError):
         basic_machine("1251").restore(state)
+
+
+def _typed(m, t, lines):
+    for text in lines:
+        t.add_text(text + "\n")
+        finish(m, t)
+
+
+@pytest.mark.parametrize("model", list(SPOTS))
+def test_restore_drops_unfinished_work_area(model):
+    """計算の途中(作業領域の書き戻しの途中)で、実行する前に保存した状態に戻すと、RAMは保存した
+    ときのまま(戻す前の計算の残りを、戻したRAMに書かない)"""
+    m = basic_machine(model)
+    t = Typer(m)
+    t.add_mode("PRO")
+    finish(m, t)
+    m.run(CLOCK)
+    _typed(m, t, ["NEW", "10 A=(123+456)*(789+234)", "20 GOTO 10"])
+    t.add_mode("RUN")
+    finish(m, t)
+    m.run(CLOCK)
+    before = json.loads(json.dumps(m.snapshot()))
+    _typed(m, t, ["RUN"])
+    assert m.basic is not None
+    for _ in range(1000):
+        m.run(CLOCK // 997)
+        tl = m.basic.runner.timeline
+        if tl is not None and tl.pending:
+            break
+    else:
+        pytest.fail("作業領域を書き戻しているところに来ない")
+    m.restore(before)
+    lo, hi = m.model.ram
+    assert bytes(m.mem[lo:hi]) == base64.b64decode(before["mem"])[lo:hi]
+
+
+@pytest.mark.parametrize("model", ["1261", "1350"])
+def test_error_line_notice_after_restore(model):
+    """PROモードの↓でエラーで止まった行を出し、2行目にエラーメッセージを出しているところで保存して
+    別の本体に戻しても、カーソルを描き直したときにメッセージが消えない"""
+    m = basic_machine(model)
+    t = Typer(m)
+    t.add_mode("PRO")
+    finish(m, t)
+    m.run(CLOCK)
+    _typed(m, t, ["NEW", "10 A=1/0", "20 END"])
+    t.add_mode("RUN")
+    finish(m, t)
+    m.run(CLOCK)
+    _typed(m, t, ["RUN"])
+    m.run(CLOCK)
+    if model == "1350":  # エラーの知らせを出しているあいだは、MODEキーが効かない
+        t.add_keys([["CLS"]])
+    t.add_mode("PRO")
+    finish(m, t)
+    m.run(2 * CLOCK)
+    t.add_keys([["DOWN"]])
+    finish(m, t)
+    m.run(CLOCK // 2)
+    b = m.basic
+    assert b is not None and b.state == "error-line" and getattr(b, "notice_row", None) is not None
+    state = json.loads(json.dumps(m.snapshot()))
+    m.run(CLOCK)
+    again = basic_machine(model)
+    again.restore(state)
+    again.run(CLOCK)
+    shown = cast(Basic1261, again.basic).lcd.text
+    assert shown == cast(Basic1261, b).lcd.text  # 点滅するカーソルの位相は比べない

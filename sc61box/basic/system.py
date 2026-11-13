@@ -28,6 +28,8 @@ from .using import Format
 Steps = Generator[int, None, None]
 
 CALL_STACK = 0x58  # CALLで呼んだ先の頭でのR
+STATUS = 0x15  # CALLから戻るときにBASICが見る、内部RAMの状態の番地(PC-1251系。観察)
+OUTER = CALL_STACK + 2  # 戻り番地の上の2バイト(内部RAM)
 RETURN = 0x1FFE  # CALLで積む戻り番地(ROMの番地。ここへRTNで戻ればBASICに戻る)
 MESSAGES = ("error", "program-error", "break")
 EDITING = ("input", "edit", "error-line", "rsv-edit")  # 液晶にカーソルつきの行を出している
@@ -60,7 +62,8 @@ class Call:
     """CALLでマシン語に渡しているあいだのこと"""
 
     base: int = 0  # CALLの行を置いた番地(OUTER_RETURNで続きを読む位置を決める)
-    end: str | None = None  # 戻り方("break"・"error"・"outer")。ふつうに戻ればNone
+    # 戻り方("break"・"error"・"outer"・"quiet"・"dead")。ふつうに戻ればNone
+    end: str | None = None
     missing: int | None = None  # 代替ROMルーチンのないROMの番地へ入ったら、その番地
     stalled: routines.Routine | None = None  # missingで、時間を進めずに待ち続けた代替ROMルーチン
 
@@ -134,6 +137,16 @@ class Basic:
     OUTER_RETURN: int | None = None
     OUTER_ERRNO = 0x34
     INPUT_CL_ASKS = False  # INPUT "字",変数でCLを押すと、字の代わりに?を出す(PC-1261系とPC-1350)
+    # 打った文と式も、作業領域に書いたものを計算の時間のあいだに書き戻す(workarea.Timeline)。
+    # そのとき、ENTERを押してから計算を始めるまでの時間(ENTER_COSTの残りは計算のあと)。Noneなら
+    # 一度に書く(PC-1261系とPC-1350は観察していない)
+    TYPED_START: int | None = None
+    # PRINT・PAUSEで、液晶の1桁を書く時間。文の時間の終わりに、左から1桁ずつ書いていく(Noneなら
+    # 時間を待ってから一度に書く。PC-1261系とPC-1350は観察していない)
+    PRINT_CELL: int | None = None
+    # DEFで実行を始めるとき、ラベルの字を文字列の値として、待たせている値の1段目に置く(積んだ
+    # 数は0のまま。PC-1251系は液晶の右端の2桁に見える。観察)
+    DEF_LABEL_VALUE = False
 
     def __init__(self, m) -> None:
         self.m = m
@@ -223,6 +236,7 @@ class Basic:
     def restart(self) -> None:
         """電源を入れ直したときなど: RAMはそのままで、入力待ちから始め直す。実行中の
         プログラム、FOR・GOSUB、CONTで続ける所は忘れる"""
+        self.stop()
         self.active = True
         self.idle = self.waiting = False
         self.where = "idle"
@@ -241,6 +255,13 @@ class Basic:
         self.keys = self.KEYBOARD(self.m)
         self._steps = self._main()
         self._left = 0
+
+    def stop(self) -> None:
+        """実行中の処理を終える。後始末(finally)の書き込みはここで済ませ、あとで別の状態の
+        RAMを書き換えないようにする(状態を戻すときは、RAMを戻す前に呼ぶ)"""
+        steps = getattr(self, "_steps", None)
+        if steps is not None:
+            steps.close()
 
     # ---- 状態の保存(どこでもセーブ) ----
     def settle(self) -> None:
@@ -373,7 +394,8 @@ class Basic:
             yield from self._run_program(r.after_call(at), resumed=True)
         elif where == "call-direct":
             self.where = "idle"
-            yield from self._typed_line(r.code, self._direct_returned())
+            rest = 0 if self.TYPED_START is None else ENTER_COST - self.TYPED_START
+            yield from self._typed_line(r.code, self._direct_returned(), rest)
         yield from self._main(keep=True)
 
     def run(self, cycles: int) -> int:
@@ -639,6 +661,11 @@ class Basic:
         self.runner.aread = Typed(text) if text else value
         self.stopped_at = None
         self.display(False)
+        w = self.EVALUATOR.WORK
+        if self.DEF_LABEL_VALUE and w is not None:
+            mark = workarea.Text(label[1:-1])
+            mark.at = found[1] + self.LINE_HEAD + 1
+            workarea.put(self.m, w.values, workarea.entry(mark))
         yield ENTER_COST
         yield from self._run_program(self.runner.run_from(found[1]))
 
@@ -852,11 +879,24 @@ class Basic:
             return
         if self.state not in ("input", "edit") or not self.editor.units:
             return
-        yield ENTER_COST
         code = self._entered_code(mode)
         # 呼び出す行は中間コードにしたもの(観察: 綴りで打った命令も命令として出る)
         self.last_line = code
-        yield from self._typed_line(code, self._entered(code, mode))
+        start = self.TYPED_START
+        if start is None or not self._computed(code, mode):
+            yield ENTER_COST
+            yield from self._typed_line(code, self._entered(code, mode))
+            return
+        yield start
+        yield from self._typed_line(code, self._entered(code, mode), ENTER_COST - start)
+
+    def _computed(self, code: bytes, mode: str) -> bool:
+        """ENTERで打った行が、計算する文か式(登録する行と、RUN・LISTなどの命令でない)"""
+        if mode == "PRO" and code[:1] and self.EVALUATOR.is_digit(code[0]):
+            return False
+        commands = (self.T_RUN, self.T_GOTO, self.T_CONT, self.T_PASS, self.T_LLIST,
+                    self.T_CSAVE, self.T_CLOAD, self.T_MERGE, self.T_LIST, self.T_NEW)  # fmt: skip
+        return not code[:1] or code[0] not in commands
 
     def _entered(self, code: bytes, mode: str) -> Generator[int, None, Decimal | bytes | None]:
         """ENTERで打った行を、登録するか実行する。答えとして出す値を返す"""
@@ -870,17 +910,48 @@ class Basic:
         if started is not None:
             yield from self._run_program(started)
             return None
-        return (yield from self._direct(code, mode))
+        if self.TYPED_START is None:
+            return (yield from self._direct(code, mode))
+        return (yield from self._recorded(self._direct(code, mode)))
+
+    def _recorded(
+        self, steps: Generator[int, None, Decimal | bytes | None]
+    ) -> Generator[int, None, Decimal | bytes | None]:
+        """打った行の実行stepsで作業領域に書いたものを、書いた順と時間とともに覚える
+        (Runner._recordedと同じ。待つときは、それまでに書いたものをそのままにする)。覚えた
+        ものは、_typed_lineが計算の時間を待つあいだに書き戻す"""
+        r = self.runner
+        r.timeline = r.new_timeline()
+        while True:
+            try:
+                n = next(steps)
+            except StopIteration as stop:
+                return stop.value
+            r.timeline = None
+            yield n
+            r.timeline = r.new_timeline()
 
     def _typed_line(
-        self, code: bytes, steps: Generator[int, None, Decimal | bytes | None]
+        self, code: bytes, steps: Generator[int, None, Decimal | bytes | None], rest: int = 0
     ) -> Steps:
-        """打った行codeの実行stepsを進め、エラーかBREAKのメッセージ、または答えを出す"""
+        """打った行codeの実行stepsを進め、エラーかBREAKのメッセージ、または答えを出す。restは、
+        計算のあとに使うENTERの時間"""
+        r = self.runner
+        try:
+            yield from self._typed_steps(code, steps, rest)
+        finally:
+            r.settle()  # 書き戻しの途中でやめたら書き終える
+
+    def _typed_steps(
+        self, code: bytes, steps: Generator[int, None, Decimal | bytes | None], rest: int
+    ) -> Steps:
+        r = self.runner
         try:
             value = yield from steps
             answer = self._answer(value, code) if isinstance(value, Decimal) else b""
         except (Break, LineError) as e:  # 打ったCALLから、エラーかBREAKで戻った
-            yield self.runner.meter.take() + self.TIMES.STOPPED
+            yield from r.spend(r.meter.take())
+            yield rest + self.TIMES.STOPPED
             self._stop_message(e)
             return
         except BasicError as e:
@@ -890,12 +961,15 @@ class Basic:
                 else 0
             )
             self.error_pos = default if e.pos is None else min(e.pos, len(code))
-            yield self.runner.meter.take()  # エラーまでの計算の時間
+            yield from r.spend(r.meter.take())  # エラーまでの計算の時間
+            if rest:
+                yield rest
             self._error(e.number)
             return
         if value is None:
             return
-        yield self.runner.meter.take() + (NUMBER_RESULT if isinstance(value, Decimal) else 0)
+        yield from r.spend(r.meter.take())
+        yield rest + (NUMBER_RESULT if isinstance(value, Decimal) else 0)
         self.answer = answer
         self._show_result(value)
         self.state = "result"
@@ -960,7 +1034,6 @@ class Basic:
         if isinstance(line, Decimal):
             line = int(line)
         expect_end(e)
-        self.stopped_at = None
         if head == self.T_CONT:
             return self.runner.cont()
         if head == self.T_GOTO:
@@ -991,6 +1064,11 @@ class Basic:
                 self.state = "break"
             elif b.kind == "mode":
                 self.state = "prompt"  # 新しいモードの入力待ちが>を出す
+            elif b.kind == "quiet-end":
+                # 液晶はそのまま点け、字のキーで打ち始め、CL・ENTERで>(観察)
+                yield self.runner.meter.take() + self.TIMES.STOPPED
+                self.display(True)
+                self.state, self.line_no = "shown", None
             elif b.key.startswith("DEF:"):
                 self.pending_key = b.key  # 出しているものはそのままで、ラベルから実行する
             else:
@@ -999,7 +1077,7 @@ class Basic:
                     self._type(self.CODES[b.key], False)
                 elif b.key.startswith("RSV:"):
                     self.pending_key = b.key
-            self.stopped_at = (b.line, b.pos)
+            self.stopped_at = None if b.kind == "quiet-end" else (b.line, b.pos)
         except LineError as e:
             yield self.runner.meter.take() + self.TIMES.STOPPED
             self._stop_message(e)
@@ -1053,6 +1131,8 @@ class Basic:
                 raise BasicError(1, 0)
             r = self.runner
             r.code, r.pos = code, 1
+            if self.TYPED_START is not None:
+                yield self.TIMES.STATEMENT  # 文を始める時間は、計算の前(観察)
             try:
                 result = self.STATEMENTS[head](r)
                 if result is not None:
@@ -1077,7 +1157,12 @@ class Basic:
         r = self.runner
         if r.pos < len(code):
             raise BasicError(1, r.pos)
-        yield self.TIMES.STATEMENT + r.meter.take()  # 文にかかった時間は、この行で使う
+        # 文にかかった時間は、この行で使う
+        if self.TYPED_START is None:
+            yield self.TIMES.STATEMENT + r.meter.take()
+        else:
+            yield from r.spend(r.meter.take())
+            yield ENTER_COST - self.TYPED_START
         self._prompt()
 
     def _direct_returned(self) -> Generator[int, None, None]:
@@ -1098,6 +1183,7 @@ class Basic:
             e.claim(target)
             if e.take(self.EQ):
                 self.runner.assigning(e, target)
+                self.runner.meter.add(DIRECT_ASSIGN)  # 式を読む前にかかる(観察)
                 value = e.expression()
                 try:
                     stored = self.VARS.write(self.m, e.resolve(target, create=True), value)
@@ -1105,7 +1191,6 @@ class Basic:
                     err.at(e.pos - 1)  # 型が合わないときは、式の最後の字(観察)
                     raise
                 self.runner.assigned(value)
-                self.runner.meter.add(DIRECT_ASSIGN)
                 # 文字列の代入は、変数に入った字ではなく式の値を出す(観察)
                 return value if isinstance(value, bytes) else stored
             e.pos = start
@@ -1215,6 +1300,27 @@ class Basic:
             return text
         words = pieces(units, self.keywords, self.CODES, **self.EDITOR.style())
         return bytes(c for word, _ in words for c in word)
+
+    def print_cells(self, items, comma: bool, fmt: Format, wait: int) -> Steps:
+        """PRINT・PAUSEの字を出すまでの時間waitを待つ。PRINT_CELLがあれば、その終わりの
+        ところで液晶の桁を左から1桁ずつ書いていく(観察: ROMは液晶を消したまま、空白の桁も
+        含めて1桁に約1.55msで書き、書き終えてから点ける)"""
+        cell, n = self.PRINT_CELL, self.screen.cells
+        if cell is None or wait < cell * n:
+            yield wait
+            return
+        yield wait - cell * n
+        m, scr = self.m, self.screen
+        cols = scr.addrs[: 5 * n]
+        old = bytes(m.mem[a] for a in cols)
+        self._message(self.print_text(items, comma, fmt))
+        new = bytes(m.mem[a] for a in cols)
+        for a, v in zip(cols, old, strict=True):
+            m.mem[a] = v
+        for i in range(n):
+            scr.put(i, new[5 * i : 5 * i + 5])
+            m.lcd_dirty = True
+            yield cell
 
     def show_print(self, items, comma: bool, fmt: Format = Format()) -> None:  # noqa: B008
         """PRINT・PAUSEの出し方"""
@@ -1400,7 +1506,9 @@ class Basic:
             else:
                 self.m.mem[self.TEXT_POINTER] = at & 0xFF
                 self.m.mem[self.TEXT_POINTER + 1] = at >> 8
-                cpu.ram[0x15] = 0x10 if self.where == "run" else 0x00  # 実行中かのフラグ(観察)
+                cpu.ram[STATUS] = 0x10 if self.where == "run" else 0x00  # 実行中かのフラグ(観察)
+                # 戻り番地の上。マシン語がここを書き換えたかで、打った行のBREAKを決める
+                cpu.ram[OUTER : OUTER + 2] = bytes(2)
         if self.EVALUATOR.WORK is not None:
             workarea.called(self.m, self.EVALUATOR.WORK, addr)
         self.guard = self.m.outside_ram()  # # ram: でRAMの終わりが動くので、CALLごとに作る
@@ -1424,8 +1532,18 @@ class Basic:
         call, self.call = self.call, Call()
         if call.end == "outer":
             self._call_outer(call.base)
-        elif call.end is not None:
-            self._call_ended(call.end, running)
+        elif call.end in ("error", "break"):
+            self._call_ended(call.end, running, call.base)
+        elif call.end == "quiet":
+            # 「>」もBREAKも出さずに止める。液晶は実行中のまま点け、CONTはできない(観察)
+            raise Break(0, 0, "quiet-end")
+        if call.missing is None and self.TEXT_POINTER is not None:
+            self._call_continue(call.base, running)
+        if call.end == "dead":
+            # 打った行のCALLから、15hの実行中のビットを立てて戻った: CONTは何もせずに>(観察)
+            r = self.runner
+            r.resume, r.dead_cont = None, True
+            self.stopped_at = None
         if call.missing is not None:
             # ROMなしにないROMのルーチンを呼んだか、代替ROMルーチンが時間を進めずに待ち続けた:
             # そこでやめて知らせる
@@ -1437,6 +1555,57 @@ class Basic:
                 r = self.runner
                 r.resume = (r.addr, r.pos)  # CONTで、CALLの次から続けられる
                 raise Break(self.PROGRAM.number_at(self.m, r.addr) or 0, r.stopped_pos())
+
+    def _call_continue(self, base: int, running: bool) -> None:
+        """CALLのマシン語からふつうに戻った(PC-1251系)。TEXT_POINTERの番地が指すバイトの次から
+        読み続ける。次のバイトが「:」なら次の文、行の終わりなら次の行で、ほかはERROR 1。打った
+        行は、次のバイトが00hでなければERROR 1(観察)"""
+        m, r = self.m, self.runner
+        assert self.TEXT_POINTER is not None
+        at = m.mem[self.TEXT_POINTER] | m.mem[self.TEXT_POINTER + 1] << 8
+        if at == base + r.pos - 1:
+            return  # 動かしていない
+        nxt = m.mem[at + 1 & 0xFFFF]
+        if not running:
+            pos = at + 1 - base
+            if nxt == 0:
+                r.pos = len(r.code)
+                return
+            raise BasicError(1, pos if 0 <= pos <= len(r.code) else len(r.code))
+        found = self._line_around(at)
+        if found is None:
+            raise LineError(1, 0, 0, self._scanned_line(at))
+        number, a, pos = found
+        length = len(self.PROGRAM.body(m, a))
+        if 0 <= pos < length and nxt == self.COLON or pos == length - 1:
+            r.jump(a, pos + 1)
+            return
+        raise LineError(1, number, min(max(pos + 1, 0), length))
+
+    def _line_around(self, at: int) -> tuple[int, int, int] | None:
+        """番地atを含む、登録した行の(行番号, 行の番地, 行の中の位置)。行番号のバイトと行の
+        終わりのバイトも含める(位置は負か、中身の長さ)"""
+        m = self.m
+        for number, a in self.PROGRAM.lines(m):
+            if a <= at < self.PROGRAM.next_line(m, a):
+                return number, a, at - a - self.LINE_HEAD
+        return None
+
+    def _scanned_line(self, start: int) -> bytes:
+        """プログラムの外を指す位置の行番号として出す字。startから前へ、E0h以上のバイトを探し、
+        そのバイトの下位4ビットと次のバイトの2桁を、字40h+数で出す(上の桁の0は出さない。
+        観察: E3h 00hなら300、EFh 00hなら「(4Fh)00」)。RAMの中になければ0"""
+        m = self.m
+        lo = m.model.ram[0]
+        digits = [0]
+        for a in range(start, lo - 1, -1):
+            if m.mem[a] >= 0xE0:
+                n = m.mem[a + 1]
+                digits = [m.mem[a] & 0x0F, n >> 4, n & 0x0F]
+                break
+        while len(digits) > 1 and digits[0] == 0:
+            digits.pop(0)
+        return bytes(self.EVALUATOR.DIGIT_BASE + d for d in digits)
 
     def _pointed_line(self, at: int) -> tuple[int, int, int] | None:
         """番地atを含む、登録した行の(行番号, 行の番地, 行の中の位置)"""
@@ -1456,7 +1625,7 @@ class Basic:
         x = cpu.ram[4] | cpu.ram[5] << 8
         self.runner.pos = max(0, x + 1 - base)
 
-    def _call_ended(self, end: str, running: bool) -> None:
+    def _call_ended(self, end: str, running: bool, base: int) -> None:
         """CALLから、エラーかBREAKで戻った。エラーの行は、TEXT_POINTERの番地が指す行。BREAKは
         CALLの行で止まり(打った行なら0)、CONTはポインタが指す文の次の文から続ける(観察)"""
         m, r = self.m, self.runner
@@ -1464,8 +1633,15 @@ class Basic:
         at = m.mem[self.TEXT_POINTER] | m.mem[self.TEXT_POINTER + 1] << 8
         pointed = self._pointed_line(at)
         if end == "error":
-            line, pos = (pointed[0], pointed[2] + 1) if pointed else (0, 0)
-            raise LineError(m.cpu.ram[0x14], line, pos)
+            number = m.cpu.ram[0x14]
+            if not running and not any(m.cpu.ram[OUTER : OUTER + 2]):
+                # 打った行は、行番号なしのエラー。位置はポインタの指すバイト。マシン語が戻り
+                # 番地の上を書き換えていれば(PC-インタープリタ)、プログラムと同じに出す(観察)
+                pos = at - base
+                raise BasicError(number, pos if 0 <= pos < len(r.code) else len(r.code))
+            if pointed is None:
+                raise LineError(number, 0, 0, self._scanned_line(at - 1))
+            raise LineError(number, pointed[0], pointed[2])  # 位置はポインタの指すバイト(観察)
         if pointed is not None:
             _, a, pos = pointed
             r.resume = (a, r.statement_end(self.PROGRAM.body(m, a), pos + 1))
@@ -1477,7 +1653,8 @@ class Basic:
         """「BREAK IN 行番号」か「ERROR 番号 IN 行番号」を出す"""
         if isinstance(e, LineError):
             # 左の空白はPC-1251で2字、PC-1245で1字(観察)
-            text = self.dialect.error_lead + self._codes(f"ERROR {e.number} IN {e.line}")
+            line = self._codes(str(e.line)) if e.shown is None else e.shown
+            text = self.dialect.error_lead + self._codes(f"ERROR {e.number} IN ") + line
             self._message(text)
             self.screen.symbol(self.ERROR_MARK, True)
             self.state = "program-error"
@@ -1490,18 +1667,20 @@ class Basic:
         """CALLの最中に、CPUがguardの番地pcで止まった。戻り番地ならBASICに戻す。本体の
         guard(own)で止まったときは、代替ROMルーチンを動かす。代替ROMルーチンがないか、時間を
         進めずに待ち続けたら、CALLをやめてBASICに戻る(プログラムの中ならBREAK)。扱ったらTrue"""
-        if pc == RETURN:
-            if self.TEXT_POINTER is not None and self.m.cpu.ram[0x15] == 0x30:
-                self.call.end = "break"  # 内部RAMの15hが30hならBREAK(観察)
+        cpu = self.m.cpu
+        if pc == RETURN + 1 and self.TEXT_POINTER is not None and cpu.c:
+            # キャリーを1にして戻り番地の次へ戻ると、14h番地の番号のエラー(観察)
+            self.call.end = "error"
+            self.active = True
+            return True
+        if pc == RETURN or pc == RETURN + 1 and self.TEXT_POINTER is not None:
+            # キャリーが0なら、戻り番地の次へ戻っても、ふつうに戻ったのと同じ(観察)
+            if self.TEXT_POINTER is not None:
+                self.call.end = self._status_end(cpu.ram[STATUS])
             self.active = True
             return True
         if pc == self.OUTER_RETURN:
             self.call.end = "outer"
-            self.active = True
-            return True
-        if pc == RETURN + 1 and self.TEXT_POINTER is not None:
-            # 戻り番地の次へ戻ると、14h番地の番号のエラー(観察)
-            self.call.end = "error"
             self.active = True
             return True
         if not own:
@@ -1514,6 +1693,21 @@ class Basic:
         self.call.missing = pc  # BASICに戻ってやめる
         self.active = True
         return True
+
+    def _status_end(self, v: int) -> str | None:
+        """CALLから戻ったときの内部RAMの15hの値vから、戻り方を決める(PC-1251系。観察)。
+        プログラムの中: ビット1〜3・5がどれも0ならそのまま続け、ビット5・4が1でビット0が0なら
+        BREAK、ほかは止める("quiet")。打った行: 液晶には>を出すだけで、BREAKを出すのは、
+        マシン語が戻り番地の上(OUTER)を書き換えたとき(PC-インタープリタ)。ビット4が1で
+        ビット0〜3が0なら、CONTは何もしない("dead")"""
+        if self.where == "call-run":
+            if v & 0x2E == 0:
+                return None
+            return "break" if v & 0x31 == 0x30 else "quiet"
+        cpu = self.m.cpu
+        if v & 0x31 == 0x30 and any(cpu.ram[OUTER : OUTER + 2]):
+            return "break"
+        return "dead" if v & 0x1F == 0x10 else None
 
     def set_angle(self, which: str) -> None:
         """DEGREE・RADIAN・GRAD: 角度の表示記号を変える(角度は記号で決まる。angle_turn)"""

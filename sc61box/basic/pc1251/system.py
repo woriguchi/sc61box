@@ -1,7 +1,7 @@
 """PC-1251系(PC-1250・1251・1255、PC-1245)のROMなしのBASICの本体。1行の液晶に出す"""
 
 from ... import charset
-from .. import system
+from .. import system, timing
 from . import (
     editor,
     evaluate,
@@ -43,6 +43,9 @@ class Basic(system.Basic):
     TAPEIO, PRINTOUT = tapeio.TapeIO, printer.PrintOut
     ERROR_MARK = "E"
     TEXT_POINTER = 0xC6B1
+    TYPED_START = timing.ms(2.5)  # 観察: 1+2で、ENTERを押してから+を積むまで約25ms
+    PRINT_CELL = timing.ms(1.55)  # 観察: 24桁を約37msで書く
+    DEF_LABEL_VALUE = True
 
     def _power_on(self) -> None:
         self.screen.symbol("DE", True)

@@ -2697,6 +2697,10 @@ MESSAGES: dict[str, dict[str, str | tuple[str, str]]] = {
         "ja": "ONキーを押していなければ電源を切る",
         "en": "power off unless the ON key is held",
     },
+    "rom.1261.cload": {
+        "ja": "X+1からの文(0Dか:まで)をCLOADの続きとして実行する(テープから読む)",
+        "en": "run the statement at X+1 (up to 0D or :) as the rest of CLOAD (reads the tape)",
+    },
     "rom.1261.b67xm": {
         "ja": "Bを67にしてBA2XMと同じ",
         "en": "B ← 67, then as BA2XM",

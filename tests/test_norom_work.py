@@ -418,6 +418,38 @@ def test_work_area_changes_during_statement(monkeypatch):
     assert changes >= 40
 
 
+def _typed_changes(m) -> list[float]:
+    """RUNモードでI=30を入れてから割り算を入れ子にした式を打ち、ENTERを押してから0.6秒の
+    あいだに、作業領域(演算子・値と積んだ数)が変わった時刻(ミリ秒)"""
+    from basic_diff import play
+
+    line = "A=I/7+(2*I/7+(3*I/7+(4*I/7+(5*I/7+(6*I/7+I/7)))))"
+    play(m, [("mode", "RUN"), ("wait", 1.5), ("type", "I=30\n"), ("wait", 0.5),
+             ("type", line), ("wait", 0.2)])  # fmt: skip
+    m.held.add("ENTER")
+    c0, prev, times = m.cpu.cycles, None, []
+    for i in range(1200):
+        m.run(CLOCK // 2000)
+        if i == 100:
+            m.held.discard("ENTER")
+        cur = bytes(m.mem[0xF840:0xF880]) + bytes(m.mem[0xC6F5:0xC6F7])
+        if prev is not None and cur != prev:
+            times.append((m.cpu.cycles - c0) * 1000 / CLOCK)
+        prev = cur
+    return times
+
+
+def test_typed_line_work_area_changes_during_statement(monkeypatch):
+    """打った行の計算でも、積んだ値は計算の時間のあいだに少しずつ変わって見える(ROMのある
+    本体では、0.6秒のあいだに30回ほど変わった。一度に書くのではない)"""
+    monkeypatch.setattr(helpers, "MODEL", "1251")
+    times = _typed_changes(basic_machine("1251"))
+    assert len(times) >= 6 and times[-1] - times[0] > 200, times
+    if HAVE_ROM:
+        rom = _typed_changes(boot("1251")[0])
+        assert len(rom) >= len(times), (rom, times)
+
+
 def test_snapshot_settles_work_area(monkeypatch):
     """書き戻しの途中で状態を保存すると、文が終わったときの作業領域を保存する"""
     import base64
@@ -529,3 +561,24 @@ def test_dodge_sample(monkeypatch):
     m.run(CLOCK)
     assert lcd(m).strip() == "SCORE 5."
     assert len(fields) >= 6  # 1回の掛け算ごとに少しずつ変わる
+
+
+@pytest.mark.parametrize(
+    ("model", "shape"), [("1251", "79 79 69 C7 79"), ("1245", "2D 79 69 A7 79")]
+)
+def test_stray_glyph(model, shape, monkeypatch):
+    """字の形の表にない3Ehを出すと、ROMのある本体と同じ点が出る(PC-1251の「メロン」)"""
+    monkeypatch.setattr(helpers, "MODEL", model)
+    m = basic_machine(model)
+    t = Typer(m)
+    t.add_mode("PRO")
+    finish(m, t)
+    m.run(CLOCK)
+    t.add_text('NEW\n10 A$="X":POKE &C699,&3E\n20 PRINT A$\n')
+    t.add_mode("RUN")
+    finish(m, t)
+    m.run(CLOCK)
+    t.add_text("RUN\n")
+    finish(m, t)
+    m.run(CLOCK)
+    assert bytes(m.mem[0xF800:0xF805]) == bytes.fromhex(shape)

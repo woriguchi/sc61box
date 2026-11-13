@@ -68,9 +68,11 @@ class Program(program.Program):
         return self.end(m) + (1 if self.lines(m) else 0)
 
     def loaded(self, m, at: int, data: bytes) -> None:
-        """CLOADなら初めの区切りを、MERGEなら読んだ行の前の区切りを頭にする。読んだ行に区切りが
-        あれば、最後の区切りを頭にする"""
+        """CLOADなら初めの区切りを、MERGEなら読んだ行の前の区切りを頭にする"""
         self.set_start(m, m.prog_base() if at == self.top(m) else at - 1)
+
+    def separated(self, m, at: int, data: bytes) -> None:
+        """読んだ行に区切りがあれば、最後の区切りを頭にする(読み終えてから>を出す前。観察)"""
         i = 0
         while i + 2 < len(data) or i < len(data) and data[i] == 0xFF:
             if data[i] == 0xFF:
@@ -79,20 +81,21 @@ class Program(program.Program):
             else:
                 i += 3 + data[i + 2]
 
-    def merged(self, m) -> None:
+    def merged(self, m, at: int) -> None:
         """読んだ行の最初の行番号が、前のプログラムの最後の行番号より大きければ(前のプログラムに
-        行がなくても)、区切りを除いて1つのプログラムにする"""
-        sep = self.start(m)
-        if sep < self.top(m):
+        行がなくても)、読んだ行の前の区切りを除いて1つのプログラムにする。読んだ行の中の区切りは
+        残す(観察)"""
+        sep = at - 1
+        if sep < self.top(m) or m.mem[sep] != 0xFF:
             return
         head = self.block_first(m, sep)
-        before, after = self.lines(m, head), self.lines(m)
-        if after and before and after[0][0] <= before[-1][0]:
+        before, n = self.lines(m, head), self.number_at(m, at)
+        if n is not None and before and n <= before[-1][0]:
             return
-        end = self.end(m)
+        end, last = self.end(m), self.start(m)
         m.mem[sep:end] = m.mem[sep + 1 : end + 1]
         self.VARS.set_end(m, end - 1)
-        self.set_start(m, head - 1)
+        self.set_start(m, last - 1 if last > sep else head - 1)
 
     def number_at(self, m, a: int) -> int | None:
         hi = m.mem[a]

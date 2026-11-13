@@ -177,8 +177,8 @@ def test_display_and_wait(m):
 
 
 def test_keywait_takes_key_pressed_after_call():
-    """キーを待つルーチンは、呼ぶ前から押していたキーでは戻らず、あとで押したキーで戻る。
-    待つあいだは入口にとどまって時間を進める"""
+    """キーを待つルーチンは、呼ぶ前から押していたキーでは戻らず、すべて離したあとで押した
+    キーで戻る。待つあいだは入口にとどまって時間を進める"""
     m, b = bench()
     b.paste(f"C000 {0xE000 | A['KEYWAIT']:04X}37")  # CAL KEYWAIT / RTN
     b.start = 0xC000
@@ -186,8 +186,12 @@ def test_keywait_takes_key_pressed_after_call():
     b.run()
     run_until_stop(m, b, 0.2)
     assert b.state == "run" and m.cpu.pc == A["KEYWAIT"]
-    m.held.discard("A")
-    m.held.update({"SHIFT", "B"})  # SHIFTは数えない
+    m.held.add("B")  # Aを離すまでは、あとから押したキーも数えない
+    run_until_stop(m, b, 0.1)
+    m.held.clear()
+    run_until_stop(m, b, 0.1)
+    assert b.state == "run" and m.cpu.pc == A["KEYWAIT"]
+    m.held.add("B")
     run_until_stop(m, b)
     assert b.state == "edit" and m.cpu.ram[2] == 0x52 and m.cpu.c == 0
     m.held.clear()
@@ -216,6 +220,110 @@ def test_step_at_keywait():
     m.held.add("A")
     run_until_stop(m, b)
     assert b.state == "edit" and m.cpu.ram[2] == 0x51
+
+
+def _wait_key(m, presses, name="KEYWAIT", limit=1.0):
+    """presses(秒, 押すキーの組)の順にキーを押しながらnameを呼ぶ(ROMのある本体はROMを動かす)。
+    (戻ったか, A, B, C, Z, SHIFTの記号, DEFの記号)"""
+    cpu = m.cpu
+    cpu.ram[1] = 1
+    cpu.r = 0x5C
+    cpu.push(0xC4)
+    cpu.push(0xF0)
+    cpu.pc = routines.symbols(m.model.name)[name]
+    m.halted = False
+    guard = bytearray(0x10000)
+    guard[0xC4F0] = 1
+    c0, i = cpu.cycles, 0
+    while cpu.pc != 0xC4F0 and cpu.cycles - c0 < CLOCK * limit:
+        while i < len(presses) and cpu.cycles - c0 >= presses[i][0] * CLOCK:
+            m.held.clear()
+            m.held.update(presses[i][1])
+            i += 1
+        if m.norom:
+            assert routines.call(m, cpu.pc)
+        else:
+            m.run(64, guard)
+    m.held.clear()
+    lit = m.symbols()
+    return (cpu.pc == 0xC4F0, cpu.ram[2], cpu.ram[3], cpu.c, cpu.z, "SHIFT" in lit, "DEF" in lit)
+
+
+def _taps(*keys):
+    """keysを0.1秒ずつ押して離す"""
+    out = []
+    for i, k in enumerate(keys):
+        out += [(0.1 + 0.2 * i, {k}), (0.2 + 0.2 * i, set())]
+    return out
+
+
+# (押すキー, 戻ったか, A, B, C, Z, SHIFTの記号, DEFの記号)。ROMのある本体で確かめた値
+KEY_MODES = [
+    (_taps("SHIFT", "A"), True, 0xE1, 0x43, 0, 0, True, False),
+    (_taps("DEF", "A"), True, 0xC1, 0x44, 0, 0, False, True),
+    (_taps("SHIFT", "ENTER"), True, 0x0B, 0x00, 0, 1, True, False),
+    (_taps("DEF", "ENTER"), True, 0x00, 0x00, 1, 1, False, True),
+    (_taps("SHIFT", "CL"), True, 0x03, 0x02, 0, 0, True, False),
+    (_taps("SHIFT", "SPC"), True, 0xF1, 0x11, 0, 0, True, False),
+    (_taps("DEF", "="), True, 0xD4, 0x34, 0, 0, False, True),
+    (_taps("DEF", "E"), True, 0x55, 0x44, 0, 0, False, True),
+    (_taps("DEF", "5"), True, 0x45, 0x45, 0, 1, False, True),
+    (_taps("SHIFT", "UP"), True, 0x31, 0x43, 0, 0, True, False),
+    (_taps("SHIFT", "SHIFT", "A"), True, 0x51, 0x51, 0, 1, False, False),
+    (_taps("DEF", "DEF", "A"), True, 0x51, 0x51, 0, 1, False, False),
+    (_taps("DEF", "SHIFT", "Q"), True, 0x14, 0x44, 0, 0, True, False),
+    (_taps("SHIFT", "DEF", "Z"), True, 0xDA, 0x44, 0, 0, False, True),
+    ([(0.1, {"A", "B"}), (0.2, set())], True, 0x04, 0x04, 0, 1, False, False),
+    ([(0.1, {"SHIFT", "DEF"}), (0.2, set())], True, 0x04, 0x04, 0, 1, False, False),
+    # SHIFTを押したまま押したキーは数えず、すべて離してから押したキーを受け付ける
+    ([(0.1, {"SHIFT"}), (0.3, {"SHIFT", "A"}), (0.35, {"A"}), (0.5, set()), (0.7, {"B"}),
+      (0.8, set())], True, 0xE2, 0x43, 0, 0, True, False),
+]  # fmt: skip
+
+
+@pytest.mark.parametrize("case", KEY_MODES)
+def test_keywait_input_modes(case):
+    """SHIFT・DEFは液晶の記号を切り替え(もう一方は消す)、記号が点いていれば次のキーの字と
+    B・C・Zが変わる。記号は戻ったあとも点いたまま。2つのキーを一緒に押せば04h"""
+    m = new_machine("1251", rom=False)
+    norom.install(m)
+    presses, *want = case
+    assert _wait_key(m, presses) == tuple(want)
+
+
+def test_keywait_mode_from_lit_symbol():
+    """呼んだときにSHIFTの記号が点いていれば、SHIFTを押したときと同じ字を返す(DEFより先)。
+    PC-1245は、SHIFTのあとの1・2・↑・↓の字がPC-1251と違う"""
+    m = new_machine("1251", rom=False)
+    norom.install(m)
+    m.mem[0xF83C] |= 0x01  # DEF
+    m.mem[0xF83D] |= 0x02  # SHIFT
+    assert _wait_key(m, _taps("A")) == (True, 0xE1, 0x43, 0, 0, True, True)
+    m = new_machine("1245", rom=False)
+    norom.install(m)
+    assert _wait_key(m, _taps("SHIFT", "1"))[1:3] == (0x30, 0x43)
+    assert _wait_key(m, _taps("DOWN"))[1:3] == (0x0D, 0x43)  # 記号は点いたまま
+
+
+@pytest.mark.skipif(not HAVE_ROM, reason="ROMがない")
+@pytest.mark.parametrize("model", ["1251", "1245"])
+def test_keywait_input_modes_like_rom(model):
+    """SHIFT・DEFのあとのキーで返すA・B・C・Zと、液晶の記号が、ROMのある本体と同じ"""
+    from helpers import boot
+
+    rom = boot(model)[0]
+    state = rom.snapshot()
+    hle = new_machine(model, rom=False)
+    norom.install(hle)
+    hle_state = hle.snapshot()
+    sequences = [c[0] for c in KEY_MODES] + [
+        _taps("SHIFT", k) for k in ("1", "2", "DOWN", "/", "0", "I", "LEFT")
+    ] + [_taps("DEF", k) for k in ("SPC", "S", "CL", "UP")]  # fmt: skip
+    for name in ("KEYWAIT", "KEYWAIT2", "KEYWAIT0"):
+        for presses in sequences if name == "KEYWAIT" else sequences[:3]:
+            rom.restore(state)
+            hle.restore(hle_state)
+            assert _wait_key(rom, presses, name) == _wait_key(hle, presses, name), (name, presses)
 
 
 @pytest.mark.parametrize("model", ["1261", "1350"])
@@ -255,6 +363,46 @@ def test_same_as_rom():
         for mm in (rom, hle):
             string(mm, FX, text, 0xC600)
         assert num(rom, "FVAL") == num(hle, "FVAL"), text
+
+
+def test_dms_and_val_leave_ram_like_rom(m):
+    """FDMSはC6BBh番地のビット0を立て(ほかのビットはそのまま)、FVALは文字列の直後の1バイトを
+    00hにする(ROMのある本体で確かめた働き)"""
+    m.mem[0xC6BB] = 0x5A
+    num(m, "FDMS", x="30.5")
+    assert m.mem[0xC6BB] == 0x5B
+    m.mem[0xC6BB] = 0xFE
+    num(m, "FDMS", x="0")
+    assert m.mem[0xC6BB] == 0xFF
+    m.mem[0xC600:0xC604] = bytes([0x7B]) * 4
+    string(m, FX, "12", 0xC600)
+    assert num(m, "FVAL")[0] == 12 and bytes(m.mem[0xC602:0xC604]) == b"\x00\x7b"
+    m.mem[0xC610] = 0x7B
+    string(m, FX, "", 0xC610)
+    assert num(m, "FVAL")[0] == 0 and m.mem[0xC610] == 0
+
+
+@pytest.mark.skipif(not HAVE_ROM, reason="ROMがない")
+@pytest.mark.parametrize("model", ["1251", "1245"])
+def test_dms_and_val_ram_same_as_rom(model):
+    """FDMSのあとのC6BBh番地と、FVALのあとの文字列の直後のバイトが、ROMのある本体と同じ"""
+    from helpers import boot
+
+    rom = boot(model)[0]
+    hle = new_machine(model, rom=False)
+    for v, x in ((0x00, "30.5"), (0x5A, "-12.5761"), (0xFE, "0"), (0x01, "1E99")):
+        for mm in (rom, hle):
+            mm.mem[0xC6BB] = v
+        assert num(rom, "FDMS", x=x) == num(hle, "FDMS", x=x)
+        assert rom.mem[0xC6BB] == hle.mem[0xC6BB], (v, x)
+    for text, where in (("12", 0xC600), ("", 0xC610), ("1.5[E]3", 0xC620), ("AB", 0xC70E)):
+        for mm in (rom, hle):
+            mm.mem[0xC600:0xC780] = bytes([0x7B]) * 0x180
+            string(mm, FX, text, where)
+        assert num(rom, "FVAL") == num(hle, "FVAL"), text
+        work = (0xC6AF, 0xC6B0, 0xC6F7)  # ROMが作業に使う所(まねていない)
+        differ = [a for a in range(0xC600, 0xC780) if rom.mem[a] != hle.mem[a] and a not in work]
+        assert not differ, text
 
 
 def test_leading_number_cuts_long_digits_without_rounding():

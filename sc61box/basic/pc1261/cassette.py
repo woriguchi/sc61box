@@ -36,7 +36,8 @@ END = 0xFF  # 中身の終わりのマーク
 BLOCK = 120  # 中身にチェックサムをはさむバイト数
 HEAD_STOPS, DATA_STOPS, LAST_STOPS = (1, 5), (1, 2), (1, 4)
 HEAD_BITS, DATA_BITS = 16, 13  # ヘッダと中身の1バイトのビット数
-BRK_AT = 11  # CSAVEで、中身の1バイトの何ビット目を送る前にBRKを見るか(まだ観察していない)
+# CSAVEで、中身の1バイトの何ビット目を送る前にBRKを見るか(下位の4ビットと1つ目の1のあと。観察)
+BRK_AT = 12
 
 
 def place_field(start: int, size: int) -> bytes:
@@ -154,7 +155,8 @@ def machine_start(data: bytes, i: int) -> int:
 
 
 def machine_body(data: bytes, i: int) -> tuple[int, bytes, int]:
-    """マシン語のファイルの中身: (始めの番地, データ, 最後に読んだ位置)"""
+    """マシン語のファイルの中身: (始めの番地, データ, 最後に読んだ位置)。最後のデータの
+    バイトまで読み、そのあとのチェックサム、終わりのFFhとマークは見ない(観察)"""
     if i + 9 > len(data):
         raise ChecksumError(len(data) - 1, cut=True)
     field = data[i : i + 8]
@@ -169,8 +171,8 @@ def machine_body(data: bytes, i: int) -> tuple[int, bytes, int]:
         for b, at in checked(data, i + 9):
             out.append(b)
             last = at
-            if len(out) == size + 1:  # データと終わりのFFh
-                return start, bytes(out[:-1]), _ending(data, bytes(out), at)
+            if len(out) == size:
+                return start, bytes(out), last
     except ChecksumError as e:
         raise ChecksumError(e.at, bytes(out), e.cut) from None
     raise ChecksumError(last, bytes(out), cut=True)

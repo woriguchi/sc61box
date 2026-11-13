@@ -312,7 +312,7 @@ class Evaluator:
                 w = self._mul()
             if op == self.PLUS and isinstance(v, bytes):
                 # つないだ文字列は、左の文字列の番地に置く(観察)
-                v = self._place(v + string(w), getattr(v, "at", None))
+                v = self._place(self._join(v, string(w)), getattr(v, "at", None))
                 self.spend(self.TIMES.OPERATOR)
             elif op == self.PLUS:
                 v = calc(lambda a, b: a + b, number(v), number(w))
@@ -321,6 +321,10 @@ class Evaluator:
                 v = calc(lambda a, b: a - b, number(v), number(w))
                 self.spend(self.TIMES.OPERATOR + self.TIMES.routine("FSUB"))
         return v
+
+    def _join(self, a: bytes, b: bytes) -> bytes:
+        """文字列の+"""
+        return a + b
 
     def _mul(self) -> Value:
         v = self._unary()
@@ -529,10 +533,15 @@ class Evaluator:
         if not self.take(self.LPAREN):
             return Target(c, string)
         token, kind = self._array_name(c, string)
+        pair = None
+        if not reading and self.VARS.fixed(self.m, c, string, [0]):
+            pair = dialect.of(self.m).a_pair
         with self.waiting(token, kind=kind) if reading else nullcontext():
             first = self.expression()
             subs = [self._whole(first)]
             quirk = False
+            if pair == "error" and self.peek() == self.COMMA:
+                raise BasicError(1, self.pos)
             if self.take(self.COMMA):
                 before = self.array_refs
                 with self.waiting(self.COMMA, first) if reading else nullcontext():
@@ -541,6 +550,13 @@ class Evaluator:
                 # (読むときはならない。観察)
                 quirk = self.array_refs != before and dialect.of(self.m).subscript_quirk
             self.expect(self.RPAREN)
+        if pair == "last" and len(subs) == 2:
+            # 1つ目の添字は見ず、名前を読んだときにA(j)の場所を作る(観察)
+            subs = subs[1:]
+            try:
+                self.VARS.element(self.m, c, string, subs)
+            except BasicError as e:
+                raise e.at(self.pos - 1) from None
         if not (c == self.VARS.EXTRA and len(subs) == 1):
             self.array_refs += 1
         return Target(c, string, subs, self.pos - 1, quirk)
@@ -549,8 +565,8 @@ class Evaluator:
         """文の頭(代入の左辺の場所)で読んだ変数の名前。PC-1251系は何もしない"""
 
     def resolve(self, target: "Target", create: bool = False) -> variables.Ref:
-        """targetの場所。createなら、A(n)の続きの場所を作ってよい(代入の左辺)。添字の
-        エラーの位置は閉じ括弧(観察)"""
+        """targetの場所。createは代入の左辺(PC-1251の添字の癖が効く)。A(n)の続きの場所は、
+        読むときも作る。添字のエラーの位置は閉じ括弧(観察)"""
         if target.subs is None:
             return self.VARS.Ref(
                 self.VARS.fixed_addr(target.name - self.LETTER_BASE), target.string
@@ -562,7 +578,7 @@ class Evaluator:
         else:
             self.spend(t.ARRAY + t.ARRAY_PER_SUBSCRIPT * (len(subs) - 1))
         try:
-            return self.VARS.element(self.m, target.name, target.string, subs, create)
+            return self.VARS.element(self.m, target.name, target.string, subs)
         except BasicError as e:
             e.at(target.end)
             raise

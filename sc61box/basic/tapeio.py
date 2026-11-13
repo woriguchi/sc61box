@@ -26,10 +26,11 @@ class TapeIO:
 
     FORMAT: ModuleType
     T_CHAIN: int
-    TAIL_ONES = 0  # CSAVEで、最後のバイトのあとに足す1のビットの数
+    TAIL_ONES = 0  # CSAVEで、最後のバイトのあと(BRKで止めたときも)に足す1のビットの数
     M_START = CSAVE_M_START
+    START_HOLD: tuple[int, int] | None = None  # 初めの1の前にCポートに出す音の値と時間
     END_HOLD: tuple[int, int] | None = None  # 送り終えたあとCポートに出す音の値と時間
-    BIT_PERIOD: float | None = None  # CSAVEの1ビットの時間(NoneならFORMAT.BIT)
+    LEADER_CHECKS = 15  # 初めの1のあいだにBRKを見る回数(終わりの約500msでは見ない。観察)
 
     def __init__(self, basic) -> None:
         self.basic = basic
@@ -85,9 +86,8 @@ class TapeIO:
             data = bytes(self.m.mem[self.program.top(self.m) : self.program.end(self.m)])
         kind = self.FORMAT.MACHINE if machine else self.FORMAT.BASIC
         bits = self.FORMAT.bits(self.FORMAT.file_bytes(kind, name, data, place))
-        bits += [1] * self.TAIL_ONES
         head = self.FORMAT.HEAD + (len(place) + 1 if place else 0)
-        return (yield from self._send_bits(bits, head))
+        return (yield from self._send_bits(bits, head, len(data)))
 
     def _address(self, e: Evaluator) -> int:
         v = e.integer()
@@ -95,43 +95,63 @@ class TapeIO:
             raise BasicError(3, e.pos)
         return v
 
-    def _send_bits(self, bits: list[int], head: int) -> Generator[int, None, bool]:
+    def _send_bits(self, bits: list[int], head: int, size: int) -> Generator[int, None, bool]:
         """ビットを、Cポートの4kHzと2kHzの音の切り替えで送る(1ビット2ms。観察)。headは
-        BRKを見ない頭のバイトの数"""
+        BRKを見ない頭のバイトの数、sizeは中身(プログラムかデータ)のバイト数。送り終えるか
+        BRKで止めると、1をTAIL_ONES送ってEND_HOLDを出す(観察)"""
         m = self.m
         mode = -1
-        period, spent = self.BIT_PERIOD or self.FORMAT.BIT, 0.0
+        send = bits + [1] * self.TAIL_ONES
+        stopped = False
         yield self.dialect.tape_before
         try:
-            for i, b in enumerate(bits):
-                if m.brk and self._brk_checked(i, head):
-                    return False  # 音は止める(プログラムの中なら、このあとBREAK)
-                want = self.FORMAT.ONE if b else self.FORMAT.ZERO
+            if self.START_HOLD is not None:
+                level, hold = self.START_HOLD
+                m.out_c(m.pc_out & 0x0F | level << 4)
+                yield hold
+            i = 0
+            while i < len(send):
+                if not stopped and i < len(bits) and m.brk and self._brk_checked(i, head, size):
+                    stopped = True  # 音は止める(プログラムの中なら、このあとBREAK)
+                    send = send[:i] + [1] * self.TAIL_ONES
+                    continue
+                want = self.FORMAT.ONE if send[i] else self.FORMAT.ZERO
                 if want != mode:
                     m.out_c(m.pc_out & 0x0F | want << 4)
                     mode = want
-                spent += period
-                step = round(spent)
-                spent -= step
-                yield step
+                i += 1
+                yield self.FORMAT.BIT
             if self.END_HOLD is not None:
                 level, hold = self.END_HOLD
                 m.out_c(m.pc_out & 0x0F | level << 4)
                 yield hold
         finally:
             self.quiet()
+        # BRKで止めても、送り終えたときと同じだけ待ってから>に戻る(観察)
         yield CSAVE_END + self.dialect.csave_after
-        return True
+        return not stopped
 
-    def _brk_checked(self, i: int, head: int) -> bool:
-        """CSAVEでi番目のビットを送る前にBRKを見るか。初めの1のあいだは約500msごと。
-        そのあとは、頭のheadバイト(種類と名前、CSAVE Mの置く場所)では見ず、中身の
-        1バイトごとに、下位の4ビットを送ったところで見る(観察)"""
+    def _after_brk(self, seen: int) -> Steps:
+        """CLOADをBRKで止めたとき: 読み終えたときと同じだけ、BRKを見たとき(サイクルseen)から
+        待つ(観察)"""
+        if self.dialect.cload_after:
+            left = seen + self.dialect.cload_after + TAPE_END - self.m.cpu.cycles
+            if left > 0:
+                yield left
+
+    def _brk_checked(self, i: int, head: int, size: int) -> bool:
+        """CSAVEでi番目のビットを送る前にBRKを見るか。初めの1のあいだは約500msごと(最後の
+        約500msでは見ない)。そのあとは、頭のheadバイト(種類と名前、CSAVE Mの置く場所)では見ず、
+        中身のsizeバイトの1バイトごとに、下位の4ビットを送ったところで見る。中身にはさむ
+        チェックサムと、中身のあとのバイト(終わりのマークなど)では見ない(観察)"""
         f = self.FORMAT
         if i < f.LEADER:
-            return i % 250 == self.dialect.leader_brk and i > 0
+            return 0 < i <= 250 * self.LEADER_CHECKS and i % 250 == self.dialect.leader_brk
         i -= f.LEADER + head * f.HEAD_BITS
-        return i >= 0 and i % f.DATA_BITS == f.BRK_AT
+        if i < 0 or i % f.DATA_BITS != f.BRK_AT:
+            return False
+        k = i // f.DATA_BITS
+        return k % (f.BLOCK + 1) != f.BLOCK and k - k // (f.BLOCK + 1) < size
 
     def quiet(self) -> None:
         if self.m.pc_out & 0xF0:
@@ -157,6 +177,7 @@ class TapeIO:
         yield self.dialect.tape_before
         found = yield from self._find_file(kind, name)
         if found is None:
+            yield from self._after_brk(self.m.cpu.cycles)
             return False
         try:
             if self.dialect.cload_busy:
@@ -164,10 +185,13 @@ class TapeIO:
                 self._show_found()
                 self.basic.display(True)
                 self.basic.screen.symbol("BUSY", True)
-            return (yield from self._cload_body(head, verify, machine, place, *found))
+            loaded = yield from self._cload_body(head, verify, machine, place, *found)
+            if not loaded:
+                yield from self._after_brk(self.m.cpu.cycles)
         finally:
             if self.dialect.cload_busy:
                 self.basic.screen.symbol("BUSY", False)
+        return loaded
 
     def _show_found(self) -> None:
         """読むファイルが見つかったことを、液晶の右端の*で知らせる(1行の液晶は消してから)"""
@@ -201,8 +225,7 @@ class TapeIO:
                 self.basic.VARS.set_end(m, at)
         reset_at = self.program.end(m) if head == self.T_MERGE else at
         program_load = not machine and not verify
-        late = self.dialect.verify_error_after
-        differs = False  # CLOAD?で違いを見つけた(終わりまで読む機種)
+        differs = False  # CLOAD?で違いを見つけた(そこで読むのをやめる)
         vars_ = self.basic.VARS
         for k, b in enumerate(data):
             yield from self._tape_wait(tape, rec.at(first + k + k // self.FORMAT.BLOCK))
@@ -210,9 +233,8 @@ class TapeIO:
                 break
             if verify:
                 if m.read(at + k) != b:
-                    if late is None:
-                        raise BasicError(8)
                     differs = True
+                    break
                 continue
             if program_load and at + k >= word(m, vars_.ARRAY_PTR):
                 # 行が配列の場所に届くと、配列(PC-1261系とPC-1350は2字の名前の変数も)を消して
@@ -222,8 +244,9 @@ class TapeIO:
                     raise BasicError(6)
                 vars_.clear_arrays(m)
             m.write((at + k) & 0xFFFF, b)  # ROMの番地には置かない(本体の書き込みと同じ)
-        yield from self._tape_wait(tape, rec.at(last))
-        while cut and not m.brk:
+        if not differs:
+            yield from self._tape_wait(tape, rec.at(last))
+        while cut and not differs and not m.brk:
             yield TICK_2MS  # テープが途中で切れていれば、続きを待ち続ける(観察)
         if error is not None or m.brk:
             # チェックサムが合わないときとBRKで止めたときは、プログラムの終わりの番地にFFを置く。
@@ -239,18 +262,22 @@ class TapeIO:
             return False
         if program_load:
             self.basic.stopped_at = None
-        if error is not None:
+        failed = error is not None or verify and (differs or m.read(at + len(data)) != 0xFF)
+        if failed and not self.dialect.cload_after:
             raise BasicError(8)
-        if verify and (differs or m.read(at + len(data)) != 0xFF):
-            if late is not None:
-                yield late
-            raise BasicError(8)
-        if self.dialect.cload_busy:
+        # 読み終えて>を出すまで待つ機種は、チェックサムが合わないときとCLOAD?で違うときも、
+        # 同じだけ待ってからERROR 8を出す(観察)
+        if self.dialect.cload_after:
             yield self.dialect.cload_after
+        if self.dialect.cload_busy:
             self.basic.display(False)
-        if head == self.T_MERGE:
-            self.program.merged(m)
+        if program_load and not failed:
+            self.program.separated(m, at, data)
+            if head == self.T_MERGE:
+                self.program.merged(m, at)
         yield TAPE_END
+        if failed:
+            raise BasicError(8)
         return True
 
     def _find_file(

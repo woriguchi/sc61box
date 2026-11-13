@@ -12,19 +12,27 @@ ROMの形は使っていない。
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from dataclasses import asdict, dataclass, fields
 from weakref import WeakKeyDictionary
 
 from . import charset
+from .basic import timing
+from .basic.errors import BasicError
 from .basic.pc1261 import font
 from .basic.pc1261 import screen as pc1261_screen
+from .basic.pc1261 import tapeio as pc1261_tapeio
 from .basic.screen import BLOCK, INSERT_MARK
 from .machine import TICK_2MS
 from .routines import CheckSpec, spend
 
 MODELS = ("1260", "1261", "1262")
 FONT_TOP = 0x8045  # 空白(20h)の形の番地
+# FENSCERが自分のRAM(645Ch〜6466h)に持ち、メモリの中から探す11バイト(FENSCERのものと同じ値)。
+# ROMのある本体では9695h番地に見つかり、FENSCERはそこを呼んで記録をテープから読む。ここに置くのは
+# 探す目印だけで、実行はしない(9695h番地の入口は代替ROMルーチンのCLOADが受け持つ)
+SEARCHED_AT = 0x9695
+SEARCHED = bytes([0xE8, 0xE3, 0xB1, 0x60, 0x6F, 0xB0, 0x60, 0xCC, 0x24, 0x67, 0x3F])
 
 # 表の後ろの、英数字とカナのほかの字(F0h〜FDh。観察)
 EXTRA = {0xF0: "0", 0xF1: "年", 0xF2: "月", 0xF3: "日", 0xF4: "円", 0xF5: "♠", 0xF6: "♥",
@@ -61,12 +69,15 @@ def glyph(code: int) -> bytes:
 
 
 def install(m) -> None:
-    """文字の形の表を、BASIC ROMの番地に書く"""
+    """文字の形の表と、FENSCERが探す並び(SEARCHED)を、BASIC ROMの番地に書く"""
     for code in range(0x100):
         index, _ = glyph_index(code)
         if index or code == 0x20:
             at = FONT_TOP + 5 * index
             m.mem[at : at + 5] = bytes(reversed(glyph(code)))
+    # 並びを置く前の版で保存した状態も読み込めるように、置く前のROMの印を残す
+    m.old_digests.add(m._rom_digest())
+    m.mem[SEARCHED_AT : SEARCHED_AT + len(SEARCHED)] = SEARCHED
 
 
 # ---- レジスタの受け渡し ----
@@ -654,13 +665,24 @@ def prepare_wait(m, d: object) -> Callable[[], None]:
     w = _Input(**d)
 
     def apply() -> None:
+        _forget(m)
         _inputs[m] = w
 
     return apply
 
 
 def _forget(m) -> None:
+    """待ちの様子を捨てる。CLOADの待ちは保存しないので、戻したあとは入口からやり直す"""
     _inputs.pop(m, None)
+    stop(m)
+
+
+def stop(m) -> None:
+    """CLOADの途中なら閉じる。後始末(モータを止める、BUSYの記号を消す)はここで済ませる(状態を
+    戻すときは、RAMを戻す前に呼ぶ)"""
+    load = m.routine_data.pop("cload", None)
+    if isinstance(load, _Load):
+        load.steps.close()
 
 
 def _key_name(v: object, names) -> bool:
@@ -825,6 +847,166 @@ def _inkey(m) -> int | None:
     return 563 if m.brk else INKEY_TIME - INKEY_ACCEPT
 
 
+# ---- テープ(CLOAD) ----
+
+# CLOADの時間(観察)。文を読んでテープを聞き始める(モータを回す)まで。名前と、置く番地の式(&5F00)が
+# あると長くなる。式の時間は16進の4桁のもの(10進や足し算では20ms前後違う)
+CLOAD_LISTEN = timing.ms(602.7)
+CLOAD_NAME, CLOAD_PLACE = timing.ms(2.0), timing.ms(36.0)
+CLOAD_RETURN = timing.ms(2.0)  # BUSYの記号を消してから戻るまで
+CLOAD_ERROR = timing.ms(1.1)  # 文の誤りで戻るまで(置く番地の式を読みかけていれば4.0ms)
+CLOAD_ERROR_PLACE = timing.ms(4.0)
+MOTOR = 0x70  # テープのモータを回すCポートの上位(観察。CLOADの4kHz・2kHzの音とは別)
+
+
+class _Tape(pc1261_tapeio.TapeIO):
+    """CLOADのテープの扱い。ROMなしのBASICのCLOADと同じに読み、テープを聞くあいだを知らせ
+    (モータの出力に使う)、見つけたときの液晶をROMのある本体のCLOADの入口に合わせる"""
+
+    listening = 0  # テープを聞いている(入れ子の数)
+    found = False  # 読むファイルを見つけた
+
+    def _find_file(self, kind, name):
+        self.listening += 1
+        try:
+            return (yield from super()._find_file(kind, name))
+        finally:
+            self.listening -= 1
+
+    def _tape_wait(self, tape, at):
+        self.listening += 1
+        try:
+            yield from super()._tape_wait(tape, at)
+        finally:
+            self.listening -= 1
+
+    def _show_found(self) -> None:
+        """2行目の13〜20桁目を空白にし、右端に*を描く(観察。マシン語が描いた字の上に、液晶へ
+        じかに書く)"""
+        self.found = True
+        m = self.m
+        for k in range(8):
+            _draw(m, 0x20, 0x2840 + 5 * k)
+        _draw(m, 0x2A, 0x2840 + 5 * 11)
+        m.lcd_dirty = True
+
+
+def _tape_io(m) -> _Tape:
+    """CLOADが使うテープの読み書き(本体のBASICごと)。作業欄だけのときは、文を読むBASICも作る"""
+    data = m.routine_data
+    basic = m.basic
+    if basic is None:  # 作業欄だけのとき
+        basic = data.get("cload-basic")
+        if basic is None:
+            from .basic.pc1261 import system
+
+            basic = data["cload-basic"] = system.Basic(m)
+    tio = data.get("cload-tape")
+    if not isinstance(tio, _Tape) or tio.basic is not basic:
+        tio = data["cload-tape"] = _Tape(basic)
+    return tio
+
+
+def _cload_steps(m) -> Generator[int, None, None]:
+    """CLOADの入口の働き(yieldは進める時間)。X+1番地から0Dhの手前までをCLOADの続きの文として
+    実行する。戻るときのレジスタは観察した値で、ほかの作業用のレジスタとRAMはROMと違う"""
+    cpu = m.cpu
+    tio = _tape_io(m)
+    x = _word(cpu, 4)
+    text = bytearray()
+    while len(text) < 0x100 and m.read(x + 1 + len(text) & 0xFFFF) != 0x0D:
+        text.append(m.read(x + 1 + len(text) & 0xFFFF))
+    code = bytes([tio.T_CLOAD]) + text
+    code = code[: tio.basic.runner.statement_end(code, 1)]  # :のあとは読まない(観察)
+    text = code[1:]
+    tio.found, tio.listening = False, 0
+    steps = tio.cload(code)
+    place = text[:1] == b"M" and (b";" in text or text[1:2] not in (b"", b'"'))
+    try:
+        next(steps)  # 文を読み終えた(テープを待つ前)
+    except BasicError as e:
+        at = x + (e.pos if e.pos is not None else 1) & 0xFFFF
+        _cload_end(cpu, at, 0x00, 0x02, (0x34, 0x05, at), error=e.number)
+        yield CLOAD_ERROR_PLACE if place else CLOAD_ERROR
+        return
+    yield CLOAD_LISTEN + CLOAD_NAME * (b'"' in text) + CLOAD_PLACE * place
+    # Xは文の最後の字。Mだけなら文の終わりの0Dhか:(観察)
+    end = x + len(text) + (text == b"M") & 0xFFFF
+    motor, loaded, error = False, False, None
+    try:
+        while True:
+            step = next(steps)
+            if bool(tio.listening) != motor:
+                motor = bool(tio.listening)
+                m.out_c(MOTOR | 0x01 if motor else 0x01)
+            yield step
+    except StopIteration as stop:
+        loaded = bool(stop.value)
+    except BasicError as e:
+        error = e.number
+    if not loaded:  # BRKかエラー(BUSYの記号を消すまでの待ちは、BASICのCLOADと同じ)
+        yield CLOAD_RETURN
+    m.out_c(0x01)
+    cpu.ram[0x5F] = 0x01
+    if error is not None:
+        _cload_end(cpu, end, 0xFF, 0xFF, (0x5D, 0x5D, 0x203D), error=error)
+    elif loaded:
+        _cload_end(cpu, end, end >> 8, 0x00, (0x05, 0x5D, 0x663A))
+    else:  # BRK
+        _cload_end(cpu, end, end >> 8, 0xFF, (0x05, 0x07, 0x66D7))
+        cpu.ram[0x35] = 0x20
+
+
+def _cload_end(cpu, x: int, a: int, b: int, pqdp: tuple[int, int, int], error: int = 0) -> None:
+    """CLOADから戻るときのレジスタ。エラーならキャリーを1にして内部RAMの34h番地に番号(観察)"""
+    _set(cpu, 4, x)
+    cpu.ram[2], cpu.ram[3] = a, b
+    cpu.p, cpu.q, cpu.dp = pqdp
+    cpu.c, cpu.z = int(bool(error)), 1
+    if error:
+        cpu.ram[0x34] = error
+
+
+@dataclass
+class _Load:
+    """CLOADが待っているあいだの様子"""
+
+    pc: int
+    r: int
+    seen: int  # 最後に動かしたサイクル
+    steps: Generator[int, None, None]
+    left: int = 0  # いまの待ちの残り
+
+
+def _cload(m) -> int | None:
+    """CLOADの入口。テープを待つあいだは2msずつ時間を進めて入口にとどまる。状態を戻したときや、
+    ほかの所から入り直したときは、文を読むところからやり直す"""
+    cpu = m.cpu
+    w = m.routine_data.get("cload")
+    if (
+        not isinstance(w, _Load)
+        or (w.pc, w.r) != (cpu.pc, cpu.r)
+        or cpu.cycles - w.seen > 2 * TICK_2MS
+    ):
+        if isinstance(w, _Load):
+            w.steps.close()
+        w = m.routine_data["cload"] = _Load(cpu.pc, cpu.r, cpu.cycles, _cload_steps(m))
+    room = TICK_2MS
+    while room:
+        if not w.left:
+            try:
+                w.left = next(w.steps)
+            except StopIteration:
+                del m.routine_data["cload"]
+                return 0
+        take = min(w.left, room)
+        m.pass_time(take)
+        w.left -= take
+        room -= take
+    w.seen = cpu.cycles
+    return None
+
+
 # 名前(romsyms.ROUTINES_1261): 代わりに動かす関数(使ったCPUのサイクル数を返す。Noneなら、まだ
 # 待っていて入口にとどまる)
 ROUTINES: dict[str, Callable[..., int | None]] = {
@@ -883,6 +1065,7 @@ ROUTINES: dict[str, Callable[..., int | None]] = {
     "INKEY": _inkey,
     "MODESW": _mode_switch,
     "POWEROFF": _power_off,
+    "CLOAD": _cload,
 }
 
 
@@ -939,7 +1122,10 @@ def _check_inputs(name: str):
 
 # 名前: (与える値, 比べないもの, サイクル数の違ってよい割合)。ROMのある本体と比べるとき
 # (routinecheck)に使う
-CHECK: dict[str, CheckSpec] = {name: (_check_inputs(name), (), 0.0) for name in ROUTINES}
+# CLOADはテープを待つので比べない(tests/test_norom1261.pyがテープを与えて比べる)
+CHECK: dict[str, CheckSpec] = {
+    name: (_check_inputs(name), (), 0.0) for name in ROUTINES if name != "CLOAD"
+}
 # INKEYは、作業に使うレジスタとRAM、Cポートを比べない(まねていない)。戻るまでの時間は1%まで
 CHECK["INKEY"] = (
     _check_inputs("INKEY"),

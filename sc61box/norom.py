@@ -140,6 +140,38 @@ KEY_CODES.update(
 )  # fmt: skip
 BRK_CODE = 0x07  # BRKを押しているときに、キーを読むルーチンがAに返す値(観察)
 SHIFTS = ("SHIFT", "DEF")  # キーを待つルーチンは、これだけを押しても戻らない
+# キーを待つルーチンが、液晶のSHIFTの記号が点いているときに返す(A, B)。Cは0、ZはENTERだけ1(観察)
+SHIFT_KEYS = {
+    "*": (0x33, 0x43), "+": (0x4B, 0x43), "-": (0x32, 0x43), ".": (0x1A, 0x43),
+    "/": (0x39, 0x43), "0": (0x19, 0x43), "1": (0x41, 0x43), "2": (0x42, 0x43),
+    "3": (0x1E, 0x43), "4": (0x44, 0x43), "5": (0x45, 0x43), "6": (0x17, 0x43),
+    "7": (0x47, 0x43), "8": (0x48, 0x43), "9": (0x49, 0x43), "=": (0xF4, 0x34),
+    "A": (0xE1, 0x43), "B": (0xE2, 0x43), "C": (0xE3, 0x43), "D": (0xE4, 0x43),
+    "E": (0x15, 0x43), "F": (0xE6, 0x44), "G": (0xE7, 0x44), "H": (0xE8, 0x44),
+    "I": (0x1D, 0x44), "J": (0xEA, 0x44), "K": (0xEB, 0x44), "L": (0xEC, 0x44),
+    "M": (0xED, 0x44), "N": (0xEE, 0x44), "O": (0x1B, 0x44), "P": (0x1C, 0x44),
+    "Q": (0x14, 0x44), "R": (0x18, 0x44), "S": (0xF3, 0x44), "T": (0x16, 0x44),
+    "U": (0x13, 0x44), "V": (0xF6, 0x44), "W": (0x12, 0x44), "X": (0xF8, 0x44),
+    "Y": (0x1F, 0x44), "Z": (0xFA, 0x44), "CL": (0x03, 0x02), "ENTER": (0x0B, 0x00),
+    "UP": (0x31, 0x43), "DOWN": (0x30, 0x43), "RIGHT": (0x05, 0x43), "LEFT": (0x06, 0x43),
+    "SPC": (0xF1, 0x11),
+}  # fmt: skip
+# PC-1245は、キーの上の字が違うところがある(観察)
+SHIFT_KEYS_1245 = SHIFT_KEYS | {
+    "1": (0x30, 0x43), "2": (0x31, 0x43), "UP": (0x0C, 0x43), "DOWN": (0x0D, 0x43),
+}  # fmt: skip
+# DEFの記号が点いているときに字の変わるキーの(A, B)。CとZは0。ほかのキーは記号のないときと
+# 同じ(観察)
+DEF_KEYS = {
+    "=": (0xD4, 0x34), "A": (0xC1, 0x44), "B": (0xC2, 0x44), "C": (0xC3, 0x44),
+    "D": (0xC4, 0x44), "E": (0x55, 0x44), "F": (0xC6, 0x44), "G": (0xC7, 0x44),
+    "H": (0xC8, 0x44), "I": (0x59, 0x44), "J": (0xCA, 0x44), "K": (0xCB, 0x44),
+    "L": (0xCC, 0x44), "M": (0xCD, 0x44), "N": (0xCE, 0x44), "O": (0x5F, 0x44),
+    "P": (0x60, 0x44), "Q": (0x61, 0x44), "R": (0x62, 0x44), "S": (0xD3, 0x44),
+    "T": (0x64, 0x44), "U": (0x65, 0x44), "V": (0xD6, 0x44), "W": (0x67, 0x44),
+    "X": (0xD8, 0x44), "Y": (0x69, 0x44), "Z": (0xDA, 0x44), "SPC": (0xD1, 0x11),
+}  # fmt: skip
+MANY_KEYS = 0x04  # 2つ以上のキーを一緒に押したとき、キーを待つルーチンがAとBに返す値(観察)
 
 FX, FY = 0x20, 0x28  # 演算X・演算Y(内部RAM)
 ERRNO = 0x14  # エラーの番号(内部RAM)
@@ -248,6 +280,7 @@ def _strings(f, two: bool = False):
     return run
 
 
+DMS_FLAG = 0xC6BB  # FDMSがビット0を立てる番地(観察)
 STR_PTR = 0xC6F7  # 文字列を置く場所(C701〜C7AF)の、次に使う番地の下位バイト
 STR_END = 0xB0
 
@@ -279,6 +312,21 @@ def _chr(m) -> None:
         _put_string(m, bytes([FROM_ASCII[n]]))
     else:
         _error(m, 9)
+
+
+def _val(m) -> None:
+    """VAL。演算Xの文字列の頭にある数。読んだあと、文字列の直後の1バイトを00hにする(観察)"""
+    ram = m.cpu.ram
+    end = ram[FX + 5] | ram[FX + 6] << 8
+    end += ram[FX + 7]
+    _strings(leading_number)(m)
+    m.write(end & 0xFFFF, 0)
+
+
+def _dms(m) -> None:
+    """DMS。答えのほかに、C6BBh番地のビット0を立てて戻る(観察)"""
+    _unary(to_dms)(m)
+    m.write(DMS_FLAG, m.read(DMS_FLAG) | 0x01)
 
 
 def _str(m) -> None:
@@ -313,7 +361,7 @@ class _Wait:
     pc: int
     r: int
     seen: int  # 最後に見たサイクル
-    old: set[str]  # 待ち始めに押していて、まだ離していないキー
+    old: set[str]  # すべて離すまで数えないキー(待ち始めとSHIFT・DEFのときに押していたもの)
 
 
 _waits: WeakKeyDictionary[object, _Wait] = WeakKeyDictionary()
@@ -354,31 +402,61 @@ def _forget(m) -> None:
 
 def _keywait(m) -> bool:
     """呼んだあとに押したキーを待ち、Aに本体の文字コード、ENTERとCLならCを1にする。
-    SHIFT・DEFは数えない(続けて押したキーの文字コードも変えない)。BRKは、待ち始めから
-    押していても、AとBを07h、Cを0にして戻る(観察)。待っているあいだは、2msずつ時間を進めて
-    Falseを返す"""
+    SHIFT・DEFは液晶の記号を切り替えて待ち続け、記号が点いていれば、次のキーの字と
+    B・C・Zを変える。キーを1つ受け付けたあとと待ち始めに押していたキーは、すべて離すまで
+    数えない。2つ以上を一緒に押せば、AとBを04hにして戻る。BRKは、待ち始めから押していても、
+    AとBを07h、Cを0にして戻る(観察)。待っているあいだは、2msずつ時間を進めてFalseを返す"""
     cpu = m.cpu
     if m.brk:
         _waits.pop(m, None)
         cpu.ram[2] = cpu.ram[3] = BRK_CODE
         cpu.c, cpu.z = 0, 1
         return True
-    held = {k for k in m.held if k in KEY_CODES and k not in SHIFTS}
+    held = {k for k in m.held if k in KEY_CODES}
     w = _waits.get(m)
     if w is None or (w.pc, w.r) != (cpu.pc, cpu.r) or cpu.cycles - w.seen > 2 * TICK_2MS:
         w = _waits[m] = _Wait(cpu.pc, cpu.r, 0, set(held))
-    w.old &= held  # 離したキーは、もう一度押せば数える
+    if w.old:  # すべて離すまで、あとから押したキーも数えない(観察)
+        w.old = set(held)
     new = held - w.old
+    if len(new) == 1 and new <= set(SHIFTS):
+        _toggle_mode(m, next(iter(new)))
+        w.old, new = set(held), set()
     if not new:
         m.pass_time(TICK_2MS - m.t2)
         w.seen = cpu.cycles
         return False
     del _waits[m]
-    code = min(KEY_CODES[k] for k in new)
-    cpu.ram[2] = cpu.ram[3] = code
-    cpu.c = int(code in (0x00, 0x02))
-    cpu.z = 1
+    if len(new) > 1:
+        cpu.ram[2] = cpu.ram[3] = MANY_KEYS
+        cpu.c, cpu.z = 0, 1
+        return True
+    a, b, c, z = _key_result(m, next(iter(new)))
+    cpu.ram[2], cpu.ram[3], cpu.c, cpu.z = a, b, c, z
     return True
+
+
+def _toggle_mode(m, key: str) -> None:
+    """SHIFT・DEFを押したとき: その記号を切り替え、もう一方の記号を消す(観察)"""
+    for name in SHIFTS:
+        at, bit = m.model.symbols[name]
+        v = m.read(at)
+        m.write(at, v ^ bit if name == key else v & ~bit)
+
+
+def _key_result(m, key: str) -> tuple[int, int, int, int]:
+    """キーを待つルーチンが返す(A, B, C, Z)。SHIFTの記号がDEFの記号より先(観察)"""
+    on = {k for k in SHIFTS if m.read(m.model.symbols[k][0]) & m.model.symbols[k][1]}
+    if "SHIFT" in on:
+        table = SHIFT_KEYS_1245 if m.model.name == "1245" else SHIFT_KEYS
+        if key in table:
+            a, b = table[key]
+            return a, b, 0, int(key == "ENTER")
+    elif "DEF" in on and key in DEF_KEYS:
+        a, b = DEF_KEYS[key]
+        return a, b, 0, 0
+    code = KEY_CODES[key]
+    return code, code, int(code in (0x00, 0x02)), 1
 
 
 def _keywait_shown(m) -> bool:
@@ -767,7 +845,7 @@ ROUTINES: dict[str, tuple[Callable[..., bool | None], int]] = {
     "FABS": (_unary(abs), 12),
     "FSGN": (_unary(_sgn), 170),
     "FINT": (_unary(_floor), 700),
-    "FDMS": (_unary(to_dms), 6690),
+    "FDMS": (_dms, 6690),
     "FDEG": (_unary(to_degrees), 11700),
     "FRND": (_rnd, 10900),
     "FROUND": (_unary(lambda x: cut(x, 10, ROUND_HALF_UP)), 176),
@@ -784,7 +862,7 @@ ROUTINES: dict[str, tuple[Callable[..., bool | None], int]] = {
     "SLE": (_strings(lambda y, x: _flag(y <= x), two=True), 410),
     "SGE": (_strings(lambda y, x: _flag(y >= x), two=True), 330),
     "FASC": (_strings(_asc), 3940),
-    "FVAL": (_strings(leading_number), 1080),
+    "FVAL": (_val, 1080),
     "FCHRS": (_chr, 640),
     "FSTRS": (_str, 3300),
     "I2F": (_i2f(True), 3700),
