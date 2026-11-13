@@ -159,69 +159,47 @@
   <div class="ja">
     <img class="logo" src="logo.png" alt="sc61box">
     <h1 tabindex="-1">使い方</h1>
-    <p>SHARPのポケコンPC-1245・PC-1250・PC-1251・PC-1255・PC-1260・PC-1261・PC-1262・PC-1350のエミュレータです。ブラウザの中だけで動き、ROMは使いません。BASICはROMなしで動くように作り直したもので、未対応の命令もあります。</p>
-    <h2>キーを押す</h2>
-    <p>本体のキーをクリックするか、指で押します。パソコンのキーボードでは、英数字と記号をそのまま打てます。ポケコンにしかないキーは、次のキーで押します。</p>
+    <p>SHARPのポケコンのエミュレータです。ブラウザの中だけで動き、ROMは使いません。BASICはROMなしで動くように作り直したもので、未対応の命令もあります。</p>
+    <h2>キー</h2>
+    <p>本体のキーをクリックかタップで押します。キーボードでは英数字と記号をそのまま打てます。ポケコンにしかないキーは次のキーで押します。</p>
     <table class="keys">
       <tr><td><kbd>Tab</kbd></td><td>SHIFT</td></tr>
       <tr><td><kbd>Option</kbd>(Windowsは<kbd>Alt</kbd>)</td><td>DEF</td></tr>
       <tr><td><kbd>F1</kbd>〜<kbd>F4</kbd></td><td>モードの切り替え</td></tr>
+      <tr><td><kbd>⌘</kbd><kbd>/</kbd>(Windowsは<kbd>Ctrl</kbd><kbd>/</kbd>)</td><td>キーの対応の一覧</td></tr>
     </table>
-    <p>キーの対応の一覧は、<kbd>⌘</kbd><kbd>/</kbd>(Windowsは<kbd>Ctrl</kbd><kbd>/</kbd>)で出ます。機種は、ページの上で切り替えます。PC-1350では、RAMカードもそこで選べます。</p>
-    <h2>プログラムを読み込む</h2>
+    <h2>プログラム</h2>
     <ul>
-      <li>本体の下の「プログラム」から、同梱のプログラムを読み込んで実行できます。</li>
-      <li>手元の.bas・.hexのファイルは、「ファイルを読み込む」で選ぶか、このページに落とすと読み込みます。読み込んだファイルは「プログラム」の一覧にも残ります。</li>
-      <li>ほかのサイトに置いた.bas・.hex・.wavのファイルは、このページのアドレスに<code>?load=</code>とファイルのURLを付けたリンクで読み込めます。<code>&amp;run</code>も付けると、実行まで進みます(.wavはCLOADしてRUN)。読み込めるのは、ほかのサイトからの読み込みを許しているサイト(GitHubなど)に置いたファイルだけです。</li>
-      <li>「プログラム」の「プログラムをリンクにしてコピー」で、RAMにあるBASICのプログラムをそのまま入れたリンクができます。リンクを開くと、そのプログラムを読み込んで実行します。</li>
-      <li>マシン語は、本体の下の「作業欄」で書いて実行できます。</li>
+      <li>同梱のプログラムは、本体の下の「プログラム」から実行します。</li>
+      <li>手元の.bas・.hexは、「ファイルを読み込む」で選ぶか、このページに落とします。</li>
+      <li>ほかのサイトのファイルは、このページのアドレスに<code>?load=</code>とファイルのURLを付けて開きます(<code>&amp;run</code>も付けると実行まで)。ほかのサイトからの読み込みを許しているサイト(GitHubなど)のファイルだけ読み込めます。</li>
     </ul>
-    <h2>全画面で表示する</h2>
-    <p>「全画面」を押すと、ページの上の欄と本体の下の操作欄を隠し、本体だけを画面いっぱいに出します。全画面表示に対応しているブラウザでは、ブラウザも全画面になります。画面の上の端に触れると、小さなボタンが出ます。「メニュー」はよく使う操作、「戻る」で元の表示に戻ります。<kbd>Esc</kbd>でブラウザの全画面を抜けたときは、「全画面」で戻せます。</p>
-    <h2>オフラインで使う</h2>
-    <p>一度開くと、ネットにつながっていなくても、このページで使えます(初めて開いたときに「次からは、ネットにつながっていなくても開けます」と出ます。保存できなかったと出たときは、「本体」の「オフライン用に保存し直す」で試し直せます)。iPhone・iPadでは、Safariの共有ボタンから「ホーム画面に追加」すると、アドレスバーのない画面で使えます。ほかのスマートフォンやパソコンでも、ブラウザのメニューの「ホーム画面に追加」や「インストール」で、アプリと同じように使えます。</p>
-    <h2>保存とダウンロード</h2>
-    <ul>
-      <li>RAMの中身は機種ごとにこのブラウザに保存され、次に開いたときに戻ります。初期状態に戻すときは、本体の下の「本体」から「RAMを消して初期状態から始める」を選びます。</li>
-      <li>書き出したプログラム、印字、画面の写しは、ダウンロードで受け取ります。</li>
-      <li>iPhoneとiPadのSafariは、7日間開かないサイトの保存を消すことがあります。ホーム画面に追加すると消えません。</li>
-    </ul>
-    <h2>ブラウザ版でできないこと</h2>
-    <p>録画、ゲームパッド、実機のROMを使った実行は、パソコン版でできます。パソコン版は<a href="https://github.com/woriguchi/sc61box">GitHubのsc61box</a>からインストールします。</p>
+    <h2>保存とオフライン</h2>
+    <p>RAMは機種ごとにこのブラウザに保存されます。一度開けば、ネットにつながっていなくても使えます。ブラウザの「ホーム画面に追加」や「インストール」で、アプリと同じように使えます。iPhone・iPadでは、ホーム画面に追加しないと、7日間開かなかったときに保存が消えることがあります。</p>
+    <p>録画、ゲームパッド、実機のROMを使った実行は、<a href="https://github.com/woriguchi/sc61box">パソコン版</a>でできます。</p>
     <p class="fine">MITライセンス。フォントはNoto Sans JPとSource Code Pro(SIL Open Font License)。</p>
   </div>
   <div class="en">
     <img class="logo" src="logo.png" alt="sc61box">
     <h1 tabindex="-1">How to use</h1>
-    <p>An emulator of the SHARP pocket computers PC-1245, PC-1250, PC-1251, PC-1255, PC-1260, PC-1261, PC-1262 and PC-1350. It runs entirely in your browser and uses no ROM. BASIC is a ROM-less reimplementation, and some commands are not made yet.</p>
-    <h2>Pressing keys</h2>
-    <p>Click or tap the keys on the calculator. On a computer keyboard, letters, digits and symbols type as they are. Keys that only the pocket computer has are on these keys.</p>
+    <p>An emulator of SHARP pocket computers. It runs entirely in your browser and uses no ROM. BASIC is a ROM-less reimplementation, and some commands are not made yet.</p>
+    <h2>Keys</h2>
+    <p>Click or tap the keys on the calculator. On a keyboard, letters, digits and symbols type as they are. Keys that only the pocket computer has are on these keys.</p>
     <table class="keys">
       <tr><td><kbd>Tab</kbd></td><td>SHIFT</td></tr>
       <tr><td><kbd>Option</kbd> (<kbd>Alt</kbd> on Windows)</td><td>DEF</td></tr>
       <tr><td><kbd>F1</kbd>–<kbd>F4</kbd></td><td>Mode switch</td></tr>
+      <tr><td><kbd>⌘</kbd><kbd>/</kbd> (<kbd>Ctrl</kbd><kbd>/</kbd> on Windows)</td><td>List of all keys</td></tr>
     </table>
-    <p><kbd>⌘</kbd><kbd>/</kbd> (<kbd>Ctrl</kbd><kbd>/</kbd> on Windows) shows every key. Change the model at the top of the page. For the PC-1350, choose the RAM card there too.</p>
-    <h2>Loading programs</h2>
+    <h2>Programs</h2>
     <ul>
-      <li>Load and run the bundled programs from Programs below the calculator.</li>
-      <li>Load your own .bas and .hex files with Load file, or drop them on this page. They stay in the Programs list.</li>
-      <li>Load .bas, .hex and .wav files from other sites with a link to this page followed by <code>?load=</code> and the file's URL. Add <code>&amp;run</code> to run the program too (CLOAD and RUN for .wav). Only files on sites that allow loading from other sites (such as GitHub) can be loaded.</li>
-      <li>Copy program as a link in Programs makes a link that holds the BASIC program in RAM. Opening the link loads and runs the program.</li>
-      <li>Write and run machine code in the Workbench below the calculator.</li>
+      <li>Run the bundled programs from Programs below the calculator.</li>
+      <li>Load your own .bas and .hex files with Load file, or drop them on this page.</li>
+      <li>Open a file on another site with this page's address followed by <code>?load=</code> and the file's URL (add <code>&amp;run</code> to run it too). Only sites that allow loading from other sites (such as GitHub) work.</li>
     </ul>
-    <h2>Full screen</h2>
-    <p>Full screen hides the bar at the top of the page and the buttons below the calculator, and fills the screen with the calculator alone. Browsers that support full screen also go full screen. Touch the top edge of the screen to show small buttons: Menu for common actions and Back to return to the normal view. If <kbd>Esc</kbd> takes the browser out of full screen, Full screen goes back to it.</p>
-    <h2>Offline use</h2>
-    <p>Once opened, this page works without a network connection (the first time you open it, a message tells you so; if it says the files could not be kept, try again with Keep for offline use again in Machine). On iPhone and iPad, choose Add to Home Screen from Safari's share button to use it without the address bar. On other phones and computers, Add to Home Screen or Install in the browser menu lets you use it like an app.</p>
-    <h2>Saving and downloads</h2>
-    <ul>
-      <li>The RAM of each model is saved in this browser and comes back the next time you open the page. To start from the initial state, choose Erase RAM and start fresh in Machine below the calculator.</li>
-      <li>Exported programs, printouts and screenshots arrive as downloads.</li>
-      <li>Safari on iPhone and iPad may clear the saved data of a site you have not opened for 7 days. Add the page to the Home Screen to keep it.</li>
-    </ul>
-    <h2>Not in the browser version</h2>
-    <p>Recording, gamepads and running a real ROM are in the desktop version. Install it from <a href="https://github.com/woriguchi/sc61box">sc61box on GitHub</a>.</p>
+    <h2>Saving and offline use</h2>
+    <p>The RAM of each model is saved in this browser. Once opened, the page works without a network connection. Add to Home Screen or Install in the browser menu lets you use it like an app. On iPhone and iPad, saved data may be cleared after 7 days without a visit unless the page is on the Home Screen.</p>
+    <p>Recording, gamepads and running a real ROM are in the <a href="https://github.com/woriguchi/sc61box">desktop version</a>.</p>
     <p class="fine">MIT License. Fonts: Noto Sans JP and Source Code Pro (SIL Open Font License).</p>
   </div>
   <form method="dialog"><button class="key" value="close">
