@@ -112,6 +112,27 @@ def test_open_accepts_program():
     assert loading.open_problem(prog, machine(), lambda text: b"") is None
 
 
+def test_kept_top_never_narrows():
+    m = machine()
+    base = m.model.ram[1]
+    assert loading.kept_top(Program("p"), m) == base
+    m.set_ram_top(0xC900)
+    assert loading.kept_top(Program("p"), m) == 0xC900  # # ram: がなければいまのまま
+    assert loading.kept_top(Program("p", ram=(base, 0xC880)), m) == 0xC900
+    m.set_ram_top(None)
+    assert loading.kept_top(Program("p", ram=(base, 0xC900)), m) == 0xC900
+
+
+def test_open_keep_checks_kept_ram():
+    """動いているマシン語を止めずに読み込むときは、広げてあるRAMへのダンプを# ram: がなくても
+    読み込む"""
+    m = machine()
+    m.set_ram_top(0xC900)
+    prog = Program("p", title="P", blocks=[(0xC8F0, b"\1")])
+    assert opened(prog, m) == (loading.outside_message("P", 0xC8F0), 8)
+    assert loading.open_problem(prog, m, never, keep=True) is None
+
+
 # ---- 作業欄だけのROMなし ----
 def test_bench_errors_before_card_and_norom():
     prog = Program("p", title="P", basic="10 A=1", card=16, errors=["3行: 読めない"])
@@ -221,6 +242,18 @@ def test_steps_dump_only():
         Step("mode", "RUN"),
         Step("text", "CALL &C000\n"),
     ]
+
+
+@pytest.mark.parametrize("basic", ["", "10 A=1"])
+@pytest.mark.parametrize("setup", ["", "POKE &C000,0"])
+@pytest.mark.parametrize("run", ["", "CALL &C000"])
+@pytest.mark.parametrize("after", [[], [(0xC100, b"\2")]])
+def test_types_keys_matches_steps(basic, setup, run, after):
+    """types_keysは、open_stepsにダンプを書く以外の手順があるときだけTrue"""
+    prog = Program("p", basic=basic, setup=setup, run=run, after=after, blocks=[(0xC000, b"\1")])
+    for go in (False, True):
+        steps = loading.open_steps(prog, go, "RUN")
+        assert loading.types_keys(prog, go) == any(s.kind != "write" for s in steps)
 
 
 def test_back_mode():

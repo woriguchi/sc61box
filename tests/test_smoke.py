@@ -1496,6 +1496,86 @@ def test_load_and_run_stops_running_machine_code(norom, loop, pause, tmp_path):
     app.close()
 
 
+@pytest.mark.parametrize("norom", [True, False])
+@pytest.mark.parametrize("run", [False, True])
+def test_loading_dump_keeps_running_machine_code(norom, run, tmp_path):
+    """CALLで呼んだマシン語が動いているときにダンプだけのファイル(BASICも# run:もない)を
+    読み込むと、マシン語を止めずにダンプを書く。続きのデータを待っているマシン語は、書いた
+    データを読んで続ける(「読み込んで実行」でも、打つ命令がなければ同じ)"""
+    from conftest import HAVE_ROM
+
+    from sc61box import programs
+
+    if not norom and not HAVE_ROM:
+        pytest.skip("ROMがない")
+    path = tmp_path / "data.hex"
+    path.write_text("C300 01\n", encoding="utf-8")
+    app = make_app(frames=90, norom=norom)
+    m = app.m
+    app.typer.add_mode("RUN")
+    settle(app)
+    # C300が0のあいだ待ち、0でなくなったらC301に5Aを書いて戻る
+    m.mem[0xC300:0xC302] = b"\0\0"
+    code = bytes.fromhex("10C3005767003907025A10C3015237")
+    m.mem[0xC200 : 0xC200 + len(code)] = code
+    app.typer.add_text("CALL &C200\n")
+    settle(app)
+    for _ in range(30):
+        app.frame()
+    if norom:
+        assert m.basic is not None and m.basic.where == "call-direct"
+    else:
+        assert m.running_ram_code()
+    prog = programs.find(str(path), m.model.name)
+    assert prog is not None
+    app.open_program(prog, run=run)
+    assert "止めて" not in app.warning
+    for _ in range(30):
+        app.frame()
+    assert m.mem[0xC301] == 0x5A
+    if norom:
+        assert m.basic is not None and m.basic.where != "call-direct"
+    else:
+        assert not m.running_ram_code()
+    app.close()
+
+
+@pytest.mark.parametrize("norom", [True, False])
+def test_loading_dump_keeps_widened_ram(norom, tmp_path):
+    """# ram: で広げたRAMのマシン語が動いているときに、# ram: のないダンプだけのファイルを
+    読み込んでも、RAMの範囲はそのまま(狭めると、動いているマシン語が消える)"""
+    from conftest import HAVE_ROM
+
+    from sc61box import programs
+
+    if not norom and not HAVE_ROM:
+        pytest.skip("ROMがない")
+    path = tmp_path / "data.hex"
+    path.write_text("C300 01\n", encoding="utf-8")
+    app = make_app(frames=90, norom=norom)
+    m = app.m
+    app.typer.add_mode("RUN")
+    settle(app)
+    m.set_ram_top(0xC900)
+    # 広げたC880に置く。C300が0のあいだ待ち、0でなくなったらC8F1に5Aを書いて戻る
+    m.mem[0xC300] = m.mem[0xC8F1] = 0
+    code = bytes.fromhex("10C3005767003907025A10C8F15237")
+    m.mem[0xC880 : 0xC880 + len(code)] = code
+    app.typer.add_text("CALL &C880\n")
+    settle(app)
+    for _ in range(30):
+        app.frame()
+    assert 0xC880 <= m.cpu.pc < 0xC888
+    prog = programs.find(str(path), m.model.name)
+    assert prog is not None
+    app.open_program(prog, run=True)
+    assert m.model.ram[1] == 0xC900
+    for _ in range(30):
+        app.frame()
+    assert m.mem[0xC8F1] == 0x5A
+    app.close()
+
+
 @pytest.mark.parametrize("model", ["1251", "1245", "1261", "1350"])
 def test_running_ram_code_is_false_at_basic_prompts(model):
     """ROM使用時、BASICの入力待ち(PRO・RUNモード、INPUTの待ち)では、マシン語の実行中とみない

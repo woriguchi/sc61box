@@ -70,10 +70,14 @@ def _outside_problem(m: PC1251, blocks: Blocks, top: int | None, name: str) -> P
     return (outside_message(name, out[0]), 8) if out else None
 
 
-def open_problem(prog: Program, m: PC1251, encode: Callable[[str], bytes | None]) -> Problem | None:
+def open_problem(
+    prog: Program, m: PC1251, encode: Callable[[str], bytes | None], keep: bool = False
+) -> Problem | None:
     """ROMのある本体かROMなしのBASICに読み込めないとき、その理由。encodeはBASICを中間コードに
-    する関数(App._encoded)で、ほかの検査を通ったときだけ、BASICの大きさを見るのに呼ぶ"""
+    する関数(App._encoded)で、ほかの検査を通ったときだけ、BASICの大きさを見るのに呼ぶ。
+    keepなら、動いているマシン語を止めずに読み込む(RAMの終わりはkept_top)"""
     name = prog.title or prog.name
+    top = kept_top(prog, m) if keep else prog.ram_top
     # RAMカードが足りないときは、機種の検査をしない(番地がRAMに収まらず、機種が違うと出るので)
     short = card_problem(prog, m, name)
     return (
@@ -83,7 +87,7 @@ def open_problem(prog: Program, m: PC1251, encode: Callable[[str], bytes | None]
         or (_norom_problem(prog, name, basic=True) if m.norom else None)
         or _password_problem(prog, m)
         or ram_problem(prog, m)
-        or _outside_problem(m, prog.blocks + prog.after, prog.ram_top, name)
+        or _outside_problem(m, prog.blocks + prog.after, top, name)
         or _long_problem(prog, m, name)
         or _size_problem(prog, m, name, encode)
         or _empty_problem(prog)
@@ -194,6 +198,18 @@ class Step:
 def needs_new(prog: Program) -> bool:
     """PROモードでNEWしてからダンプを書くか。BASICも# setup:もなければ、ダンプはすぐ書く"""
     return bool(prog.basic or prog.setup)
+
+
+def types_keys(prog: Program, run: bool) -> bool:
+    """読み込みでキーを打つか(open_stepsにwrite以外の手順があるか)。ダンプを書くだけなら、
+    動いているマシン語は止めない(続きのデータの読み込みを待っているプログラムがある)"""
+    return needs_new(prog) or bool(run and prog.run_command)
+
+
+def kept_top(prog: Program, m: PC1251) -> int:
+    """動いているマシン語を止めずに読み込むときのRAMの終わり。いまの範囲は狭めず、# ram: が
+    いまより広いときだけ広げる"""
+    return max(m.model.ram[1], m.ram_top(prog.ram_top))
 
 
 def back_mode(m: PC1251) -> str:

@@ -908,16 +908,21 @@ class App:
     def pad_map_for(self, prog: "programs.Program | None") -> gamepad.PadMap:
         """プログラムprogを読み込んだときの割り当て。自分でそのプログラム用に保存したもの、
         プログラムの# pad:、自分で保存した既定、初期設定の順"""
-        if prog is not None:
-            saved = gamepad.PadMap.load(self.pad_file(prog), Text("app.saved", name=prog.name))
-            if saved is not None:
-                return saved
-            if prog.pad is not None:
-                return self.pad_map_of(prog)
+        own = None if prog is None else self._own_pad_map(prog)
+        if own is not None:
+            return own
         default = gamepad.PadMap.load(self.pad_file(None), Text("app.saved_default"))
         return (
             default if default is not None else gamepad.PadMap(source=Text("app.factory_mapping"))
         )
+
+    def _own_pad_map(self, prog: programs.Program) -> gamepad.PadMap | None:
+        """プログラムprogだけの割り当て(自分でそのプログラム用に保存したもの、# pad:)。
+        なければNone"""
+        saved = gamepad.PadMap.load(self.pad_file(prog), Text("app.saved", name=prog.name))
+        if saved is not None:
+            return saved
+        return self.pad_map_of(prog) if prog.pad is not None else None
 
     def pad_key_names(self) -> frozenset[str]:
         """この機種で割り当てられるキーの名前"""
@@ -2375,17 +2380,20 @@ class App:
             self.bench_open(prog, run)
             return
         m = self.m
-        problem = loading.open_problem(prog, m, self._encoded)
+        # キーを打たない読み込みでは、動いているマシン語を止めず、RAMの範囲も引き継ぐ
+        typing = loading.types_keys(prog, run)
+        keep = not typing and self._running_code()
+        problem = loading.open_problem(prog, m, self._encoded, keep)
         if problem is not None:
             self.say(*problem)
             return
         self.undo_state, self.undo_title = m.snapshot(), prog.title or prog.name
         self.undo_prog = self._prog_undo()
         self.undo_bench = self.bench.save()
-        # BASICから呼んだマシン語が動いていれば、先に止める(止めないと、書いたダンプの上で動き
-        # 続け、打つCALLも届かないので、何も起きないように見える)
-        stopped = self._stop_running_code()
-        m.set_ram_top(prog.ram_top)
+        # キーを打つなら、BASICから呼んだマシン語が動いていれば先に止める(止めないと、書いた
+        # ダンプの上で動き続け、打つCALLも届かないので、何も起きないように見える)
+        stopped = typing and self._stop_running_code()
+        m.set_ram_top(loading.kept_top(prog, m) if keep else prog.ram_top)
         # 読み込みを始めたら、前の書き込みは取り消せなくする(読み込みは「読み込む前に戻す」で)。
         # 前のプログラムのために決めた書き出す範囲も消す
         self.bench.forget_edits()
@@ -2395,8 +2403,13 @@ class App:
         self.bench.use_data(prog.data)
         self.bench.set_start(prog.blocks + prog.after, call)
         self.bench.calls = workbench.basic_calls(f"{prog.basic}\n{prog.run}")
-        self.pad_prog, self.pad_note = prog, ""
-        self.set_pad_map(self.pad_map_for(prog))
+        self.pad_note = ""
+        # 動いているプログラムを続けるときは、読み込むファイルだけの割り当てがなければ、
+        # いまの割り当て(対象のプログラムも)を引き継ぐ
+        own = self._own_pad_map(prog) if keep else None
+        if not keep or own is not None:
+            self.pad_prog = prog
+            self.set_pad_map(own if own is not None else self.pad_map_for(prog))
         if self.is1350 and not m.power:
             self.set_mode("ON")
         elif not m.power:
@@ -2424,23 +2437,28 @@ class App:
 
     def _stop_running_code(self) -> bool:
         """BASICから呼んで動いているマシン語を止め、BASICの入力待ちに戻す(プログラムと変数は
-        残す)。止めたらTrue。ROMなしのBASICではCALLの最中かで、ROM使用時はマシン語を実行して
-        いるか(マシン語から呼んだROMのルーチンの中も。Machine.running_ram_code)で見る。
-        一時停止していれば、止めるかどうかによらず続ける状態に戻す(読み込みの打鍵が進むように)"""
+        残す)。止めたらTrue。一時停止していれば、止めるかどうかによらず続ける状態に戻す(読み込みの
+        打鍵が進むように)"""
         m = self.m
         if self.bench.state == "pause":
             self.bench_do("resume")
-        b = m.basic
-        if b is not None:
-            if b.where not in ("call-run", "call-direct"):
-                return False
-            b.restart()
-            return True
-        if m.norom or not m.power or not m.running_ram_code():
+        if not self._running_code():
             return False
+        if m.basic is not None:
+            m.basic.restart()
+            return True
         m.press_reset()  # 裏のRESETと同じに、0番地から始め直す
         m.reset_key = False
         return True
+
+    def _running_code(self) -> bool:
+        """BASICから呼んだマシン語が動いているか(一時停止していても)。ROMなしのBASICではCALLの
+        最中かで、ROM使用時はマシン語を実行しているか(マシン語から呼んだROMのルーチンの中も。
+        Machine.running_ram_code)で見る"""
+        m = self.m
+        if m.basic is not None:
+            return m.basic.where in ("call-run", "call-direct")
+        return not m.norom and m.power and m.running_ram_code()
 
     def _add_step(self, step: loading.Step) -> None:
         t = self.typer

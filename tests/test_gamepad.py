@@ -456,6 +456,46 @@ def test_hex_only_program_is_pad_target(tmp_path, monkeypatch):
     app.close()
 
 
+@pytest.mark.parametrize("norom", [True, False])
+def test_loading_data_keeps_running_program_pad(norom, tmp_path, monkeypatch):
+    """マシン語を動かしたままダンプだけを読み込むときは、読み込むファイルだけの割り当て
+    (# pad:、そのプログラム用に保存したもの)がなければ、いまの割り当てと対象を引き継ぐ
+    (保存していない変更も)。マシン語が終わったあとは、読み込んだファイルの割り当てになる"""
+    from conftest import HAVE_ROM
+
+    if not norom and not HAVE_ROM:
+        pytest.skip("ROMがない")
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
+    app = make_app(frames=90, norom=norom)
+    m = app.m
+    # C300が0のあいだ待ち、0でなくなったら戻る
+    code = bytes.fromhex("10C300576700390737")
+    game = programs.Program(name="game", title="GAME", blocks=[(0xC200, code)], pad="a=DEF x=CL")
+    app.open_program(game, run=False)
+    app.pad_map.set("b", "SHIFT")
+    app.pad_dirty = True
+    app.typer.add_mode("RUN")
+    settle(app)
+    m.mem[0xC300] = 0
+    app.typer.add_text("CALL &C200\n")
+    settle(app)
+    for _ in range(30):
+        app.frame()
+    data = programs.Program(name="data", title="DATA", blocks=[(0xC400, b"\1")])
+    app.open_program(data, run=True)
+    assert app.pad_prog is game and app.pad_dirty
+    assert [app.pad_map.get(k) for k in ("a", "b", "x")] == ["DEF", "SHIFT", "CL"]
+    app.open_program(_hex_prog("more", "a=2"), run=False)  # # pad: のあるファイル
+    assert app.pad_prog is not None and app.pad_prog.name == "more"
+    assert app.pad_map.get("a") == "2" and not app.pad_dirty
+    m.mem[0xC300] = 1
+    for _ in range(30):
+        app.frame()
+    app.open_program(data, run=True)  # 終わったあとは、読み込んだファイルが対象
+    assert app.pad_prog is data and app.pad_map.get("a") != "2"
+    app.close()
+
+
 def test_hex_only_program_from_nothing_can_be_saved(tmp_path, monkeypatch):
     monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
     app = make_app(frames=3)
