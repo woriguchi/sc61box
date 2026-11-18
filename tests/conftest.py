@@ -33,6 +33,8 @@ NO_ROM_NEEDED = {
     "test_smoke::test_version",
     "test_smoke::test_lcd_ram_mirrors",
     "test_smoke::test_sound_queue_keeps_up",
+    "test_gamepad::test_pads_release_all_waits_for_stick_to_center",
+    "test_gamepad::test_dpad_to_stick_in_one_pump_presses_once",
 }
 
 

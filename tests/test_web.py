@@ -9,7 +9,7 @@ import types
 import pytest
 from helpers import make_app, settle
 
-from sc61box import audio, host
+from sc61box import audio, gamepad, host, padmenu
 
 
 class FakeAudio:
@@ -851,3 +851,219 @@ def test_offline_files_ready_or_failed(web, monkeypatch):
     assert page.kept == 1 and app.status == "オフラインで使うためのファイルを保存しています"
     assert retry not in [it.label for it in app.popup_items("machine")]
     app.close()
+
+
+def test_run_reads_gamepads_from_page(web, monkeypatch):
+    """ブラウザのrunは、パッドをページのGamepad APIの状態から読む。割り当てを保存したら、
+    データのフォルダをすぐにブラウザの保存に書く"""
+    from dataclasses import replace
+
+    from sc61box.app import App
+
+    module, page = web
+    monkeypatch.setattr(host, "WEB", True)
+    monkeypatch.setattr(module.overlay, "HELP_FONTS", list(module.overlay.HELP_FONTS))
+    monkeypatch.setattr(module.benchview, "MONO_FONTS", list(module.benchview.MONO_FONTS))
+    page.pageSize = lambda: [1200, 900]
+    page.offline = page.link = None
+    page.bare = False
+    page.pads = lambda: "0\tstandard\tPad\t1\t"
+    made = []
+
+    def build(options):
+        app = App(replace(options, mute=True, fresh=True))
+
+        async def no_loop() -> None:
+            made.append(app)
+
+        app.run_async = no_loop  # pyrefly: ignore[read-only]
+        return app
+
+    monkeypatch.setattr(module, "App", build)
+    asyncio.run(module.run("1251", "ja"))
+    app = made[0]
+    assert isinstance(app.pads, gamepad.WebPads)
+    app._pump()
+    assert "SPC" in app.typer.physical and app.pads.names() == ["Pad"]
+    synced = page.synced
+    app.pad_action("save_default")
+    assert page.synced == synced + 1
+    app.close()
+
+
+def _web_pad(index=0, mapping="standard", gid="8BitDo SN30 Pro (Vendor: 2dc8 Product: 6101)",
+             buttons=(), axes=(0, 0, 0, 0)) -> str:  # fmt: skip
+    """ページがWebPadsに渡す、パッド1つの行"""
+    values = [0.0] * 17
+    for i, value in buttons:
+        values[i] = value
+    nums = [",".join(f"{v:.2f}" for v in vs) for vs in (values, axes)]
+    return "\t".join([str(index), mapping, gid, *nums])
+
+
+def test_web_pads_buttons_sticks_and_triggers():
+    """ブラウザのパッドは、フレームごとの状態を前と比べて押す・離すにする。十字キーとスティックは
+    同じ入力で、両方が離れたときに離す。ZL・ZRは値の変わるボタンで、軸と同じしきい値で押す"""
+    state = [""]
+    pads = gamepad.WebPads(lambda: state[0])
+    assert pads.poll() == [] and pads.names() == []
+    state[0] = _web_pad()
+    assert pads.poll() == [] and pads.names() == ["8BitDo SN30 Pro"]
+    state[0] = _web_pad(buttons=[(0, 1)])
+    assert pads.poll() == [("a", 0, True)]
+    assert pads.poll() == []  # 押したまま
+    state[0] = _web_pad(buttons=[(12, 1)])
+    assert pads.poll() == [("a", 0, False), ("dpup", 0, True)]
+    state[0] = _web_pad(buttons=[(12, 1)], axes=(0, -0.9, 0, 0))
+    assert pads.poll() == []
+    state[0] = _web_pad(axes=(0, -0.9, 0, 0))
+    assert pads.poll() == []  # スティックがまだ倒れている
+    state[0] = _web_pad()
+    assert pads.poll() == [("dpup", 0, False)]
+    state[0] = _web_pad(axes=(0, 0, 0.8, 0))
+    assert pads.poll() == [("dpright", 0, True)]
+    state[0] = _web_pad()
+    assert pads.poll() == [("dpright", 0, False)]
+    steps = [(0.4, []), (0.8, [("lefttrigger", 0, True)]), (0.4, []),
+             (0.2, [("lefttrigger", 0, False)])]  # fmt: skip
+    for value, want in steps:
+        state[0] = _web_pad(buttons=[(6, value)])
+        assert pads.poll() == want
+    state[0] = _web_pad(buttons=[(7, 1), (16, 1)])
+    assert pads.poll() == [("righttrigger", 0, True), ("guide", 0, True)]
+
+
+def test_web_pads_release_when_pad_goes_or_changes():
+    """ページの行からなくなったパッド(外した、読めない行)と、同じ番号で別のパッドに替わった
+    パッドは、押していた入力を離す。配置が標準でないパッドは、名前にそれを添える"""
+    other = _web_pad(index=1, mapping="", gid="054c-05c4-Wireless Controller", buttons=[(0, 1)])
+    state = [_web_pad(buttons=[(1, 1)]) + "\n" + other]
+    pads = gamepad.WebPads(lambda: state[0])
+    assert sorted(pads.poll()) == [("a", 1, True), ("b", 0, True)]
+    assert pads.names() == ["8BitDo SN30 Pro", "Wireless Controller(ボタンの配置不明)"]
+    state[0] = other
+    assert pads.poll() == [("b", 0, False)]
+    assert pads.names() == ["Wireless Controller(ボタンの配置不明)"]
+    state[0] = _web_pad(index=1, buttons=[(0, 1)])
+    assert pads.poll() == [("a", 1, False), ("a", 1, True)]
+    assert pads.names() == ["8BitDo SN30 Pro"]
+    state[0] = "broken\n1\tstandard\tPad\ta,b\t"
+    assert pads.poll() == [("a", 1, False)] and pads.names() == [] and not pads.pressed()
+
+
+def test_pad_name_drops_browser_details():
+    assert gamepad.pad_name("8BitDo SN30 Pro (Vendor: 2dc8 Product: 6101)") == "8BitDo SN30 Pro"
+    assert (
+        gamepad.pad_name("Xbox 360 Controller (XInput STANDARD GAMEPAD)") == "Xbox 360 Controller"
+    )
+    assert gamepad.pad_name("2dc8-6101-8BitDo SN30 Pro") == "8BitDo SN30 Pro"
+    assert gamepad.pad_name("Joy-Con (L/R) (Vendor: 057e Product: 200e)") == "Joy-Con (L/R)"
+    assert gamepad.pad_name("Wireless Gamepad") == "Wireless Gamepad"
+
+
+def test_browser_pad_presses_pocket_key_each_frame(tmp_path, monkeypatch):
+    """ブラウザでは、イベントを受けるたびにページから読んだパッドの状態で本体のキーを押す。
+    割り当ての画面を出しているあいだは、押した入力を選ぶだけ"""
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
+    monkeypatch.setattr(host, "WEB", True)
+    app = make_app(frames=3, norom=True)
+    state = [_web_pad(buttons=[(0, 1)])]
+    app.pads = gamepad.WebPads(lambda: state[0])
+    app._pump()
+    assert "SPC" in app.typer.physical
+    state[0] = _web_pad(buttons=[(8, 1)])
+    app._pump()
+    assert "SPC" not in app.typer.physical and app.m.brk
+    state[0] = ""  # 外した
+    app._pump()
+    assert not app.m.brk
+    app.toggle_pad_panel()
+    assert app.pad_panel is not None
+    state[0] = _web_pad(buttons=[(3, 1)])
+    app._pump()
+    assert app.pad_panel.selected == "y" and not app.typer.physical
+    app.frame()
+    app.close()
+
+
+def test_browser_pad_texts(monkeypatch):
+    """ブラウザでは、パッドが見つからないときにボタンを押すように案内し、ボタンの名前の説明も
+    SDLではなくXboxのコントローラの位置で書く"""
+    monkeypatch.setattr(host, "WEB", True)
+    panel = padmenu.PadPanel()
+    assert "Xboxのコントローラ" in panel._notes(["Pad"], None)[1]
+    app = make_app(frames=1, norom=True)
+    app.pads = gamepad.WebPads(lambda: "")
+    item = next(it for it in app.popup_items("view") if it.label == "ゲームパッドの割り当て…")
+    assert item.note == "ゲームパッドが見つかりません(つないでボタンを押すと見つかります)"
+    app.close()
+
+
+def test_web_pads_dpad_to_stick_presses_once(monkeypatch):
+    """十字キーの上を押したまま、次のフレームで十字キーを離すと同時にスティックを上へ倒しても、
+    本体のキーは押し続けたまま(ROMなしのPC-1251で、8が1回だけ入る)"""
+    app = make_app(frames=3, norom=True)
+    state = [_web_pad(buttons=[(12, 1)])]
+    app.pads = gamepad.WebPads(lambda: state[0])
+    presses = []
+    press = app.typer.press_live
+
+    def counted(name: str, source: object = None) -> None:
+        presses.append(name)
+        press(name, source)
+
+    monkeypatch.setattr(app.typer, "press_live", counted)
+    app._pump()
+    state[0] = _web_pad(axes=(0, -0.9, 0, 0))
+    app._pump()
+    assert presses == ["8"] and "8" in app.typer.physical
+    state[0] = _web_pad()
+    app._pump()
+    assert not app.typer.physical
+    app.close()
+
+
+def test_web_pad_held_while_assigning_does_not_press_key():
+    """スティックを倒したまま割り当てると、その向きは選び直されず、欄を閉じても本体のキーを
+    押さない。いちど戻してから倒すと押す"""
+    app = make_app(frames=3, norom=True)
+    state = [_web_pad()]
+    app.pads = gamepad.WebPads(lambda: state[0])
+    app._pump()
+    app.toggle_pad_panel()
+    panel = app.pad_panel
+    assert panel is not None
+    state[0] = _web_pad(axes=(0.9, 0, 0, 0))
+    app._pump()
+    chosen = panel.selected
+    assert chosen == "dpright"
+    app.pad_assign("1")
+    for _ in range(3):
+        app._pump()
+    assert panel.selected is None
+    app.toggle_pad_panel(False)
+    for _ in range(3):
+        app._pump()
+    assert "1" not in app.typer.physical
+    state[0] = _web_pad()
+    app._pump()
+    state[0] = _web_pad(axes=(0.9, 0, 0, 0))
+    app._pump()
+    assert "1" in app.typer.physical
+    app.close()
+
+
+def test_web_pads_hold_while_page_shows_guide():
+    """ページが使い方を出しているあいだ(先頭にholdの行)は、パッドを見つけても本体へ送らない。
+    閉じたあとも、押したままの入力はいちど離すまで送らない"""
+    state = ["hold\n" + _web_pad(buttons=[(8, 1)])]
+    pads = gamepad.WebPads(lambda: state[0])
+    assert pads.poll() == [] and pads.names() == ["8BitDo SN30 Pro"]
+    state[0] = _web_pad(buttons=[(8, 1)])
+    assert pads.poll() == []
+    state[0] = _web_pad()
+    assert pads.poll() == []
+    state[0] = _web_pad(buttons=[(8, 1)])
+    assert pads.poll() == [("back", 0, True)]
+    state[0] = "hold\n" + _web_pad(buttons=[(8, 1)])
+    assert pads.poll() == [("back", 0, False)]

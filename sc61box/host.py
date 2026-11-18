@@ -107,6 +107,15 @@ def share_program(text: str, model: str, card: int, done: Callable[[bool, int], 
     web.share_program(text, model, card, done)
 
 
+def store() -> None:
+    """ブラウザで、データのフォルダに書いたファイルを、すぐにブラウザの保存に書く(書かなくても、
+    ページはしばらくおきに書く)。パソコンでは何もしない"""
+    if WEB:
+        from . import web
+
+        web.store()
+
+
 def keep_offline() -> None:
     """ブラウザで、オフラインで使うためのファイルの保存を試し直す(結果はあとで知らせる)"""
     from . import web

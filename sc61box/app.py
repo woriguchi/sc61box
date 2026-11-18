@@ -448,6 +448,8 @@ class App:
         self.pad_dirty = False  # 割り当てに保存していない変更があるか
         self.pad_note = ""  # 読み込んだプログラムの# pad: の読めない語のメッセージ
         self.pad_down: dict[str, str] = {}  # パッドの入力(pad1:aなど)ごとに、押したときのキー
+        # _pumpが1回に受け取ったパッドの入力の変化(まとめてgamepad.netを通す)。ほかのときはNone
+        self.pad_batch: list[tuple[str, int, bool]] | None = None
         self.pad_panel: padmenu.PadPanel | None = None  # 出していればゲームパッドの割り当ての画面
         # 割り当ての対象のプログラム。last_progと違い、.hexだけのプログラムでも替わる
         self.pad_prog: programs.Program | None = None
@@ -945,9 +947,17 @@ class App:
         self._pad_fit()
 
     def pad_event(self, ev) -> None:
-        """ゲームパッドのイベント。割り当ての画面を出しているあいだは入力を選ぶだけで、
+        """ゲームパッドのイベント。_pumpの中なら、その回の終わりにまとめて扱う"""
+        changes = self.pads.handle(ev)
+        if self.pad_batch is None:
+            self.pad_changes(changes)
+        else:
+            self.pad_batch += changes
+
+    def pad_changes(self, changes: list[tuple[str, int, bool]]) -> None:
+        """パッドの入力の押す・離す。割り当ての画面を出しているあいだは入力を選ぶだけで、
         本体には送らない"""
-        for name, iid, pressed in self.pads.handle(ev):
+        for name, iid, pressed in changes:
             if self.pad_panel is not None:
                 if pressed:
                     self.pad_panel.selected = name
@@ -1070,6 +1080,7 @@ class App:
             except OSError as e:
                 self.say(tr("app.cannot_save_mapping", error=e), 5)
                 return
+            host.store()
             if act == "save_default":
                 self.pad_map.source = Text("app.saved_default")
             elif prog is not None:
@@ -1905,6 +1916,8 @@ class App:
             pads = self.pads.names()
             if pads:
                 note = tr("app.connected", names=tr("common.ideographic_comma").join(pads))
+            elif host.WEB:
+                note = tr("common.web_no_gamepad")
             else:
                 note = tr("app.no_gamepad_connected")
             lcd = tr("app.show_calculator") if self.lcd_only else tr("app.lcd_only_window_can")
@@ -3515,12 +3528,21 @@ class App:
             self.close()
 
     def _pump(self) -> None:
-        """たまっているイベントを本体に届ける。閉じる操作があればclosingにする"""
+        """たまっているイベントを本体に届ける。閉じる操作があればclosingにする。パッドの入力は
+        最後にまとめ、同じ入力を離して押し直しただけのもの(十字キーからスティックへの持ち替え)は
+        押し続けたことにする"""
+        batch: list[tuple[str, int, bool]] = []
+        self.pad_batch = batch  # pad_eventが足す
         try:
             events = pygame.event.get()
         except (KeyError, SystemError):  # パッドを外したときのpygameの例外(Pads.sync)
             events = []
             self.pad_sync()
-        for ev in events:
-            if not self.handle(ev):
-                self.closing = True
+        try:
+            for ev in events:
+                if not self.handle(ev):
+                    self.closing = True
+            batch += self.pads.poll()
+        finally:
+            self.pad_batch = None
+        self.pad_changes(gamepad.net(batch))

@@ -677,3 +677,49 @@ def test_empty_pad_line_button_returns_to_it(tmp_path, monkeypatch):
     app.mouse_down(buttons[0].center)
     assert app.pad_map.keys == {} and not app.pad_dirty
     app.close()
+
+
+def test_pads_release_all_waits_for_stick_to_center():
+    """割り当てを変えたときなどに離した軸は、倒れたままなら次の軸のイベント(揺れ)で押し直さず、
+    中立に戻ってから倒し直したときに押す"""
+    pads = gamepad.Pads()
+    axis = pygame.CONTROLLER_AXIS_LEFTX
+
+    def move(v):
+        return pads.handle(
+            _event(pygame.CONTROLLERAXISMOTION, instance_id=3, axis=axis, value=int(v * 32767))
+        )
+
+    assert move(0.9) == [("dpright", 3, True)]
+    assert pads.release_all() == [("dpright", 3, False)]
+    assert move(0.91) == [] and move(0.5) == []
+    assert move(0.1) == []
+    assert move(0.9) == [("dpright", 3, True)]
+
+
+def test_dpad_to_stick_in_one_pump_presses_once(monkeypatch):
+    """十字キーを離すイベントと、スティックを同じ向きに倒すイベントが同じ回に届いても、
+    本体のキーは押し続けたまま(離して押し直さない)"""
+    app = make_app(frames=1, norom=True)
+    presses = []
+    press = app.typer.press_live
+
+    def counted(name: str, source: object = None) -> None:
+        presses.append(name)
+        press(name, source)
+
+    monkeypatch.setattr(app.typer, "press_live", counted)
+    up = pygame.CONTROLLER_BUTTON_DPAD_UP
+    tilt = _event(
+        pygame.CONTROLLERAXISMOTION, instance_id=1, axis=pygame.CONTROLLER_AXIS_LEFTY,
+        value=-30000,
+    )  # fmt: skip
+    batches = iter([
+        [_button(pygame.CONTROLLERBUTTONDOWN, up)],
+        [_button(pygame.CONTROLLERBUTTONUP, up), tilt],
+    ])  # fmt: skip
+    with patch("pygame.event.get", side_effect=lambda: next(batches, [])):
+        app._pump()
+        app._pump()
+    assert presses == ["8"] and "8" in app.typer.physical
+    app.close()

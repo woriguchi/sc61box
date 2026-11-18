@@ -6,10 +6,14 @@ PlayStation、Switchのコントローラなど)を使う。ボタン、十字�
 「# pad:」の行、プログラムのフォルダに保存した自分の割り当て、既定の順に決まる(App.pad_map_for)。
 
 PadMapは画面を持たず、試験から直接使える。パッドのイベントを入力の名前に直すのはPads。
+ブラウザ(Pyodide)のpygame-ceにはコントローラの仕組みがないので、ページが読んだGamepad APIの
+状態から作る(WebPads)。
 """
 
 import json
 import os
+import re
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import pygame
@@ -52,6 +56,34 @@ AXES = {
     pygame.CONTROLLER_AXIS_TRIGGERRIGHT: (None, "righttrigger"),
 }
 PRESS, RELEASE = 0.5, 0.3  # 軸をこの割合より倒すと押したことに、戻すと離したことにする
+
+
+def lean(now: str | None, value: float, minus: str | None, plus: str | None) -> str | None:
+    """軸の値valueから、倒している向きの入力(なければNone)。nowはいままでの向き。PRESSを
+    越えて倒し、倒している向きの値がRELEASEを下回ると(反対側へ越えたときも)戻す"""
+    want = now
+    if now is not None and value * (1 if now == plus else -1) < RELEASE:
+        want = None
+    if abs(value) > PRESS:
+        want = plus if value > 0 else minus
+    return want
+
+
+def net(changes: list[tuple[str, int, bool]]) -> list[tuple[str, int, bool]]:
+    """1回に受け取った押す・離すから、離してすぐ同じ入力を押したもの(十字キーを離すのと
+    同時にスティックを同じ向きに倒したときなど)を除く。押し続けていたことになる"""
+    out: list[tuple[str, int, bool] | None] = []
+    released: dict[tuple[str, int], int] = {}  # 離したあとまだ押していない入力: outでの位置
+    for name, iid, pressed in changes:
+        key = (name, iid)
+        if pressed and key in released:
+            out[released.pop(key)] = None
+            continue
+        if not pressed:
+            released[key] = len(out)
+        out.append((name, iid, pressed))
+    return [c for c in out if c is not None]
+
 
 ORDER = (
     "dpup", "dpdown", "dpleft", "dpright", "a", "b", "x", "y",
@@ -161,6 +193,8 @@ class Pads:
         # (instance_id, 入力の名前): 押している元の集合("button"か軸の番号)
         self.held: dict[tuple[int, str], set[int | str]] = {}
         self.axis_on: dict[tuple[int, int], str] = {}  # (instance_id, 軸): 倒している向きの入力
+        # 離したことにしたが、まだ倒れている軸(instance_id, 軸)。中立に戻るまで押し直さない
+        self.stuck: set[tuple[int, int]] = set()
         if controller is None:
             return
         try:
@@ -183,6 +217,10 @@ class Pads:
 
     def names(self) -> list[str]:
         return [c.name for c in self.devices.values()]
+
+    def poll(self) -> list[tuple[str, int, bool]]:
+        """イベントの来ない入力の変化(ブラウザ)。パソコンではイベントで受けるので、いつも空"""
+        return []
 
     def pressed(self) -> set[str]:
         """いま押している入力の名前"""
@@ -228,13 +266,13 @@ class Pads:
     def _axis(self, iid: int, axis: int, value: float) -> list[tuple[str, int, bool]]:
         """軸の値から、倒した向きの入力を押す・離す。PRESSを越えて押し、倒している向きの値が
         RELEASEを下回って(反対側へ越えたときも)離す"""
+        if (iid, axis) in self.stuck:
+            if abs(value) >= RELEASE:
+                return []
+            self.stuck.discard((iid, axis))
         minus, plus = AXES[axis]
         now = self.axis_on.get((iid, axis))
-        want = now
-        if now is not None and value * (1 if now == plus else -1) < RELEASE:
-            want = None
-        if abs(value) > PRESS:
-            want = plus if value > 0 else minus
+        want = lean(now, value, minus, plus)
         if want == now:
             return []
         out = []
@@ -254,11 +292,16 @@ class Pads:
             del self.held[(iid, name)]
         for key in [k for k in self.axis_on if which(k[0])]:
             del self.axis_on[key]
+        self.stuck = {k for k in self.stuck if not which(k[0])}
         return out
 
     def release_all(self) -> list[tuple[str, int, bool]]:
-        """押している入力をすべて離す(割り当てを変える前など)"""
-        return self._release(lambda _iid: True)
+        """押している入力をすべて離す(割り当てを変える前など)。倒れたままの軸は、中立に
+        戻るまで押し直さない(ボタンは、押し直すまでイベントが来ない)"""
+        tilted = set(self.axis_on)
+        out = self._release(lambda _iid: True)
+        self.stuck = tilted
+        return out
 
     def sync(self) -> list[tuple[str, int, bool]]:
         """外れたのにイベントが来なかったパッドを閉じ、押していた入力を離す。pygame 2.6までは、
@@ -276,3 +319,133 @@ class Pads:
         for iid in gone:
             del self.devices[iid]
         return self._release(lambda iid: iid in gone)
+
+
+# ブラウザのGamepad APIの標準の配置(mappingが"standard")の、ボタンの番号と軸の番号
+WEB_BUTTONS = {
+    0: "a", 1: "b", 2: "x", 3: "y", 4: "leftshoulder", 5: "rightshoulder",
+    8: "back", 9: "start", 10: "leftstick", 11: "rightstick",
+    12: "dpup", 13: "dpdown", 14: "dpleft", 15: "dpright", 16: "guide",
+}  # fmt: skip
+WEB_TRIGGERS = {6: pygame.CONTROLLER_AXIS_TRIGGERLEFT, 7: pygame.CONTROLLER_AXIS_TRIGGERRIGHT}
+WEB_AXES = (
+    pygame.CONTROLLER_AXIS_LEFTX, pygame.CONTROLLER_AXIS_LEFTY,
+    pygame.CONTROLLER_AXIS_RIGHTX, pygame.CONTROLLER_AXIS_RIGHTY,
+)  # fmt: skip
+
+
+def pad_name(gid: str) -> str:
+    """Gamepad APIのidから、パッドの名前を取り出す。Chromeは「名前 (STANDARD GAMEPAD Vendor:
+    2dc8 Product: 6101)」、Firefoxは「2dc8-6101-名前」の形"""
+    name = re.sub(r"^[0-9a-f]{1,4}-[0-9a-f]{1,4}-", "", gid.strip(), flags=re.I)
+    name = re.sub(r"\s*\([^()]*\b(?:Vendor|STANDARD GAMEPAD)\b[^()]*\)$", "", name, flags=re.I)
+    return name.strip() or gid.strip()
+
+
+# ページの行の先頭にこの行があれば、ページが入力を止めている(使い方を出しているなど)
+HOLD = "hold"
+
+
+class WebPads(Pads):
+    """ブラウザのゲームパッド。ブラウザはパッドのイベントを出さないので、フレームごとにページ
+    からいまの状態を読み(read)、ボタンと軸から押されている入力を求めて、前のフレームと比べる
+    (poll)。readは、つながっているパッドごとに「番号、配置、id、ボタンの値(,区切り)、軸の値
+    (,区切り)」をタブで区切った行を返す(先頭にHOLDの行があれば、本体へは送らない)。配置が
+    "standard"でないパッドも標準の番号で読み、名前に配置がわからないことを添える"""
+
+    def __init__(self, read: Callable[[], str]) -> None:
+        self.read = read
+        self.devices = {}
+        self.held = {}
+        self.axis_on = {}  # (番号, 軸): 倒している向きの入力
+        self.stuck = set()
+        self.pads: dict[int, tuple[str, str | Text]] = {}  # 番号: (id, 出す名前)
+        self.down: dict[int, set[int]] = {}  # 番号: 押しているボタンの番号
+        self.on: dict[int, set[str]] = {}  # 番号: 押したことにしている入力
+        # 番号: 離したことにしたが、まだ押されている入力。いちど離されるまで押したことにしない
+        self.blocked: dict[int, set[str]] = {}
+
+    def names(self) -> list[str]:
+        return [str(self.pads[i][1]) for i in sorted(self.pads)]
+
+    def pressed(self) -> set[str]:
+        return {name for names in self.on.values() for name in names}
+
+    def poll(self) -> list[tuple[str, int, bool]]:
+        rows = self.read().splitlines()
+        hold = bool(rows) and rows[0] == HOLD
+        out: list[tuple[str, int, bool]] = []
+        seen = set()
+        for line in rows[1:] if hold else rows:
+            parts = line.split("\t")
+            if len(parts) != 5:
+                continue
+            try:
+                iid = int(parts[0])
+                buttons = [float(v) for v in parts[3].split(",") if v]
+                axes = [float(v) for v in parts[4].split(",") if v]
+            except ValueError:
+                continue
+            mapping, gid = parts[1], parts[2]
+            seen.add(iid)
+            if iid not in self.pads or self.pads[iid][0] != gid:  # 新しいパッドか、替わった
+                out += self._forget(iid)
+                name = pad_name(gid)
+                shown = name if mapping == "standard" else Text("pad.web_layout_unknown", name=name)
+                self.pads[iid] = (gid, shown)
+            raw = self._raw(iid, buttons, axes)
+            blocked = self.blocked.get(iid, set())
+            self.blocked[iid] = blocked = (blocked | raw if hold else blocked) & raw
+            out += self._diff(iid, raw - blocked)
+        for iid in [i for i in self.pads if i not in seen]:
+            out += self._forget(iid)
+        return out
+
+    def _raw(self, iid: int, buttons: list[float], axes: list[float]) -> set[str]:
+        """いま押されている入力。ボタンもPRESSを越えて押し、RELEASEを下回って離す。ZL・ZRは
+        値の変わるボタンなので、軸と同じに扱う"""
+        down = self.down.setdefault(iid, set())
+        tilts = [(WEB_TRIGGERS[i], v) for i, v in enumerate(buttons) if i in WEB_TRIGGERS]
+        tilts += list(zip(WEB_AXES, axes, strict=False))
+        for i, value in enumerate(buttons):
+            if i not in WEB_BUTTONS:
+                continue
+            if value > PRESS:
+                down.add(i)
+            elif value < RELEASE:
+                down.discard(i)
+        for axis, value in tilts:
+            want = lean(self.axis_on.get((iid, axis)), value, *AXES[axis])
+            if want is None:
+                self.axis_on.pop((iid, axis), None)
+            else:
+                self.axis_on[(iid, axis)] = want
+        names = {WEB_BUTTONS[i] for i in down}
+        return names | {name for (i, _axis), name in self.axis_on.items() if i == iid}
+
+    def _diff(self, iid: int, now: set[str]) -> list[tuple[str, int, bool]]:
+        """押したことにする入力をnowにして、前との違いを返す(離すのが先)"""
+        before = self.on.get(iid, set())
+        self.on[iid] = now
+        return [(n, iid, False) for n in ORDER if n in before - now] + [
+            (n, iid, True) for n in ORDER if n in now - before
+        ]
+
+    def _forget(self, iid: int) -> list[tuple[str, int, bool]]:
+        """番号iidのパッドを外したことにして、押していた入力を離す"""
+        out = [(n, iid, False) for n in ORDER if n in self.on.get(iid, set())]
+        for table in (self.pads, self.down, self.on, self.blocked):
+            table.pop(iid, None)
+        for key in [k for k in self.axis_on if k[0] == iid]:
+            del self.axis_on[key]
+        return out
+
+    def release_all(self) -> list[tuple[str, int, bool]]:
+        """押している入力をすべて離す。まだ押されている入力は、いちど離されるまで押し直さない"""
+        out = []
+        for iid in sorted(self.on):
+            names = self.on[iid]
+            self.blocked.setdefault(iid, set()).update(names)
+            out += [(n, iid, False) for n in ORDER if n in names]
+            self.on[iid] = set()
+        return out

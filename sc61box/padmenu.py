@@ -12,6 +12,7 @@ A・B・X・Y、上にL・R)。割り当てを変えるときは、パッドの�
 
 import pygame
 
+from . import host
 from .gamepad import LABELS, ORDER, PadMap
 from .i18n import tr
 from .overlay import GREY, WHITE, wrap_text
@@ -122,7 +123,7 @@ class PadPanel:
             first = tr("pad.click_mapping_below_change")
         return [
             first,
-            tr("pad.button_names_follow_sdl"),
+            tr("pad.web_button_names") if host.WEB else tr("pad.button_names_follow_sdl"),
         ]  # fmt: skip
 
     def _layout(
@@ -221,6 +222,8 @@ class PadPanel:
         dst.blit(font.render(tr("pad.gamepad_mapping"), True, WHITE), (x0, y))
         if names:
             who = tr("common.ideographic_comma").join(names)
+        elif host.WEB:
+            who = tr("common.web_no_gamepad")
         else:
             who = tr("pad.no_gamepad_connected_appears")
         img = small.render(who, True, GREY)

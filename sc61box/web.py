@@ -23,7 +23,7 @@ from pyodide.ffi import (  # pyrefly: ignore[missing-import]
     to_js,
 )
 
-from . import benchview, overlay, programs
+from . import benchview, gamepad, overlay, programs
 from .app import App, Options, bench_file
 from .audio import TARGET, QueueOutput
 from .i18n import tr
@@ -58,6 +58,10 @@ def copy_text(text: str) -> None:
 
 def choose_files() -> None:
     js.sc61box.chooseFiles()
+
+
+def store() -> None:
+    js.sc61box.sync()
 
 
 def download(path: str) -> None:
@@ -316,6 +320,7 @@ async def run(model: str, lang: str | None, card: int = 0) -> None:
     overlay.HELP_FONTS.insert(0, os.path.join(FONTS, "NotoSansJP-Regular.ttf"))
     benchview.MONO_FONTS.insert(0, os.path.join(FONTS, "SourceCodePro-Regular.otf"))
     app = App(Options(model=model, card=card, norom=True, lang=lang))
+    app.pads = gamepad.WebPads(lambda: str(js.sc61box.pads()))
 
     def files(items) -> None:
         """ページが渡すファイル([名前, Uint8Array]の並び)"""

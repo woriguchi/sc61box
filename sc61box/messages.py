@@ -15,6 +15,10 @@ MESSAGES: dict[str, dict[str, str | tuple[str, str]]] = {
         "ja": "書き出す範囲を{where}にしました",
         "en": "Export range set to {where}",
     },
+    "common.web_no_gamepad": {
+        "ja": "ゲームパッドが見つかりません(つないでボタンを押すと見つかります)",
+        "en": "No gamepad found (connect one and press a button)",
+    },
     "common.ideographic_comma": {
         "ja": "、",
         "en": ", ",
@@ -1841,6 +1845,22 @@ MESSAGES: dict[str, dict[str, str | tuple[str, str]]] = {
             "Button names follow the SDL convention for the A/B/X/Y positions and may differ from "
             "the labels on your pad. If they do, press the button you want to map to select it"
         ),
+    },
+    "pad.web_button_names": {
+        "ja": (
+            "ボタンの名前はXboxのコントローラの位置によるA・B・X・Yで、"
+            "ゲームパッドに印字された名前と違うことがあります。配置不明のパッドでは、"
+            "位置も違うことがあります。違うときは、割り当てたいボタンを実際に押して選んでください"
+        ),
+        "en": (
+            "Button names are the A/B/X/Y positions of an Xbox controller and may differ from "
+            "the labels on your pad. On a pad with an unknown layout, the positions may differ "
+            "too. If they do, press the button you want to map to select it"
+        ),
+    },
+    "pad.web_layout_unknown": {
+        "ja": "{name}(ボタンの配置不明)",
+        "en": "{name} (unknown button layout)",
     },
     "pad.gamepad_mapping": {
         "ja": "ゲームパッドの割り当て",

@@ -168,6 +168,7 @@
       <tr><td><kbd>F1</kbd>〜<kbd>F4</kbd></td><td>モードの切り替え</td></tr>
       <tr><td><kbd>⌘</kbd><kbd>/</kbd>(Windowsは<kbd>Ctrl</kbd><kbd>/</kbd>)</td><td>キーの対応の一覧</td></tr>
     </table>
+    <p>ゲームパッドは、つないでからボタンを1つ押すと使えます。最初の割り当ては、十字キーが8・2・4・6、AがSPC、Bが0、StartがENTER、SelectがBRKです。割り当ては「表示・入力」の「ゲームパッドの割り当て…」で変えられます。</p>
     <h2>プログラム</h2>
     <ul>
       <li>同梱のプログラムは、本体の下の「プログラム」から実行します。</li>
@@ -176,7 +177,7 @@
     </ul>
     <h2>保存とオフライン</h2>
     <p>RAMは機種ごとにこのブラウザに保存されます。一度開けば、ネットにつながっていなくても使えます。ブラウザの「ホーム画面に追加」や「インストール」で、アプリと同じように使えます。iPhone・iPadでは、ホーム画面に追加しないと、7日間開かなかったときに保存が消えることがあります。</p>
-    <p>録画、ゲームパッド、実機のROMを使った実行は、<a href="https://github.com/woriguchi/sc61box">パソコン版</a>でできます。</p>
+    <p>録画と実機のROMを使った実行は、<a href="https://github.com/woriguchi/sc61box">パソコン版</a>でできます。</p>
     <p class="fine">MITライセンス。フォントはNoto Sans JPとSource Code Pro(SIL Open Font License)。</p>
   </div>
   <div class="en">
@@ -191,6 +192,7 @@
       <tr><td><kbd>F1</kbd>–<kbd>F4</kbd></td><td>Mode switch</td></tr>
       <tr><td><kbd>⌘</kbd><kbd>/</kbd> (<kbd>Ctrl</kbd><kbd>/</kbd> on Windows)</td><td>List of all keys</td></tr>
     </table>
+    <p>A gamepad works once it is connected and one of its buttons is pressed. The initial mapping is the D-pad to 8, 2, 4, 6, A to SPC, B to 0, Start to ENTER and Select to BRK. Change it with Gamepad mapping… in View &amp; Input.</p>
     <h2>Programs</h2>
     <ul>
       <li>Run the bundled programs from Programs below the calculator.</li>
@@ -199,7 +201,7 @@
     </ul>
     <h2>Saving and offline use</h2>
     <p>The RAM of each model is saved in this browser. Once opened, the page works without a network connection. Add to Home Screen or Install in the browser menu lets you use it like an app. On iPhone and iPad, saved data may be cleared after 7 days without a visit unless the page is on the Home Screen.</p>
-    <p>Recording, gamepads and running a real ROM are in the <a href="https://github.com/woriguchi/sc61box">desktop version</a>.</p>
+    <p>Recording and running a real ROM are in the <a href="https://github.com/woriguchi/sc61box">desktop version</a>.</p>
     <p class="fine">MIT License. Fonts: Noto Sans JP and Source Code Pro (SIL Open Font License).</p>
   </div>
   <form method="dialog"><button class="key" value="close">
@@ -506,6 +508,24 @@ globalThis.sc61box = {
     else navigator.clipboard.writeText(url).then(() => done(true), instead);
   },
   chooseFiles: () => picker.click(),
+  // つながっているゲームパッドのいまの状態。パッドごとに、番号、配置、id、ボタンの値(,区切り)、
+  // 軸の値(,区切り)をタブで区切った行(gamepad.WebPads)。使い方を出しているあいだは、先頭に
+  // holdの行を置いて、本体へ送らないようにする(キーと同じ)。ブラウザは、つないだあとボタンが
+  // 押されるまでパッドを見せない
+  pads() {
+    let pads;
+    try { pads = navigator.getGamepads?.() ?? []; } catch { return ""; }
+    const lines = [];
+    for (const p of pads) {
+      if (!p?.connected) continue;
+      const buttons = p.buttons.map((b) => (b.value || (b.pressed ? 1 : 0)).toFixed(2));
+      const axes = p.axes.map((v) => v.toFixed(2));
+      const id = p.id.replace(/[\t\r\n]/g, " ");
+      lines.push([p.index, p.mapping, id, buttons.join(","), axes.join(",")].join("\t"));
+    }
+    if (guide.open) lines.unshift("hold");
+    return lines.join("\n");
+  },
   download(name, bytes) {
     const url = URL.createObjectURL(new Blob([bytes]));
     Object.assign(document.createElement("a"), { href: url, download: name }).click();
