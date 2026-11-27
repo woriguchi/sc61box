@@ -891,8 +891,10 @@ def test_run_reads_gamepads_from_page(web, monkeypatch):
     app.close()
 
 
-def _web_pad(index=0, mapping="standard", gid="8BitDo SN30 Pro (Vendor: 2dc8 Product: 6101)",
-             buttons=(), axes=(0, 0, 0, 0)) -> str:  # fmt: skip
+XBOX = "Xbox Wireless Controller (Vendor: 045e Product: 0b13)"
+
+
+def _web_pad(index=0, mapping="standard", gid=XBOX, buttons=(), axes=(0, 0, 0, 0)) -> str:
     """ページがWebPadsに渡す、パッド1つの行"""
     values = [0.0] * 17
     for i, value in buttons:
@@ -908,7 +910,7 @@ def test_web_pads_buttons_sticks_and_triggers():
     pads = gamepad.WebPads(lambda: state[0])
     assert pads.poll() == [] and pads.names() == []
     state[0] = _web_pad()
-    assert pads.poll() == [] and pads.names() == ["8BitDo SN30 Pro"]
+    assert pads.poll() == [] and pads.names() == ["Xbox Wireless Controller"]
     state[0] = _web_pad(buttons=[(0, 1)])
     assert pads.poll() == [("a", 0, True)]
     assert pads.poll() == []  # 押したまま
@@ -940,15 +942,87 @@ def test_web_pads_release_when_pad_goes_or_changes():
     state = [_web_pad(buttons=[(1, 1)]) + "\n" + other]
     pads = gamepad.WebPads(lambda: state[0])
     assert sorted(pads.poll()) == [("a", 1, True), ("b", 0, True)]
-    assert pads.names() == ["8BitDo SN30 Pro", "Wireless Controller(ボタンの配置不明)"]
+    assert pads.names() == ["Xbox Wireless Controller", "Wireless Controller(ボタンの配置不明)"]
     state[0] = other
     assert pads.poll() == [("b", 0, False)]
     assert pads.names() == ["Wireless Controller(ボタンの配置不明)"]
     state[0] = _web_pad(index=1, buttons=[(0, 1)])
     assert pads.poll() == [("a", 1, False), ("a", 1, True)]
-    assert pads.names() == ["8BitDo SN30 Pro"]
+    assert pads.names() == ["Xbox Wireless Controller"]
     state[0] = "broken\n1\tstandard\tPad\ta,b\t"
     assert pads.poll() == [("a", 1, False)] and pads.names() == [] and not pads.pressed()
+
+
+@pytest.mark.parametrize(
+    "gid",
+    [
+        "Pro Controller (STANDARD GAMEPAD Vendor: 057e Product: 2009)",
+        "057e-2009-Pro Controller",
+        "Joy-Con (L/R) (Vendor: 057e Product: 200e)",
+        "8BitDo SN30 Pro (Vendor: 2dc8 Product: 6101)",
+    ],
+)
+def test_web_pads_nintendo_buttons_by_label(gid):
+    """任天堂の配置のパッドは、Gamepad APIの位置の番号を印字の名前にする(右がA、下がB、上がX、
+    左がY。パソコン版のSDL2と同じ)。配置が標準でなければ入れ替えない"""
+    state = [_web_pad(gid=gid)]
+    pads = gamepad.WebPads(lambda: state[0])
+    pads.poll()
+    for i, name in ((1, "a"), (0, "b"), (3, "x"), (2, "y")):
+        state[0] = _web_pad(gid=gid, buttons=[(i, 1)])
+        assert pads.poll() == [(name, 0, True)]
+        state[0] = _web_pad(gid=gid)
+        assert pads.poll() == [(name, 0, False)]
+    state[0] = _web_pad(index=1, mapping="", gid=gid, buttons=[(0, 1)])
+    assert ("a", 1, True) in pads.poll()
+
+
+def test_nintendo_layout_from_id():
+    assert gamepad.nintendo_layout("Pro Controller (STANDARD GAMEPAD Vendor: 057e Product: 2009)")
+    assert gamepad.nintendo_layout("057e-2017-SNES Controller")
+    assert gamepad.nintendo_layout("Joy-Con (L/R)")
+    assert gamepad.nintendo_layout("8BitDo SN30 Pro (Vendor: 2dc8 Product: 6101)")
+    assert gamepad.nintendo_layout("2dc8-6101-8BitDo SN30 Pro")
+    assert not gamepad.nintendo_layout("8BitDo M30 (Vendor: 2dc8 Product: 5006)")
+    assert not gamepad.nintendo_layout("8BitDo Ultimate Wired Controller for Xbox")
+    assert not gamepad.nintendo_layout("Xbox 360 Controller (XInput STANDARD GAMEPAD)")
+    assert not gamepad.nintendo_layout("045e-0b13-Xbox Wireless Controller")
+    # 製品のIDで決める(8BitDoのUltimate 2CはXboxの配置)
+    gid = "8BitDo Ultimate 2C Wireless (STANDARD GAMEPAD Vendor: 2dc8 Product: 301b)"
+    assert not gamepad.nintendo_layout(gid)
+    assert not gamepad.nintendo_layout("2dc8-301b-8BitDo Ultimate 2C Wireless")
+    assert gamepad.nintendo_layout("57e-2009-Pro Controller")  # Firefoxは頭の0を省く
+    assert gamepad.nintendo_layout("8BitDo Pro 2")
+    # Switch用のNINTENDO 64コントローラは、Aを下、Bを右の番号で出す
+    assert not gamepad.nintendo_layout("57e-2019-N64 Controller")
+    # ほかの製造元の「Pro Controller」は、製品のIDがあれば名前で決めない
+    gid = "Revolution Pro Controller (STANDARD GAMEPAD Vendor: 146b Product: 0d01)"
+    assert not gamepad.nintendo_layout(gid)
+    assert not gamepad.nintendo_layout("146b-d01-Revolution Pro Controller")
+    assert gamepad.nintendo_layout("Pro Controller")
+
+
+@pytest.mark.parametrize(
+    ("gid", "numbers"),
+    [
+        # Chromiumは横持ちに向きを変える
+        ("Joy-Con (R) (STANDARD GAMEPAD Vendor: 057e Product: 2007)", (0, 2, 1, 3)),
+        # LinuxのFirefoxは向きを変えず、Proコントローラと同じ番号
+        ("57e-2007-Joy-Con (R)", (1, 0, 3, 2)),
+        ("57e-2019-N64 Controller", (0, 1)),  # 印字はAとBだけ
+    ],
+)
+def test_web_pads_buttons_by_label_per_browser(gid, numbers):
+    """印字のA・B・X・Yのボタンが、ブラウザの出す番号(numbers)で届いたとき、印字の名前に
+    する(1つだけの右のJoy-Conに左右のペアの表を当てると、Chromiumで4つともずれていた)"""
+    state = [_web_pad(gid=gid)]
+    pads = gamepad.WebPads(lambda: state[0])
+    pads.poll()
+    for i, name in zip(numbers, ("a", "b", "x", "y"), strict=False):
+        state[0] = _web_pad(gid=gid, buttons=[(i, 1)])
+        assert pads.poll() == [(name, 0, True)]
+        state[0] = _web_pad(gid=gid)
+        assert pads.poll() == [(name, 0, False)]
 
 
 def test_pad_name_drops_browser_details():
@@ -987,11 +1061,12 @@ def test_browser_pad_presses_pocket_key_each_frame(tmp_path, monkeypatch):
 
 
 def test_browser_pad_texts(monkeypatch):
-    """ブラウザでは、パッドが見つからないときにボタンを押すように案内し、ボタンの名前の説明も
-    SDLではなくXboxのコントローラの位置で書く"""
-    monkeypatch.setattr(host, "WEB", True)
+    """ブラウザでは、パッドが見つからないときにボタンを押すように案内し、ボタンの名前の説明に
+    配置不明のパッドのことも書く"""
     panel = padmenu.PadPanel()
-    assert "Xboxのコントローラ" in panel._notes(["Pad"], None)[1]
+    assert "配置不明" not in panel._notes(["Pad"], None)[1]
+    monkeypatch.setattr(host, "WEB", True)
+    assert "配置不明" in panel._notes(["Pad"], None)[1]
     app = make_app(frames=1, norom=True)
     app.pads = gamepad.WebPads(lambda: "")
     item = next(it for it in app.popup_items("view") if it.label == "ゲームパッドの割り当て…")
@@ -1058,7 +1133,7 @@ def test_web_pads_hold_while_page_shows_guide():
     閉じたあとも、押したままの入力はいちど離すまで送らない"""
     state = ["hold\n" + _web_pad(buttons=[(8, 1)])]
     pads = gamepad.WebPads(lambda: state[0])
-    assert pads.poll() == [] and pads.names() == ["8BitDo SN30 Pro"]
+    assert pads.poll() == [] and pads.names() == ["Xbox Wireless Controller"]
     state[0] = _web_pad(buttons=[(8, 1)])
     assert pads.poll() == []
     state[0] = _web_pad()

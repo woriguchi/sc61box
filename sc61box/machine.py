@@ -394,9 +394,23 @@ class PC1251(Bus):
         self.reset_key = False  # 裏のRESETボタン
         self.mode = "RUN"
         self.pa = self.pb = self.pc_out = self.pf = 0
-        self.lcd_dirty = True
         # 液晶RAMに書いた記録((サイクル, 番地, 前の値, 書いた値)の並び)。Noneなら記録しない
         self.lcd_trace: list[tuple[int, int, int, int]] | None = None
+        # 記録のあいだの液晶RAMの写し(lcd_addrsの順)。Pythonで液晶RAMに直に書いたもの(ROMなしの
+        # BASICと代替ROMルーチン)は、lcd_dirtyを立てたときに写しと比べて記録する
+        self.lcd_addrs = sorted(set(self.column_addrs()))
+        self._lcd_index = {a: i for i, a in enumerate(self.lcd_addrs)}
+        self._lcd_shadow = bytearray(len(self.lcd_addrs))
+        # 続いた番地の組(頭の番地, 写しの中の位置, 長さ)。組ごとにまとめて比べる
+        self._lcd_runs: list[tuple[int, int, int]] = []
+        for i, a in enumerate(self.lcd_addrs):
+            if i and a == self.lcd_addrs[i - 1] + 1:
+                lo, at, n = self._lcd_runs[-1]
+                self._lcd_runs[-1] = (lo, at, n + 1)
+            else:
+                self._lcd_runs.append((a, i, 1))
+        self._lcd_dirty = True
+        self.restores = 0  # restoreで状態を戻した回数(フレームの途中で戻したかを知るため)
         self.reset_at: int | None = None  # 実行の区切りの中でカウンタをリセットしたサイクル
         self.power = True  # Cポートのビット3で切れる
         self.halted = False  # Cポートのビット2で止まっている
@@ -535,9 +549,9 @@ class PC1251(Bus):
             a = self._lcd_page[a >> 8] << 8 | (a & 0xFF)
         if self.wmask[a]:
             if self._lcd_ram[a >> 8]:
-                self.lcd_dirty = True
+                self._lcd_dirty = True
                 if self.lcd_trace is not None and self.mem[a] != v:
-                    self.lcd_trace.append((self.cpu.cycles, a, self.mem[a], v))
+                    self._trace_write(a, v)
             self.mem[a] = v
 
     def _scan(self, port: str, strobe: int) -> int:
@@ -600,11 +614,12 @@ class PC1251(Bus):
 
     def out_c(self, v: int) -> None:
         old = self.pc_out
+        was_on = self.display_on()
         self.pc_out = v
-        if (v ^ old) & 0x01 and self.lcd_trace is not None:
-            # 液晶を点けたり消したりした時刻(番地は-1)。ROMは計算のあいだ液晶を消し、
-            # 液晶RAMの一部を作業に使う
-            self.lcd_trace.append((self.cpu.cycles, -1, old & 0x01, v & 0x01))
+        if (v ^ old) & 0x01 and self.lcd_trace is not None and was_on != self.display_on():
+            # 液晶を点けたり消したりした時刻(番地は-1)。PC-1251系のROMは計算のあいだ液晶を
+            # 消し、液晶RAMの一部を作業に使う。ビット0で液晶が消えない機種では記録しない
+            self.lcd_trace.append((self.cpu.cycles, -1, int(was_on), int(not was_on)))
         if v & 0x02:  # カウンタのリセット。立っているタイマのフラグも消す(リセットからTEST命令で
             # 512msを待つプログラムが、前に立ったままのフラグで待たずに抜けないように)
             self.t2 = 0
@@ -701,6 +716,45 @@ class PC1251(Bus):
                 self.t512cnt = 0
                 self.t512 = 1
                 self.halted = False
+
+    @property
+    def lcd_dirty(self) -> bool:
+        return self._lcd_dirty
+
+    @lcd_dirty.setter
+    def lcd_dirty(self, v: bool) -> None:
+        self._lcd_dirty = v
+        if v:
+            self.note_lcd_writes()
+
+    def note_lcd_writes(self) -> None:
+        """Pythonで直に書いた液晶RAMを、いまの時刻の書き込みとして記録する"""
+        trace = self.lcd_trace
+        if trace is None:
+            return
+        mem, shadow, c = self.mem, self._lcd_shadow, self.cpu.cycles
+        for lo, at, n in self._lcd_runs:
+            if mem[lo : lo + n] == shadow[at : at + n]:
+                continue
+            for j in range(n):
+                if mem[lo + j] != shadow[at + j]:
+                    trace.append((c, lo + j, shadow[at + j], mem[lo + j]))
+                    shadow[at + j] = mem[lo + j]
+
+    def start_lcd_trace(self) -> None:
+        """液晶RAMへの書き込みの記録を始める"""
+        self.lcd_trace = []
+        mem, shadow = self.mem, self._lcd_shadow
+        for lo, at, n in self._lcd_runs:
+            shadow[at : at + n] = mem[lo : lo + n]
+
+    def _trace_write(self, a: int, v: int) -> None:
+        """命令が液晶RAMに書いた値を記録する(写しも合わせる)"""
+        assert self.lcd_trace is not None
+        self.lcd_trace.append((self.cpu.cycles, a, self.mem[a], v))
+        i = self._lcd_index.get(a)
+        if i is not None:
+            self._lcd_shadow[i] = v
 
     def pass_time(self, cycles: int) -> None:
         """命令を実行せずに、cyclesサイクルぶん時間を進める(CPUのサイクルとタイマ)。
@@ -926,6 +980,7 @@ class PC1251(Bus):
         if basic is not None:  # ROMなしのBASICは、保存したところから続ける
             basic()
         waits()
+        self.restores += 1
         self.held.clear()
         self.brk = self.reset_key = False
         self.tape = None
@@ -1128,9 +1183,9 @@ class PC1350(PC1251):
             a += 0x2000
         if self.wmask[a]:
             if 0x7000 <= a < 0x7A00:
-                self.lcd_dirty = True
+                self._lcd_dirty = True
                 if self.lcd_trace is not None and self.mem[a] != v:
-                    self.lcd_trace.append((self.cpu.cycles, a, self.mem[a], v))
+                    self._trace_write(a, v)
             self.mem[a] = v
 
     def in_a(self) -> int:

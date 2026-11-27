@@ -7,7 +7,7 @@ import pytest
 from helpers import make_app
 
 from sc61box import app as appmod
-from sc61box import benchview, disasm, workbench
+from sc61box import benchview, disasm, display, workbench
 from sc61box.machine import CLOCK, RomNotFound, new_machine
 
 VLINE = "C000 027F10F800523700 12"  # 本のダンプリストの縦線
@@ -1189,7 +1189,7 @@ def test_lcd_duty_from_real_writes():
         app.frame()
     share = app.lcd_duty[0]
     assert 0 < share[0] < 0.03 and share[7] == 0
-    assert app.panel.level[0][0] < 0.05
+    assert app.panel.level[0][0] < display.OPACITY_LO  # 見えない
     app.close()
 
 
@@ -1207,6 +1207,112 @@ def test_lcd_duty_ignores_writes_while_display_off():
     share = app.lcd_duty[0]
     assert share[0] == 0 and share[6] == 0
     assert app.panel.level[0][0] < 0.01
+    app.close()
+
+
+@pytest.mark.parametrize(("model", "recorded"), [("1251", True), ("1261", False), ("1350", False)])
+def test_port_c_bit0_recorded_only_where_it_blanks(model, recorded):
+    """Cポートのビット0で液晶が消えるのはPC-1251系だけ。PC-1261系とPC-1350では、ビット0を
+    切り替えても液晶を消したとは記録しない(ROMなしのBASICが実行中にビット0を下ろすので、
+    記録すると液晶RAMの変わらないドットまで明滅した)"""
+    m = new_machine(model, rom=False)
+    m.out_c(0x01)
+    m.lcd_trace = []
+    m.out_c(0x00)
+    m.out_c(0x01)
+    assert bool(m.lcd_trace) == recorded
+    m.lcd_trace = None
+
+
+def test_lcd_record_dropped_after_restore():
+    """フレームの途中で状態を復元したら、そのフレームの液晶の記録は使わず、いまのRAMで描く
+    (取り消された時刻まで数えると、点いていた時間の割合が1を超える)"""
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
+    b = app.bench
+    # 液晶を消してF800に7Fを書き、待ってから00に戻して液晶を点け、待つのを繰り返す
+    b.paste("C000 0200125FDBDF 027F10F80052 4EFF4EFF 020052 0201125FDBDF 4EFF4EFF 2D1E")
+    app.bench_do("run")
+    m = app.m
+
+    def back() -> None:
+        m.cpu.cycles -= 1000
+
+    assert app._advance(CLOCK // 30, back)
+    assert app.lcd_duty == {}
+    app.close()
+
+
+def test_lcd_record_dropped_after_same_cycle_restore():
+    """サイクル数が同じ状態を復元しても、復元したとわかる(サイクル数だけで見ると、復元前の
+    記録で描いていた)"""
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
+    b = app.bench
+    b.paste("C000 0200125FDBDF 027F10F80052 4EFF4EFF 020052 0201125FDBDF 4EFF4EFF 2D1E")
+    app.bench_do("run")
+    m = app.m
+    assert not app._advance(CLOCK // 30, None)
+
+    def again() -> None:
+        m.restore(m.snapshot())
+
+    assert app._advance(CLOCK // 30, again)
+    assert app.lcd_duty == {}
+    app.close()
+
+
+@pytest.mark.parametrize("model", ["1251", "1261", "1350"])
+def test_direct_lcd_writes_recorded(model):
+    """Pythonで液晶RAMに直に書いたもの(ROMなしのBASICのCLSなど)も、lcd_dirtyを立てた時刻の
+    書き込みとして記録する"""
+    m = new_machine(model, rom=False)
+    a = m.column_addrs()[0]
+    m.start_lcd_trace()
+    c = m.cpu.cycles
+    m.write(a, 0x7F)  # 命令で書いたもの(POKE)
+    m.cpu.cycles += 100
+    m.mem[a] = 0  # 直に消す
+    m.lcd_dirty = True
+    m.lcd_dirty = True  # 変わっていなければ記録しない
+    assert m.lcd_trace == [(c, a, 0, 0x7F), (c + 100, a, 0x7F, 0)]
+    m.lcd_trace = None
+
+
+def test_console_cursor_recorded_when_drawn():
+    """ROMなしのBASICが描いたカーソルも、描いた時刻に記録する(フレームの終わりに遅れていた)"""
+    from sc61box.basic import attach
+    from sc61box.basic.pc1261 import pc1350
+
+    m = new_machine("1350", rom=False)
+    basic = attach(m)
+    assert isinstance(basic, pc1350.Basic)
+    console = basic.console
+    m.start_lcd_trace()
+    c = m.cpu.cycles
+    console.show([0x31, 0x32, 0x33], cursor=1)
+    m.cpu.cycles += 5000
+    m.note_lcd_writes()
+    assert m.lcd_trace and {t[0] for t in m.lcd_trace} == {c}
+    m.lcd_trace = None
+
+
+def test_lcd_duty_counts_direct_writes():
+    """フレームの途中で直に液晶RAMに書いて消したドットは、点いていた時間の割合で描く"""
+    app = make_app(scale=0.5, frames=2, norom=True, basic=False)
+    app.bench.paste("C000 4EFF2D03")  # 液晶に触れずに待ち続ける
+    app.bench_do("run")
+    m = app.m
+    a = m.column_addrs()[0]
+    calls = []
+
+    def poke_then_clear() -> None:
+        calls.append(1)
+        m.mem[a] = 0x7F if len(calls) == 1 else 0
+        m.lcd_dirty = True
+
+    app._advance(CLOCK // 30, None)
+    app._advance(CLOCK // 30, poke_then_clear)
+    share = app.lcd_duty[app.lcd_cols[a][0]]
+    assert 0.1 < share[0] < 0.4 and share[7] == 0
     app.close()
 
 

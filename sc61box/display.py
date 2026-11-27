@@ -11,6 +11,12 @@ symbols.txtに書いてある。
 * 応答が遅いので、動くものは尾を引く。液晶の分子の傾きは時定数(TAU_RISE_MS、TAU_FALL_MS)で
   電圧に追いつき、見た目の濃さは傾きがOPACITY_LO〜OPACITY_HIのあいだで急に変わる。
   消えかけのドットは少しのあいだ濃いまま残り、そのあと短い時間で消える。
+* フレームの途中で点いたり消えたりしたドットは、点いていた時間の割合dのあいだ速く点け消し
+  したとして傾きを進める。点く速さkr・消える速さkfなら、傾きは d×kr/(d×kr+(1−d)×kf) へ
+  速さ d×kr+(1−d)×kf で近づく。点くほうが速いので、半分点いているドットは半分より濃く見える。
+  割合をそのまま目当てにすると、1フレームおきに描くゲームなどで、点滅とフレームの区切りの
+  位置関係によって目当てが変わり、明滅する。短く1回だけ点いたドットは、続けて点けたときと
+  ほぼ同じ濃さになる。
 * Cポートのビット0で表示を切ると、液晶全体が消える。
 """
 
@@ -214,11 +220,15 @@ class Panel:
 
     def set_fps(self, fps: float, persist: float = 1.0) -> None:
         dt = 1000.0 / fps
-        if persist <= 0:
+        self.instant = persist <= 0
+        if self.instant:
             self.rise = self.fall = 1.0
+            self.kr = self.kf = 0.0
         else:
-            self.rise = 1.0 - math.exp(-dt / (TAU_RISE_MS * persist))
-            self.fall = 1.0 - math.exp(-dt / (TAU_FALL_MS * persist))
+            # 1フレームで点く・消える速さ(時定数の逆数×フレームの長さ)
+            self.kr, self.kf = dt / (TAU_RISE_MS * persist), dt / (TAU_FALL_MS * persist)
+            self.rise = 1.0 - math.exp(-self.kr)
+            self.fall = 1.0 - math.exp(-self.kf)
 
     def set_packed(self, on: bool) -> None:
         """桁と行のあいだのすきまをなくすか、実機と同じにするか"""
@@ -388,6 +398,8 @@ class Panel:
         col_x = self.col_x
         r = self.line_rows
         mixed = duty if on and duty else None
+        instant, kr, kf = self.instant, self.kr, self.kf
+        ratio = TAU_RISE_MS / TAU_FALL_MS  # 消える速さ÷点く速さ
         for y in range(r * self.lines):
             lrow = level[y]
             bit = 1 << (y % r)
@@ -398,9 +410,20 @@ class Panel:
                 share = mixed.get(base + x) if mixed else None
                 if share is not None:
                     t = share[y % r]
-                    v += (t - v) * (rise if t > v else fall)
-                    if v < 0.004:
-                        v = 0.0
+                    if instant:
+                        v = t if t < 1.0 else 1.0
+                    elif t >= 1.0:
+                        v += (1.0 - v) * rise
+                    elif t <= 0.0:
+                        v -= v * fall
+                        if v < 0.004:
+                            v = 0.0
+                    else:
+                        k = t * kr + (1.0 - t) * kf
+                        if k > 0.0:
+                            # 速さの比は時定数の比なので、速さが大きすぎて無限大になっても求まる
+                            goal = t / (t + (1.0 - t) * ratio)
+                            v = goal + (v - goal) * math.exp(-k)
                 elif on and columns[base + x] & bit:
                     v += (1.0 - v) * rise
                 else:

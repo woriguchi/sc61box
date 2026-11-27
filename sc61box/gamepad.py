@@ -327,6 +327,17 @@ WEB_BUTTONS = {
     8: "back", 9: "start", 10: "leftstick", 11: "rightstick",
     12: "dpup", 13: "dpdown", 14: "dpleft", 15: "dpright", 16: "guide",
 }  # fmt: skip
+# 任天堂の配置(右がA、下がB、上がX、左がY)のパッドの、標準の番号のボタン。Gamepad APIは位置で
+# 番号を付けるので、パソコン版(SDL2は印字で読む)と同じに、印字の名前にする
+WEB_BUTTONS_NINTENDO = {**WEB_BUTTONS, 0: "b", 1: "a", 2: "y", 3: "x"}
+# 1つだけの右のJoy-Con。Chromiumは横持ちに向きを変えて、Aを下、Xを右、Bを左、Yを上の番号にする。
+# Firefoxは向きを変えない(LinuxではProコントローラと同じ番号で届く)
+WEB_BUTTONS_JOYCON_R = {**WEB_BUTTONS, 0: "a", 1: "x", 2: "b", 3: "y"}
+# 任天堂のパッドのうち、Aを下、Bを右の番号で出すもの(Switch用のNINTENDO 64コントローラ)
+NINTENDO_STANDARD = {0x2019}
+# 任天堂の配置の8BitDoの製品ID(SF30 Pro・SN30 Pro・Pro 2・Pro 3。SDLのusb_ids.h)。ほかの
+# 8BitDo(Ultimate 2C、M30、Xbox用など)は標準の配置として読む
+NINTENDO_8BITDO = {0x6000, 0x6100, 0x6001, 0x6101, 0x6003, 0x6006, 0x6009}
 WEB_TRIGGERS = {6: pygame.CONTROLLER_AXIS_TRIGGERLEFT, 7: pygame.CONTROLLER_AXIS_TRIGGERRIGHT}
 WEB_AXES = (
     pygame.CONTROLLER_AXIS_LEFTX, pygame.CONTROLLER_AXIS_LEFTY,
@@ -340,6 +351,44 @@ def pad_name(gid: str) -> str:
     name = re.sub(r"^[0-9a-f]{1,4}-[0-9a-f]{1,4}-", "", gid.strip(), flags=re.I)
     name = re.sub(r"\s*\([^()]*\b(?:Vendor|STANDARD GAMEPAD)\b[^()]*\)$", "", name, flags=re.I)
     return name.strip() or gid.strip()
+
+
+def pad_ids(gid: str) -> tuple[int, int] | None:
+    """Gamepad APIのidから(製造元のID, 製品のID)を取り出す。Firefoxは頭の0を省く"""
+    found = re.search(
+        r"Vendor:\s*([0-9a-f]{1,4})\s+Product:\s*([0-9a-f]{1,4})\b|^([0-9a-f]{1,4})-([0-9a-f]{1,4})-",
+        gid.strip(),
+        flags=re.I,
+    )
+    if not found:
+        return None
+    vendor, product = found.group(1, 2) if found.group(1) else found.group(3, 4)
+    return int(vendor, 16), int(product, 16)
+
+
+def nintendo_layout(gid: str) -> bool:
+    """Gamepad APIのidから、任天堂の配置のパッド(Proコントローラ、Joy-Con、8BitDoのSN30 Proなど)
+    か。8BitDoは製品のIDで決める(idにIDがなければ名前で)"""
+    ids = pad_ids(gid)
+    if ids and ids[0] == 0x2DC8:
+        return ids[1] in NINTENDO_8BITDO
+    if ids and ids[0] == 0x057E:
+        return ids[1] not in NINTENDO_STANDARD
+    if re.search(r"\bN64\b|NINTENDO 64", gid, flags=re.I):
+        return False
+    if re.search(r"Nintendo|Joy-Con", gid, flags=re.I):
+        return True
+    if ids:  # ほかの製造元の「Pro Controller」(NACONのPS4用など)は名前で決めない
+        return False
+    return bool(re.search(r"\bPro Controller\b|8BitDo (?:SF30|SN30|Pro [23])\b", gid, flags=re.I))
+
+
+def web_buttons(gid: str) -> dict[int, str]:
+    """標準の配置のパッドの、ボタンの番号と入力の名前の表"""
+    right = pad_ids(gid) == (0x057E, 0x2007) or re.search(r"Joy-Con \(R\)", gid, flags=re.I)
+    if right and re.search(r"\bVendor:", gid):  # Chromiumのidの形
+        return WEB_BUTTONS_JOYCON_R
+    return WEB_BUTTONS_NINTENDO if nintendo_layout(gid) else WEB_BUTTONS
 
 
 # ページの行の先頭にこの行があれば、ページが入力を止めている(使い方を出しているなど)
@@ -360,6 +409,7 @@ class WebPads(Pads):
         self.axis_on = {}  # (番号, 軸): 倒している向きの入力
         self.stuck = set()
         self.pads: dict[int, tuple[str, str | Text]] = {}  # 番号: (id, 出す名前)
+        self.buttons: dict[int, dict[int, str]] = {}  # 番号: ボタンの番号と入力の名前の表
         self.down: dict[int, set[int]] = {}  # 番号: 押しているボタンの番号
         self.on: dict[int, set[str]] = {}  # 番号: 押したことにしている入力
         # 番号: 離したことにしたが、まだ押されている入力。いちど離されるまで押したことにしない
@@ -393,6 +443,7 @@ class WebPads(Pads):
                 name = pad_name(gid)
                 shown = name if mapping == "standard" else Text("pad.web_layout_unknown", name=name)
                 self.pads[iid] = (gid, shown)
+                self.buttons[iid] = web_buttons(gid) if mapping == "standard" else WEB_BUTTONS
             raw = self._raw(iid, buttons, axes)
             blocked = self.blocked.get(iid, set())
             self.blocked[iid] = blocked = (blocked | raw if hold else blocked) & raw
@@ -420,7 +471,8 @@ class WebPads(Pads):
                 self.axis_on.pop((iid, axis), None)
             else:
                 self.axis_on[(iid, axis)] = want
-        names = {WEB_BUTTONS[i] for i in down}
+        table = self.buttons.get(iid, WEB_BUTTONS)
+        names = {table[i] for i in down}
         return names | {name for (i, _axis), name in self.axis_on.items() if i == iid}
 
     def _diff(self, iid: int, now: set[str]) -> list[tuple[str, int, bool]]:
@@ -434,7 +486,7 @@ class WebPads(Pads):
     def _forget(self, iid: int) -> list[tuple[str, int, bool]]:
         """番号iidのパッドを外したことにして、押していた入力を離す"""
         out = [(n, iid, False) for n in ORDER if n in self.on.get(iid, set())]
-        for table in (self.pads, self.down, self.on, self.blocked):
+        for table in (self.pads, self.buttons, self.down, self.on, self.blocked):
             table.pop(iid, None)
         for key in [k for k in self.axis_on if k[0] == iid]:
             del self.axis_on[key]

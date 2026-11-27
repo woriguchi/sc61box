@@ -102,6 +102,7 @@ class Console(Screen):
         if cursor is not None and start + cursor < self.cells:
             self.put(start + cursor, shape)
             self.drawn[start + cursor] = None
+            self.m.lcd_dirty = True
 
     def fill_below(self, rows: list[list[int]]) -> None:
         """いまの表示より下の行に、rowsを上から並べる(いまの表示には含めない)"""

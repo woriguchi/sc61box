@@ -3127,7 +3127,7 @@ class App:
         # このフレームのあいだに液晶RAMに書いたものを記録する(_lcd_duty)
         start = m.cpu.cycles
         self.lcd_was_on = m.display_on()
-        m.lcd_trace = []
+        m.start_lcd_trace()
         parts = SUBSTEPS if poll is not None else 1
         done, restored = True, False
         for k in range(parts):
@@ -3158,18 +3158,24 @@ class App:
             if not done:
                 break
             if poll is not None and k < parts - 1:
-                mark = m.cpu.cycles
+                mark, restores = m.cpu.cycles, m.restores
                 poll()
-                # 合間の操作で、一時停止、状態の復元(サイクルが変わる)、作業欄の実行の中止、
+                # 合間の操作で、一時停止、状態の復元(m.restoresが増える)、作業欄の実行の中止、
                 # ウィンドウを閉じる操作があれば、復元前の目標では動かさない
                 stopped = self.bench_only and self.bench.state != "run"
-                restored = m.cpu.cycles != mark
+                restored = m.cpu.cycles != mark or m.restores != restores
                 if self.closing or self.halted or stopped or restored:
                     done = False
                     break
         if done:
             self.overshoot = m.cpu.cycles - target
-        self.lcd_duty = self._lcd_duty(start, m.lcd_trace or [])
+        # 状態を復元したフレームは、復元で取り消された時刻の記録を使わず、いまのRAMで描く
+        if restored:
+            self.lcd_duty = {}
+            self.lcd_any_on = m.display_on()
+        else:
+            m.note_lcd_writes()  # lcd_dirtyを立てずに直に書いたもの
+            self.lcd_duty = self._lcd_duty(start, m.lcd_trace or [])
         m.lcd_trace = None
         return restored
 
